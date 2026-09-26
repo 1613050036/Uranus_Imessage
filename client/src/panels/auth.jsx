@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { KeyRound, LogIn, ShieldCheck } from "lucide-react";
+import { setServerZone } from "../clock.js";
 
 import { watchSession } from "../store.jsx";
 import { Button, Field, ResultNote, UranusBadge, inputCls } from "../ui.jsx";
@@ -74,6 +75,7 @@ export function AuthGate({ children }) {
       const res = await fetch("/api/auth/state");
       const data = await res.json();
       setUsername(data?.username ?? "");
+      setServerZone(data?.timeZone);
       if (!data?.loggedIn) return setStage("login");
       setStage(data?.mustChange ? "change" : "ready");
     } catch {
@@ -116,7 +118,8 @@ export function AuthGate({ children }) {
 
         {stage === "login" ? (
           <LoginForm
-            onDone={(mustChange) => setStage(mustChange ? "change" : "ready")}
+            // 再探一次而不是直接放行：登录之后 state 才带服务端时区（见 clock.js）
+            onDone={probe}
             onName={setUsername}
           />
         ) : (
@@ -124,7 +127,7 @@ export function AuthGate({ children }) {
             username={username}
             onDone={(name) => {
               setUsername(name);
-              setStage("ready");
+              probe();
             }}
           />
         )}

@@ -25,6 +25,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import { zoned } from "../clock.js";
 
 /*
  * 五个级别。`cls` 是 scope 标签的样式 —— 不用色块，靠字色区分：
@@ -63,9 +64,9 @@ export const LEVEL_FILTERS = [
 ];
 
 export function fmtTime(ts) {
-  const d = new Date(ts);
+  const d = zoned(ts);
   const p = (n, w = 2) => String(n).padStart(w, "0");
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+  return `${p(d.h)}:${p(d.mi)}:${p(d.s)}.${p(d.ms, 3)}`;
 }
 
 /** 一行日志。detail 存在时可以点开看原始内容（错误栈、上游响应…）。 */
@@ -1298,9 +1299,9 @@ function fmtBytes(n) {
 /** 快照名里那串时间戳 → 「9月13日 18:30」。解不出来（at 是 0）就不显示。 */
 function fmtSnapshotTime(at) {
   if (!at) return "";
-  const d = new Date(at);
+  const d = zoned(at);
   const p = (n) => String(n).padStart(2, "0");
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${d.m}月${d.d}日 ${p(d.h)}:${p(d.mi)}`;
 }
 
 /**

@@ -68,6 +68,12 @@ export default function Post({
   onMenu,
 }) {
   const [index, setIndex] = useState(0);
+  /*
+   * 图框的宽高比，按**第一张图**的真实尺寸来（图加载完才知道，之前是 null，
+   * 框就跟着图自己撑开）。轮播里后面几张比例不一样时，框不跟着跳 —— 真 IG
+   * 也是按第一张定框，别的张在框里完整显示、留边。
+   */
+  const [ratio, setRatio] = useState(null);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   // feed 里默认只显示两条评论，点一下展开全部（IG 的做法）
@@ -117,8 +123,16 @@ export default function Post({
       </header>
 
       {images.length ? (
-        <div className="ig-post-media">
-          <Media images={images} index={index} />
+        <div
+          className="ig-post-media"
+          data-multi={images.length > 1 ? "true" : "false"}
+          style={images.length > 1 && ratio ? { aspectRatio: ratio } : undefined}
+        >
+          <Media
+            images={images}
+            index={index}
+            onRatio={index === 0 ? setRatio : undefined}
+          />
           <Dots count={images.length} index={index} />
           {/* 轮播箭头只在电脑版给 —— 手机上是横滑，滑动手势比小箭头好按 */}
           {desktop && images.length > 1 ? (

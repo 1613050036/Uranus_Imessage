@@ -526,6 +526,11 @@ app.use((req, res, next) => {
  */
 app.use("/api/auth", express.json({ limit: "16kb" }));
 
+/** 这个进程在用的时区（IANA 名）。记忆日期、日记流水、时间前缀都按它写。 */
+function serverTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
 /** 现在这台服务要不要登录、当前是谁、是不是还在用默认密码。 */
 app.get("/api/auth/state", (req, res) => {
   const auth = authenticate(req.headers.cookie);
@@ -537,6 +542,8 @@ app.get("/api/auth/state", (req, res) => {
     mustChange: mustChangeCredentials(),
     username: auth.ok ? auth.user : "",
     minPassword: MIN_PASSWORD,
+    // 界面按这个时区显示所有时间（client/src/clock.js）。登录后才给
+    timeZone: auth.ok ? serverTimeZone() : "",
   });
 });
 
@@ -2545,9 +2552,13 @@ app.put("/api/memories/:key/memory/:id", async (req, res) => {
     : [];
   const cfg = ctx.config.memories?.memory ?? {};
 
+  // 日期没改就别动 timestamp：memoryDay 给的是那天零点，套上去这条会掉到当天最末
+  const before = readMemories(ctx.key).find((m) => m.id === req.params.id);
+  const redate = day && day.date !== before?.date ? day : null;
+
   const item = updateMemory(ctx.key, req.params.id, {
     content,
-    ...(day ?? {}),
+    ...(redate ?? {}),
     keywords: [...new Set([...extractKeywords(content), ...manual])],
     // 正文改了旧向量就对不上，updateMemory 把它置空了 —— 这里当场补上新的
     embedding: null,
@@ -2565,7 +2576,7 @@ app.put("/api/memories/:key/memory/:id", async (req, res) => {
   }
   logInfo(
     "记忆库",
-    `${ctx.key} 改了一条记忆（${content.length} 字${day ? `，日期 ${day.date}` : ""}` +
+    `${ctx.key} 改了一条记忆（${content.length} 字${redate ? `，日期改成 ${redate.date}` : ""}` +
       `${finalItem.embedding ? "，向量已算" : "，向量待补"}）`
   );
   res.json({
@@ -3712,6 +3723,8 @@ app.listen(PORT, () => {
   console.log(`  → http://localhost:${PORT}`);
   console.log(`  → 配置目录: ${getDataDir()}\n`);
   logInfo("系统", `后端已启动，监听 ${PORT} 端口`);
+  // Node 只在启动时读一次系统时区：timedatectl 改完不重启服务，这里还是旧的
+  logInfo("系统", `服务器时区：${serverTimeZone()}（当前 ${new Date().toString().slice(16, 24)}）`);
 
   // 顺序有讲究：migratePresets 靠 readRawConfig 摘老配置里 roles[].context
   // 的旧版预设对话，而 migrateDataLayout 写出的角色文件是规范化过的、

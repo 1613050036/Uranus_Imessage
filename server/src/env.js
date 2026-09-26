@@ -339,6 +339,11 @@ function staleWeather(at) {
   return best;
 }
 
+/** 天气缓存里认坐标用的那一截（三位小数，约百米）。 */
+function geoKey(geo) {
+  return `${geo.lat.toFixed(3)},${geo.lon.toFixed(3)}`;
+}
+
 /**
  * 把这几张表全清掉。控制台的「清理缓存」按钮用。
  *
@@ -985,7 +990,7 @@ function pickSource(geo, weather, keys) {
  */
 async function weatherAt(geo, weather, keys) {
   const { source, alerts, opts } = pickSource(geo, weather, keys);
-  const at = `${geo.lat.toFixed(3)},${geo.lon.toFixed(3)}`;
+  const at = geoKey(geo);
   const key = `${source}:${alerts ? 1 : 0}:${at}`;
   const hit = weatherCache.get(key);
   if (hit && Date.now() - hit.at < WEATHER_TTL) return hit.data;
@@ -1090,6 +1095,26 @@ function timeSegmentSame(geo, at, workday) {
   const tag = workday ? dayTag(geo?.country ?? "", date, year, at, dow) : "";
   const head = `时间 : ${date} ${time}`;
   return tag ? `${head} | ${tzWeekday(tz, at)}, ${tag}` : `${head} | ${tzWeekday(tz, at)}`;
+}
+
+/**
+ * 线下模式的时间前缀：`[时间 : 2026-09-27 11:38:02 | 周六, 休息日]`
+ *
+ * 形状和同城模式那一行一样，但按**服务器的系统时间**算，不看角色填的城市 ——
+ * 线下是坐下来演剧情，两个人在同一个场景里，不存在「发送地 / 收到地」；
+ * 用户要的是 VPS 上设的那个时区。没有城市也就没有国家，节假日只分周末和工作日。
+ *
+ * 开关跟线上共用 `env.time.enabled`：关着就不带，和线上一个行为。
+ * 纯本地计算，不联网，所以是同步的。
+ *
+ * @param {object} role 角色（读 role.env）
+ * @param {Date} [at] 这一轮的时刻（剧情里存的 ts）
+ * @returns {string} 带方括号；关着或时刻无效就是空串
+ */
+export function systemTimePrefix(role, at = new Date()) {
+  const t = role?.env?.time;
+  if (!t?.enabled || Number.isNaN(at.getTime())) return "";
+  return `[${timeSegmentSame(null, at, t.workday !== false)}]`;
 }
 
 /** 一位小数的温度，拿不到就空串。 */
@@ -1228,6 +1253,42 @@ async function buildWeather(sides, weather, keys, same = false) {
   ]
     .filter(Boolean)
     .join(" ; ");
+}
+
+/**
+ * 线下模式的天气段：**不查**，拿角色那边城市最近一次查到的那份，只报这一段。
+ *
+ * 线下是坐下来演剧情，一轮接一轮地回，每轮都去打一次天气接口既慢又没必要 ——
+ * 用户的原话：「天气不查，用最近一次的天气就好了」。最近一次就是线上聊天时
+ * 查回来、存在 weatherCache 里（也落了盘）的那份，不挑数据源；超过
+ * WEATHER_STALE_MAX 的照旧不要，和线上查不到时退回旧数据是一个口径。
+ *
+ * 只报**角色那边**：线下两个人已经见面了，不存在「异地天气」（用户原话：
+ * 「都见面了还用什么异地天气」）。同城模式只有一个城市，就用那个；异地模式
+ * 用 charCity，没填或解析不了才退回 userCity。形状是同城那种不带「谁当地」的
+ * `天气: 东京 晴 …`。
+ *
+ * 城市解析（geocode）还是会走：那是查坐标不是查天气，内置表和缓存基本都能命中，
+ * 没命中的每个城市每次启动最多打一次。缓存里没有这个城市的天气就不带。
+ *
+ * 开关跟 buildEnv 一样：time、weather 两个开关都得开着。
+ *
+ * @param {object} role 角色（读 role.env）
+ * @returns {Promise<string>} 不带方括号，和 buildEnv().weather 一样
+ */
+export async function lastWeather(role) {
+  const env = role?.env;
+  if (!env?.time?.enabled || !env.weather?.enabled) return "";
+  try {
+    const sides = await resolveSides(env);
+    const geo = (env.time.mode === "same" ? null : sides.char) ?? sides.user;
+    if (!geo) return "";
+    const w = staleWeather(geoKey(geo))?.data ?? null;
+    return weatherSegment("", geo, w, env.weather);
+  } catch (e) {
+    logWarn("环境", "读上一次的天气失败，这一轮不带", e);
+    return "";
+  }
 }
 
 /**

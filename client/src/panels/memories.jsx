@@ -33,6 +33,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SaveBar, useSection } from "../section.jsx";
 import { api, apiDownload, useConfig } from "../store.jsx";
 import { MemoriesSettings } from "./memorysettings.jsx";
+// 「今天」按服务端时区算：后端 localDate 用的是服务器时区，浏览器在别的时区时两边会差一天
+import { todayKey, zoned } from "../clock.js";
 import {
   Button,
   Card,
@@ -1262,11 +1264,6 @@ function parseDay(s) {
 const pad = (n) => String(n).padStart(2, "0");
 const dayKey = (y, m, d) => `${y}-${pad(m)}-${pad(d)}`;
 
-/** 今天，`YYYY-MM-DD`。取本地日期（后端的 localDate 也是本地的，两边对得上）。 */
-function todayKey() {
-  const n = new Date();
-  return dayKey(n.getFullYear(), n.getMonth() + 1, n.getDate());
-}
 
 /**
  * 日记页：一个月历。
@@ -1314,8 +1311,8 @@ function DiaryPage({ memKey, detail, gate, role, modelRef, reload, onGoto }) {
     if (month) return month;
     const latest = diaries[0]?.date;
     const t = latest ? parseDay(latest) : null;
-    const now = new Date();
-    return t ? { y: t.y, m: t.m } : { y: now.getFullYear(), m: now.getMonth() + 1 };
+    const now = zoned();
+    return t ? { y: t.y, m: t.m } : { y: now.y, m: now.m };
   }, [month, diaries]);
 
   /*
@@ -1461,7 +1458,7 @@ function MonthGrid({ view, byDay, picked, onPick }) {
   const first = new Date(view.y, view.m - 1, 1);
   const lead = (first.getDay() + 6) % 7;
   const days = new Date(view.y, view.m, 0).getDate();
-  const today = dayKey(new Date().getFullYear(), new Date().getMonth() + 1, new Date().getDate());
+  const today = todayKey();
 
   const cells = [];
   for (let i = 0; i < lead; i += 1) cells.push(null);

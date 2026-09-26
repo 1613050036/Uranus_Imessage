@@ -43,6 +43,10 @@ const API_PORT = process.env.SANDBOX_API_PORT || "8788";
 
 process.env.URANUS_DATA_DIR = SANDBOX;
 process.env.IMESSAGE_BRIDGE = "off";
+
+// `--tz=America/Los_Angeles`：假装服务端在别的时区，试界面是不是按服务端时区显示
+const tzArg = process.argv.find((a) => a.startsWith("--tz="));
+if (tzArg) process.env.TZ = tzArg.slice(5);
 process.env.PORT = API_PORT;
 // IG 那个端口也得让开：真应用正占着 6873，沙箱后端再去 listen 一次就撞上了。
 // 沙箱里看 IG 页走 Vite 的 http://localhost:5174/instagram.html —— 那是现编的，
@@ -186,8 +190,18 @@ async function seedInstagram() {
     [[15, 23, 42], [148, 163, 184]],
     [[244, 244, 245], [161, 161, 170]], // 浅的这张专门用来看删除按钮压不压得住
   ];
-  const files = palettes.map(([a, b]) =>
-    store.saveMedia(gradientPng(640, 640, a, b).toString("base64"), "png")
+  // 尺寸故意不一样：帖子按图片原本的比例显示（ig.css:.ig-post-media），
+  // 全是正方形的话看不出来有没有被裁
+  const sizes = [
+    [640, 640],
+    [480, 640],
+    [640, 360],
+    [360, 640],
+    [640, 800],
+    [640, 640],
+  ];
+  const files = palettes.map(([a, b], i) =>
+    store.saveMedia(gradientPng(...sizes[i], a, b).toString("base64"), "png")
   );
 
   const hour = 3600 * 1000;

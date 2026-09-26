@@ -35,7 +35,7 @@
  */
 
 import { applyVars, resolveEndpoint, resolveRoleEndpoints, resolveUser } from "./config.js";
-import { buildEnv } from "./env.js";
+import { lastWeather, systemTimePrefix } from "./env.js";
 import { notePrompt } from "./lastprompt.js";
 import { chatCompletion, chatWithFallback } from "./llm.js";
 import { logError, logInfo, logWarn } from "./logs.js";
@@ -418,7 +418,11 @@ function historyOf(story, role) {
   if (cut.text) out.push({ role: "system", content: wrap("剧情前情", cut.text) });
   for (const t of story.turns.slice(cut.at)) {
     if (t.hidden || !t.content.trim()) continue;
-    out.push({ role: t.role, content: t.content });
+    // 用户那一侧带上这一轮的时间（服务器系统时间，见 env.js:systemTimePrefix）。
+    // 只加在发给模型的这一份上、不进剧情原文 —— 气泡里不该冒出一串方括号，
+    // 老剧情也能按各轮的 ts 补上
+    const stamp = t.role === "user" ? systemTimePrefix(role, new Date(t.ts)) : "";
+    out.push({ role: t.role, content: stamp + t.content });
   }
   return out;
 }
@@ -545,12 +549,13 @@ export async function runOfflineTurn(config, role, user, opts = {}) {
 
   /*
    * 天气和时间。线下也带上：用户点名了拿正则渲染「当前时间、天气、地点」
-   * 那种状态栏，模型得先知道现在几点、外面什么天。取不到就少这一行，
-   * 不影响这轮 —— 和 iMessage 那条链一个处理。
+   * 那种状态栏，模型得先知道现在几点、外面什么天。时间在 historyOf 里按
+   * 服务器系统时间加；天气**不查**，用线上最近一次查到的那份
+   * （env.js:lastWeather）。缓存里没有就少这一段，不影响这轮。
    */
   let weatherNote = "";
   try {
-    weatherNote = (await buildEnv(role, config.weatherApi)).weather;
+    weatherNote = await lastWeather(role);
   } catch (e) {
     logWarn(SCOPE, "取天气失败，这轮提示词里不带天气", e);
   }

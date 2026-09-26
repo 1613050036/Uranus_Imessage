@@ -19,6 +19,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { fmtClock } from "../clock.js";
 
 export const MODES = [
   { value: "cloud", label: "云端 (Photon)", desc: "用 VPS 连 Photon 云端，自动铸币换取账号" },
@@ -576,7 +577,7 @@ export function ProjectDetail({ project, conn, statusError, loaded, onRefresh, o
             <div>
               <p className="text-meta text-ink-faint">开始时间</p>
               <p className="mt-0.5 text-ink">
-                {conn?.startedAt ? new Date(conn.startedAt).toLocaleTimeString() : "—"}
+                {conn?.startedAt ? fmtClock(conn.startedAt) : "—"}
               </p>
             </div>
           </div>

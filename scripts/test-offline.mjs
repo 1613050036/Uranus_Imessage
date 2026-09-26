@@ -1003,6 +1003,101 @@ console.log("\n=== 12. 线上聊天记录（线下预设独有） ===");
   checkThat("没存档时不漏占位符", !/\{\{线上聊天记录\}\}/.test(nt), "");
 }
 
+console.log("\n=== 13. 线下的时间前缀按服务器系统时间 ===");
+{
+  // 假装 VPS 在 PDT：Node 运行时改 TZ 会立刻生效
+  const oldTz = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+  const E = await import("../server/src/env.js");
+  const at = new Date("2026-09-27T18:38:02.000Z");
+  const on = { env: { time: { enabled: true, mode: "diff", userCity: "上海", charCity: "东京" } } };
+  // 城市填的是上海 / 东京，照样按系统时区走；diff 模式也只报一段
+  check("按系统时区、同城那个形状", E.systemTimePrefix(on, at), "[时间 : 2026-09-27 11:38:02 | 周日, 休息日]");
+  check("时间开关关着就不带", E.systemTimePrefix({ env: { time: { enabled: false } } }, at), "");
+  check("时刻无效就不带", E.systemTimePrefix(on, new Date("garbage")), "");
+
+  // 端到端：走一轮 runOfflineTurn，看发给模型的那份里用户那句前面有没有
+  // 上海、东京都在内置坐标表里，不打地理编码接口。异地模式：用户在上海、角色在东京
+  const timed = {
+    ...role,
+    env: {
+      time: { enabled: true, mode: "diff", userCity: "上海", charCity: "东京" },
+      weather: { enabled: true },
+    },
+  };
+
+  // 线下不查天气：缓存里没有的时候就是空的
+  check("缓存里没有就不带天气", await E.lastWeather(timed), "");
+
+  // 先让线上那条路查一次，两边的天气都进缓存（按纬度给不一样的温度，好分清是哪边）
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const tokyo = String(url).includes("latitude=35.");
+    return new Response(
+      JSON.stringify({
+        current: { temperature_2m: tokyo ? 19.5 : 21.4, weather_code: tokyo ? 3 : 0 },
+        daily: { weather_code: [0, 61], temperature_2m_max: [24, 22], temperature_2m_min: [18, 17] },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  };
+  const online = (await E.buildEnv(timed, {})).weather;
+  globalThis.fetch = realFetch;
+  checkThat("线上两边都查到了", /上海/.test(online) && /东京/.test(online), online);
+
+  // 都见面了：只报角色那边，不带「谁当地」
+  const offlineWeather = await E.lastWeather(timed);
+  checkThat("线下只报角色那边", /^天气: 东京 .*19.5°C/.test(offlineWeather), offlineWeather);
+  checkThat("线下不带用户那边", !/上海/.test(offlineWeather), offlineWeather);
+  // 角色城市没填：退回用户那边
+  const noChar = { env: { ...timed.env, time: { ...timed.env.time, charCity: "" } } };
+  checkThat("没填角色城市就用用户那边", /^天气: 上海 /.test(await E.lastWeather(noChar)), "");
+  // 同城模式只有一个城市，就用它
+  const same = { env: { ...timed.env, time: { ...timed.env.time, mode: "same" } } };
+  checkThat("同城模式用那一个城市", /^天气: 上海 /.test(await E.lastWeather(same)), "");
+  S.openOffline(KEY, { roleId: role.id });
+  S.newStory(KEY, { roleId: role.id, name: "时间前缀" });
+  S.appendTurn(KEY, { role: "user", content: "我推门进去。", ts: at.toISOString() });
+
+  let sent = null;
+  const urls = [];
+  globalThis.fetch = async (url, init) => {
+    urls.push(String(url));
+    sent = JSON.parse(init.body);
+    return new Response(
+      JSON.stringify({ choices: [{ message: { role: "assistant", content: "他抬头看你。" } }] }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  };
+  try {
+    // reroll：不再追加用户那句，就用上面那条带固定 ts 的
+    // 测试配置里密钥是空的，会在发请求前就被拦下
+    const keyed = { ...config, providers: config.providers.map((p) => ({ ...p, keys: ["sk-test"] })) };
+    await O.runOfflineTurn(keyed, timed, config.users[0], { reroll: true });
+  } catch (e) {
+    checkThat("这一轮跑通了", false, String(e?.stack ?? e));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  const userMsgs = (sent?.messages ?? []).filter((m) => m.role === "user").map((m) => m.content);
+  checkThat(
+    "用户那句带上了系统时间前缀",
+    userMsgs.some((c) => c.startsWith("[时间 : 2026-09-27 11:38:02 | 周日, 休息日") && c.endsWith("]我推门进去。")),
+    JSON.stringify(userMsgs).slice(0, 400)
+  );
+  checkThat(
+    "天气并进了那一格",
+    userMsgs.some((c) => c.includes(`周日, 休息日 | ${offlineWeather}]我推门进去。`)),
+    JSON.stringify(userMsgs).slice(0, 400)
+  );
+  check("这一轮只打了模型，没去查天气", urls.length, 1);
+  const saved = S.currentStory(KEY).turns.find((t) => t.role === "user");
+  check("存档里的原文不带前缀", saved.content, "我推门进去。");
+
+  if (oldTz === undefined) delete process.env.TZ;
+  else process.env.TZ = oldTz;
+}
+
 // 收尾：临时目录删掉
 fs.rmSync(TMP, { recursive: true, force: true });
 

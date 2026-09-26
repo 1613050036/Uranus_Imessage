@@ -8,6 +8,7 @@
 
 import { useEffect } from "react";
 import { BadgeCheck, Plus, X } from "lucide-react";
+import { zoned } from "../clock.js";
 
 /** IG 图片的取图地址。文件名是 media/ 下的那个。 */
 export function igMediaUrl(file) {
@@ -103,8 +104,8 @@ export function timeAgo(iso, bare = false) {
   const week = Math.floor(day / 7);
   if (day < 30) return `${week}周${suffix}`;
   // 超过一个月显示日期（IG 是「9月12日」这种）
-  const d = new Date(at);
-  return `${d.getMonth() + 1}月${d.getDate()}日`;
+  const d = zoned(at);
+  return `${d.m}月${d.d}日`;
 }
 
 /** 「1,234」这种千分位。计数里用。 */
@@ -121,7 +122,7 @@ export function fmtCount(n) {
  *    用户明确要的这条，不然帖子就是个空框。
  *  - 一张都没有 → 不画这个区（纯文字帖子）
  */
-export function Media({ images = [], index = 0 }) {
+export function Media({ images = [], index = 0, onRatio }) {
   const im = images[index];
   if (!im) return null;
   const url = igMediaUrl(im.file);
@@ -132,7 +133,16 @@ export function Media({ images = [], index = 0 }) {
       </div>
     );
   }
-  return <img src={url} alt={im.alt || ""} />;
+  return (
+    <img
+      src={url}
+      alt={im.alt || ""}
+      onLoad={(e) => {
+        const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
+        if (w && h) onRatio?.(`${w} / ${h}`);
+      }}
+    />
+  );
 }
 
 /** 轮播圆点。 */

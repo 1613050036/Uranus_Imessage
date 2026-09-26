@@ -43,6 +43,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import { fmtDateTime } from "../clock.js";
 
 /**
  * 「打开角色这边的开关，顺手把预设那边对应的条目也打开」。
@@ -1850,7 +1851,7 @@ function RoleXiaohongshuFields({ role }) {
     }
   }
 
-  const when = (t) => (t ? new Date(t).toLocaleString() : "还没有");
+  const when = (t) => (t ? fmtDateTime(t) : "还没有");
 
   return (
     <div className="grid grid-cols-1 gap-6">

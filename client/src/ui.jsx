@@ -7,6 +7,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ROLE_LABELS } from "./store.jsx";
 import { Check, ChevronDown, ChevronUp, Copy, GripVertical, ShieldCheck, X } from "lucide-react";
+import { zoned } from "./clock.js";
 
 /**
  * 唯一的入场动画：opacity + 8px translateY，350ms，只跑一次。
@@ -629,15 +630,13 @@ export function MoveButtons({ onUp, onDown, first, last }) {
 /** 时间戳 → 「今天 14:03」这种。 */
 export function fmtStamp(ts) {
   if (!ts) return "";
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return "";
-  const now = new Date();
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return sameDay ? `今天 ${hm}` : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+  if (Number.isNaN(new Date(ts).getTime())) return "";
+  // 按服务端时区，不按浏览器（见 clock.js）
+  const d = zoned(ts);
+  const now = zoned();
+  const sameDay = d.y === now.y && d.m === now.m && d.d === now.d;
+  const hm = `${String(d.h).padStart(2, "0")}:${String(d.mi).padStart(2, "0")}`;
+  return sameDay ? `今天 ${hm}` : `${d.m}/${d.d} ${hm}`;
 }
 
 export function NumberField({ label, value, min, max, step, onChange, hint, suffix }) {
