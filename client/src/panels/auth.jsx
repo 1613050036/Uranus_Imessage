@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { KeyRound, LogIn, ShieldCheck } from "lucide-react";
 import { setServerZone } from "../clock.js";
+import { WORKER } from "../edition.js";
 
 import { watchSession } from "../store.jsx";
 import { Button, Field, ResultNote, UranusBadge, inputCls } from "../ui.jsx";
@@ -199,14 +200,22 @@ function LoginForm({ onDone, onName }) {
           <LogIn size={14} />
           {busy ? "登录中…" : "登录"}
         </Button>
-        {fresh && <span className="text-meta text-ink-meta">第一次进来：Uranus / Uranus</span>}
+        {fresh && !WORKER && <span className="text-meta text-ink-meta">第一次进来：Uranus / Uranus</span>}
       </div>
 
-      <p className="max-w-[46ch] text-meta leading-relaxed text-ink-faint">
-        密码忘了的话，打开 <span className="text-ink-soft">data/auth.json</span>，
-        把 password 那一行的值改成 <span className="text-ink-soft">null</span>，
-        存盘就生效（不用重启），账号密码回到默认的 Uranus / Uranus。
-      </p>
+      {WORKER ? (
+        <p className="max-w-[46ch] text-meta leading-relaxed text-ink-faint">
+          账号密码是部署时设的那个（用户名没另设就是 Uranus）。忘了的话，到 Cloudflare
+          后台把 Worker 的 Secret <span className="text-ink-soft">URANUS_PASSWORD</span>{" "}
+          改成新的，保存后就能用新密码进来。
+        </p>
+      ) : (
+        <p className="max-w-[46ch] text-meta leading-relaxed text-ink-faint">
+          密码忘了的话，打开 <span className="text-ink-soft">data/auth.json</span>，
+          把 password 那一行的值改成 <span className="text-ink-soft">null</span>，
+          存盘就生效（不用重启），账号密码回到默认的 Uranus / Uranus。
+        </p>
+      )}
     </form>
   );
 }
@@ -292,7 +301,8 @@ function ChangeForm({ username, onDone }) {
 
       <p className="max-w-[46ch] text-meta leading-relaxed text-ink-faint">
         存的是哈希，不是密码本身 —— 谁都看不出原文，也找不回来。
-        记不住的话现在就写下来；真忘了只能去 data/auth.json 里清掉那一行重来。
+        记不住的话现在就写下来；真忘了只能
+        {WORKER ? "去 Cloudflare 后台换一条 URANUS_PASSWORD 重来。" : "去 data/auth.json 里清掉那一行重来。"}
       </p>
     </form>
   );

@@ -26,6 +26,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { cafFormat, oggOpusToCaf, remuxCaf } from "./caf.js";
 
 // 只为了 formatAmount —— 退化成文字时那串金额要和卡片上显示的一模一样
 import { formatAmount } from "./card.js";
@@ -1111,7 +1112,22 @@ export async function toMp3ForStt(buffer, { ext = "", mimeType = "", scope }) {
   try {
     const bin = await ffmpegPath();
     if (!bin) {
-      logWarn(scope, "找不到 ffmpeg（静态包没装、PATH 上也没有），语音按原格式送去识别，模型可能读不了");
+      // 没 ffmpeg（小手机的 Worker 后端就是）：caf 里是 Opus / PCM 的话换个壳就能用
+      const remuxed = remuxCaf(buffer);
+      if (remuxed) {
+        logDebug(
+          scope,
+          `没有 ffmpeg，语音换壳：${(buffer.length / 1024).toFixed(0)}KB caf → ` +
+            `${(remuxed.buffer.length / 1024).toFixed(0)}KB ${remuxed.mimeType}` +
+            (remuxed.duration ? `，${remuxed.duration.toFixed(1)}s` : "")
+        );
+        return remuxed;
+      }
+      logWarn(
+        scope,
+        `找不到 ffmpeg（静态包没装、PATH 上也没有），语音按原格式送去识别，模型可能读不了` +
+          `（caf 里的编码：${cafFormat(buffer) ?? "认不出"}）`
+      );
       return fallback();
     }
 
@@ -1394,12 +1410,12 @@ function clampSpeed(v) {
  *
  * 响应直接就是二进制 mp3，出错时才是 JSON —— 所以先看 res.ok 再读 body。
  */
-async function ttsElevenLabs(cfg, text, voiceId) {
+async function ttsElevenLabs(cfg, text, voiceId, { opus = false } = {}) {
   // 留空时用官方文档里那个公开示例音色（Rachel），至少能出声
   const id = voiceId || "21m00Tcm4TlvDq8ikWAM";
   const url =
     `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(id)}` +
-    "?output_format=mp3_44100_128";
+    `?output_format=${opus ? "opus_48000_64" : "mp3_44100_128"}`;
 
   const res = await fetch(url, {
     method: "POST",
@@ -1432,6 +1448,7 @@ async function ttsElevenLabs(cfg, text, voiceId) {
   }
   const buffer = Buffer.from(await res.arrayBuffer());
   if (!buffer.length) throw new Error("ElevenLabs 返回了空音频");
+  if (opus) return { buffer, mimeType: "audio/ogg", ext: "ogg" };
   return { buffer, mimeType: "audio/mpeg", ext: "mp3" };
 }
 
@@ -1445,7 +1462,7 @@ async function ttsElevenLabs(cfg, text, voiceId) {
  *
  * 响应直接是二进制 mp3，出错时才是 JSON（`{status, message}`）。
  */
-async function ttsFish(cfg, text, voiceId) {
+async function ttsFish(cfg, text, voiceId, { opus = false } = {}) {
   const model = String(cfg?.model ?? "").trim();
   const ref = String(voiceId || cfg?.referenceId || "").trim();
 
@@ -1461,8 +1478,8 @@ async function ttsFish(cfg, text, voiceId) {
       text,
       // 两处都没填就不传，它会用默认音色 —— 至少能出声
       ...(ref ? { reference_id: ref } : {}),
-      format: "mp3",
-      mp3_bitrate: 128,
+      // opus_bitrate 的单位文档和各家 SDK 说法不一，-1000（自动）两种说法下都合法
+      ...(opus ? { format: "opus", opus_bitrate: -1000 } : { format: "mp3", mp3_bitrate: 128 }),
       latency: "normal",
       prosody: { speed: clampSpeed(cfg?.speed) },
     }),
@@ -1473,6 +1490,7 @@ async function ttsFish(cfg, text, voiceId) {
   }
   const buffer = Buffer.from(await res.arrayBuffer());
   if (!buffer.length) throw new Error("Fish Audio 返回了空音频");
+  if (opus) return { buffer, mimeType: "audio/ogg", ext: "ogg" };
   return { buffer, mimeType: "audio/mpeg", ext: "mp3" };
 }
 
@@ -1525,12 +1543,16 @@ async function ttsSovits(cfg, text, voiceId) {
  * Fish Audio 的 S2 系（含留空时的默认模型）认方括号，老的 s1 只认圆括号。
  * 认不了的都会把它们当正文念出来 —— 那种情况下不如剥掉。
  *
- * @returns {{name: string, keepTags?: boolean,
- *            run: (text: string, voiceId: string) => Promise<object>}|null}
+ * `opus` = 这一家能直接出 Ogg Opus。没有 ffmpeg 时（小手机的 Worker 后端）
+ * 语音条只能靠它：Opus 原样装进 caf 就是 iPhone 自己录的那种语音条，
+ * 见 caf.js:oggOpusToCaf。`needOpus` 时跳过出不了 Opus 的几家。
+ *
+ * @returns {{name: string, keepTags?: boolean, opus?: boolean,
+ *            run: (text: string, voiceId: string, opts?: {opus?: boolean}) => Promise<object>}|null}
  */
-export function pickTtsSource(api) {
+export function pickTtsSource(api, { needOpus = false } = {}) {
   const mm = api?.minimax;
-  if (mm?.enabled && String(mm.key ?? "").trim()) {
+  if (!needOpus && mm?.enabled && String(mm.key ?? "").trim()) {
     return { name: "MiniMax", run: (t, v) => ttsMinimax(mm, t, v) };
   }
   const el = api?.elevenlabs;
@@ -1538,7 +1560,8 @@ export function pickTtsSource(api) {
     return {
       name: "ElevenLabs",
       keepTags: /v3/i.test(String(el?.model ?? "")),
-      run: (t, v) => ttsElevenLabs(el, t, v),
+      opus: true,
+      run: (t, v, o) => ttsElevenLabs(el, t, v, o),
     };
   }
   const fa = api?.fish;
@@ -1546,11 +1569,12 @@ export function pickTtsSource(api) {
     return {
       name: "Fish Audio",
       keepTags: !/^s1\b/i.test(String(fa?.model ?? "").trim()),
-      run: (t, v) => ttsFish(fa, t, v),
+      opus: true,
+      run: (t, v, o) => ttsFish(fa, t, v, o),
     };
   }
   const sv = api?.sovits;
-  if (sv?.enabled && String(sv.url ?? "").trim()) {
+  if (!needOpus && sv?.enabled && String(sv.url ?? "").trim()) {
     return { name: "GPT-SoVITS", run: (t, v) => ttsSovits(sv, t, v) };
   }
   return null;
@@ -1583,14 +1607,28 @@ export function stripToneTags(text) {
  * @param {string} voiceId 角色上填的音色 ID（SoVITS 那家是参考音频路径），可空
  * @param {string} text 要念的内容
  * @param {string} [scope] 日志作用域
+ * @param {{bubble?: boolean}} [opts] `bubble`：要发成 iMessage 语音条（不是给浏览器试听）
  * @returns {Promise<{buffer: Buffer, mimeType: string, ext: string, duration: number|undefined, source: string, ms: number}>}
  *   `duration` 是秒数，读不出来时是 undefined —— 调用方**一定要**把它传给 voice()，
  *   不然 iMessage 那头的语音条显示 0:00。
+ *   `ext` 是 `m4a`（转好了）、`caf`（没 ffmpeg，走 Opus 换壳）或者合成出来的原格式。
  * @throws {Error} 中文原因。调用方接住之后退化成文字发出去
  */
-export async function synthesizeVoice(api, voiceId, text, scope = "语音") {
-  const source = pickTtsSource(api);
+export async function synthesizeVoice(api, voiceId, text, scope = "语音", { bubble = false } = {}) {
+  /*
+   * 语音条要 m4a 或 caf。有 ffmpeg 就合成 mp3 再转 m4a（老路）；没有 ffmpeg
+   * （小手机的 Worker 后端）就只剩一条路：让 TTS 直接出 Ogg Opus，换壳成 caf。
+   * 出不了 Opus 的几家（MiniMax、GPT-SoVITS）这时候跳过 —— 合成出来也发不成语音条。
+   */
+  const caf = bubble && !(await ffmpegPath());
+  const source = pickTtsSource(api, { needOpus: caf });
   if (!source) {
+    if (caf && pickTtsSource(api)) {
+      throw new Error(
+        "小手机上发语音条要用 Fish Audio 或 ElevenLabs：MiniMax / GPT-SoVITS 只出 mp3 / wav，" +
+          "转成语音条要 ffmpeg，Worker 里没有。到「连接」面板开一家 Fish Audio 或 ElevenLabs"
+      );
+    }
     throw new Error("没有可用的语音合成服务（「连接」面板里四家 TTS 都没开，或者凭据没填全）");
   }
 
@@ -1632,7 +1670,7 @@ export async function synthesizeVoice(api, voiceId, text, scope = "语音") {
   let out;
   for (let attempt = 1; ; attempt += 1) {
     try {
-      out = await source.run(clean, id);
+      out = await source.run(clean, id, { opus: caf });
       break;
     } catch (e) {
       if (attempt <= TTS_RETRIES && worthRetry(e)) {
@@ -1643,6 +1681,20 @@ export async function synthesizeVoice(api, voiceId, text, scope = "语音") {
     }
   }
   const ms = Date.now() - startedAt;
+
+  if (caf) {
+    const packed = oggOpusToCaf(out.buffer);
+    if (!packed) {
+      const head = out.buffer.subarray(0, 4).toString("latin1");
+      throw new Error(`${source.name} 返回的不是 Ogg Opus（文件头 ${JSON.stringify(head)}），装不成语音条`);
+    }
+    logInfo(
+      scope,
+      `${source.name} 合成了 ${clean.length} 字，` +
+        `${Math.round(packed.buffer.length / 1024)}KB caf／${packed.duration.toFixed(1)}s，耗时 ${ms}ms`
+    );
+    return { ...packed, ext: "caf", source: source.name, ms };
+  }
 
   /*
    * 在这里就转成 m4a，别交给 spectrum —— 它转的时候不加 +faststart，

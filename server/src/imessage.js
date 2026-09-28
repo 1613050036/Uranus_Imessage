@@ -4581,9 +4581,11 @@ async function sendVoicePart(runner, space, part, ctx) {
       config?.ttsApi,
       role.voiceSend.voiceId,
       part.text,
-      scope
+      scope,
+      { bubble: true }
     );
-    // name 写死 .m4a —— 理由见上面的注释（写 .mp3 会让语音条显示 0 秒）。
+    // name 只有 .m4a / .caf 两种 —— 理由见上面的注释（写 .mp3 会让语音条显示 0 秒）。
+    // .caf 是没 ffmpeg 时 Opus 换壳出来的，iPhone 自己录的语音条就是这个格式。
     // mimeType 仍然给合成出来的真实类型，ensureM4a 靠它判断要不要转码。
     // duration 是 media.js 用 ffmpeg 读出来的秒数，读不出来时是 undefined
     // （voiceSchema 里这个字段是 optional，给 undefined 等于不传）。
@@ -4593,7 +4595,7 @@ async function sendVoicePart(runner, space, part, ctx) {
       await space.send(
         voice(out.buffer, {
           mimeType: out.mimeType,
-          name: "voice.m4a",
+          name: out.ext === "caf" ? "voice.caf" : "voice.m4a",
           duration: out.duration,
         })
       )
@@ -5758,7 +5760,9 @@ async function runReactPart(runner, space, part, ctx) {
     logInfo(scope, `已给对方${part.spec ? `「${part.spec}」那条` : "最后一条"}贴上 ${emoji}`);
     return true;
   } catch (e) {
-    logWarn(scope, `[react:${emoji}] 贴不上去（本地 Mac 模式不支持消息回应）`, e);
+    // 云端也会走到这里（比如那条消息在 Photon 那边找不到），不能一律甩给「本地模式」
+    const why = runner.mode === "cloud" ? "Photon 那边报错了，原因见明细" : "本地 Mac 模式不支持消息回应";
+    logWarn(scope, `[react:${emoji}] 贴不上去（${why}）`, e);
     return false;
   }
 }
@@ -5897,7 +5901,8 @@ async function sendBubbles(runner, space, chat, text, ctx = {}) {
         try {
           return noteSent(runner, ctx, await target.reply(payload));
         } catch (e) {
-          logWarn(scope, "引用回复发不出去，这一条按普通消息发（本地模式不支持引用）", e);
+          const why = runner.mode === "cloud" ? "Photon 那边报错了，原因见明细" : "本地模式不支持引用";
+          logWarn(scope, `引用回复发不出去，这一条按普通消息发（${why}）`, e);
         }
       }
       return noteSent(runner, ctx, await space.send(payload));

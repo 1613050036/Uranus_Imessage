@@ -125,6 +125,15 @@ uranus-kb/
 scripts/patch-*-regex.mjs
 scripts/merge-*-preset.mjs
 
+# ---------- 另一个项目：Uranus 小手机（闭源） ----------
+# 「网页小手机」形态的重写版：静态 console + 用户自部署的 Cloudflare Worker。
+# 它是**独立的两个仓库**（console 私有、worker 公开），只是暂时借这个目录开发，
+# 跟本仓库没有任何代码往来。
+#
+# **必须整个挡掉。** console 那半是闭源的，本仓库是公开的 ——
+# 少这一条就等于把它推上 GitHub。提交时也照旧显式列文件名，别用 `git add .`。
+Uranus小手机/
+
 # ---------- 操作系统垃圾 ----------
 .DS_Store
 Thumbs.db

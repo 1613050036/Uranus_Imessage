@@ -26,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { zoned } from "../clock.js";
+import { WORKER } from "../edition.js";
 
 /*
  * 五个级别。`cls` 是 scope 标签的样式 —— 不用色块，靠字色区分：
@@ -434,7 +435,7 @@ function MaintenanceFields({ title, desc, value, onChange }) {
  * 规则和后端 auth.js 的 checkPassword 一字不差：不少于 8 位、至少一个大写。
  * 前端这道只为当场给提示，后端那道才是真的闸。
  */
-export function AccountPanel() {
+function PasswordAccountPanel() {
   const [who, setWho] = useState("");
   const [name, setName] = useState("");
   const [current, setCurrent] = useState("");
@@ -566,6 +567,41 @@ export function AccountPanel() {
     </Card>
   );
 }
+
+/**
+ * 小手机控制台的「账号」卡：那边不登录，凭后端密钥连（Uranus小手机/console），
+ * 所以这里没有账号密码可改，只说一句连的是谁、给一个断开。
+ *
+ * 断开由控制台外壳处理（它管着 Service Worker 里存的密钥），这里只发个事件。
+ */
+function BackendLinkPanel() {
+  const backend = window.localStorage.getItem("uranus.backend") ?? "";
+  return (
+    <Card
+      title="账号"
+      desc="这个控制台不用登录：连后端时填的后端密钥就是钥匙，这台浏览器记着它。"
+      actions={
+        <Button variant="outline" onClick={() => window.dispatchEvent(new Event("uranus:disconnect"))}>
+          <LogOut size={14} />
+          断开
+        </Button>
+      }
+    >
+      <div className="grid grid-cols-1 gap-4">
+        {backend && (
+          <code className="break-all bg-sunken px-2.5 py-1.5 font-mono text-meta text-ink">{backend}</code>
+        )}
+        <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
+          换密钥：到 Cloudflare 后台把 Worker 的 Secret <span className="text-ink-soft">URANUS_PASSWORD</span>{" "}
+          改掉。改完之后所有连着的浏览器都会退回「连接你的后端」，用新密钥重连。
+          在公用电脑上用完记得点「断开」。
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+export const AccountPanel = WORKER ? BackendLinkPanel : PasswordAccountPanel;
 
 /**
  * 密码差在哪。空串 = 没问题。
@@ -725,6 +761,7 @@ export function ServicePanel() {
   const [confirming, setConfirming] = useState(false);
 
   useEffect(() => {
+    if (WORKER) return;
     api("/api/status")
       .then((r) => setCanRestart(Boolean(r.canRestart)))
       .catch(() => setCanRestart(false));
@@ -761,10 +798,15 @@ export function ServicePanel() {
   return (
     <Card
       title="服务控制"
-      desc="重启整个服务、清掉算出来的缓存、看看有没有新版本。都不会动 data/ 里的任何数据"
+      desc={
+        WORKER
+          ? "清掉算出来的缓存。不会动任何数据"
+          : "重启整个服务、清掉算出来的缓存、看看有没有新版本。都不会动 data/ 里的任何数据"
+      }
     >
       <div className="grid grid-cols-1 gap-10">
-        {/* 重启 */}
+        {/* 重启。Worker 没有能重启的进程，也没有启动器 */}
+        {!WORKER && (
         <div className="grid grid-cols-1 gap-4">
           <p className="text-eyebrow uppercase text-ink-faint">重启服务</p>
           <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
@@ -797,6 +839,7 @@ export function ServicePanel() {
             onChange={(patch) => updateMaintenance("restart", patch)}
           />
         </div>
+        )}
 
         {/* 清缓存 */}
         <div className="grid grid-cols-1 gap-4">
@@ -819,7 +862,11 @@ export function ServicePanel() {
           </div>
           <MaintenanceFields
             title="定时清缓存"
-            desc="隔一阵子自己清一次，和上面那个按钮做的事一模一样。代价只是那一轮消息重查天气、慢一两秒。重启服务不会让计时重来。"
+            desc={
+              WORKER
+                ? "隔一阵子自己清一次，和上面那个按钮做的事一模一样。代价只是那一轮消息重查天气、慢一两秒。"
+                : "隔一阵子自己清一次，和上面那个按钮做的事一模一样。代价只是那一轮消息重查天气、慢一两秒。重启服务不会让计时重来。"
+            }
             value={maintenance.cache}
             onChange={(patch) => updateMaintenance("cache", patch)}
           />
@@ -829,7 +876,8 @@ export function ServicePanel() {
          * 检查更新排在最后。前两块是「这台服务现在的状态」，这一块看的是外面 ——
          * 而且它给出的下一步动作（导一份完整备份再更新）就在下面那张卡里。
          */}
-        <UpdateBlock />
+        {/* Worker 的更新是重新部署，这里查到了也没法照着做 */}
+        {!WORKER && <UpdateBlock />}
 
         <ResultNote
           state={note ? (note.ok ? "ok" : "fail") : "idle"}
@@ -908,6 +956,7 @@ export function BackupPanel() {
    * 数字上几乎看不出来，但「勾了之后数字没变」会让人怀疑勾选到底生效没有。
    */
   useEffect(() => {
+    if (WORKER) return undefined;
     let dead = false;
     estimateFullBackup(includeKeys)
       .then((r) => {
@@ -1036,13 +1085,44 @@ export function BackupPanel() {
         ]
       : [];
 
+  // 「含密钥」一个勾选框管两个导出，Worker 版没有完整备份，就挪到只导配置那一块
+  const keysToggle = (
+    <>
+      <label className="flex cursor-pointer items-start gap-2.5 text-ui leading-relaxed text-ink-soft">
+        <input
+          type="checkbox"
+          checked={includeKeys}
+          onChange={(e) => setIncludeKeys(e.target.checked)}
+          className="mt-1 shrink-0 accent-ink"
+        />
+        <span>
+          包含 API 密钥和 Photon 凭据
+          <span className="mt-0.5 block text-meta text-ink-faint">
+            不勾的话包里这些字段是空的，换机器恢复后自己补上就行
+          </span>
+        </span>
+      </label>
+
+      {includeKeys && (
+        <p className="border-l-2 border-warn py-1.5 pl-3 text-meta leading-relaxed text-warn">
+          这个文件里是明文的密钥和凭据。别发给别人、别传网盘、别扔进 git。
+        </p>
+      )}
+    </>
+  );
+
   return (
     <Card
       title="备份 / 恢复"
-      desc="把整个数据文件夹打成一个包存到本地，或者用这个包恢复回来"
+      desc={
+        WORKER
+          ? "把角色、人设、预设、世界书这些设置导出成一份 JSON，或者用它恢复回来"
+          : "把整个数据文件夹打成一个包存到本地，或者用这个包恢复回来"
+      }
     >
       <div className="grid grid-cols-1 gap-10">
-        {/* 完整备份 */}
+        {/* 完整备份。Worker 里没有 tar 打包要的文件流和临时目录 */}
+        {!WORKER && (
         <div className="grid grid-cols-1 gap-4">
           <p className="text-eyebrow uppercase text-ink-faint">完整备份</p>
           <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
@@ -1052,26 +1132,7 @@ export function BackupPanel() {
             包里没有的一个字节不动。
           </p>
 
-          <label className="flex cursor-pointer items-start gap-2.5 text-ui leading-relaxed text-ink-soft">
-            <input
-              type="checkbox"
-              checked={includeKeys}
-              onChange={(e) => setIncludeKeys(e.target.checked)}
-              className="mt-1 shrink-0 accent-ink"
-            />
-            <span>
-              包含 API 密钥和 Photon 凭据
-              <span className="mt-0.5 block text-meta text-ink-faint">
-                不勾的话包里这些字段是空的，换机器恢复后自己补上就行
-              </span>
-            </span>
-          </label>
-
-          {includeKeys && (
-            <p className="border-l-2 border-warn py-1.5 pl-3 text-meta leading-relaxed text-warn">
-              这个文件里是明文的密钥和凭据。别发给别人、别传网盘、别扔进 git。
-            </p>
-          )}
+          {keysToggle}
 
           <div className="flex flex-wrap items-center gap-2">
             <Button onClick={runFullExport} disabled={busy === "full"}>
@@ -1095,16 +1156,18 @@ export function BackupPanel() {
             </p>
           )}
         </div>
+        )}
 
         {/* 只导配置 */}
-        <div className="grid grid-cols-1 gap-4 border-t border-line pt-8">
-          <p className="text-eyebrow uppercase text-ink-faint">只导配置（搬家用）</p>
+        <div className={`grid grid-cols-1 gap-4${WORKER ? "" : " border-t border-line pt-8"}`}>
+          <p className="text-eyebrow uppercase text-ink-faint">{WORKER ? "导出配置" : "只导配置（搬家用）"}</p>
           <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
             一份 JSON，只有角色、用户人设、预设、世界书这些设置，
             <span className="text-ink-soft">不含</span>
             聊天记录和记忆库。想把角色和预设挪到另一台机器、又不想连着几十兆
             聊天一起搬的时候用这个。当备份用不合适 —— 聊出来的东西都不在里面。
           </p>
+          {WORKER && keysToggle}
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={runExport} disabled={busy === "export"}>
               {busy === "export" ? (
@@ -1121,8 +1184,10 @@ export function BackupPanel() {
         <div className="grid grid-cols-1 gap-4 border-t border-line pt-8">
           <p className="text-eyebrow uppercase text-ink-faint">从备份恢复</p>
           <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
-            上面两种文件都能选：.tar.gz 是完整备份，.json 是只有配置的那份。
-            两种都是<span className="text-ink-soft">整体替换</span>——包里有的那几类会覆盖掉
+            {WORKER
+              ? "选上面导出的那份 .json（桌面版「只导配置」导出来的也行）。"
+              : "上面两种文件都能选：.tar.gz 是完整备份，.json 是只有配置的那份。"}
+            {WORKER ? "它" : "两种都"}是<span className="text-ink-soft">整体替换</span>——包里有的那几类会覆盖掉
             现在的，比如包里有 2 个角色，恢复后就只剩这 2 个。选完会先让你确认一遍。
           </p>
 
@@ -1136,7 +1201,7 @@ export function BackupPanel() {
             <input
               ref={fileRef}
               type="file"
-              accept=".tar.gz,.tgz,application/gzip,application/json,.json"
+              accept={WORKER ? "application/json,.json" : ".tar.gz,.tgz,application/gzip,application/json,.json"}
               className="hidden"
               onChange={onPickFile}
             />
@@ -1171,6 +1236,8 @@ export function BackupPanel() {
           </p>
         )}
 
+        {/* Worker 的数据在 Durable Object 里，那个路径是虚拟的，给人看没用 */}
+        {!WORKER && (
         <div className="grid grid-cols-1 gap-2 border-t border-line pt-8">
           <p className="text-eyebrow uppercase text-ink-faint">数据文件夹</p>
           {dataDir && (
@@ -1184,6 +1251,7 @@ export function BackupPanel() {
             想定时往云盘传一份，用下面的「云备份」。
           </p>
         </div>
+        )}
       </div>
 
       {pending && (

@@ -24,3 +24,54 @@ export const DEFAULT_HELLO =
 
 /** 历史最多留几条（一问一答算两条）。和后端 MAX_TURNS 对齐，超了从头上丢。 */
 export const MAX_TURNS = 12;
+
+/**
+ * 快速配置弹窗左下角那颗「教程」按钮里的清单。
+ *
+ * 大多是 Niki 放在 QQ 群群文件里的文档，有链接版的给链接；
+ * `file` 是群文件里的文件名，没有链接版的只能照这个名字去群里找。
+ */
+export const TUTORIALS = [
+  {
+    title: "常见问题与功能介绍",
+    url: "https://ccnb9dqqjtkg.feishu.cn/docx/NaMmd5mhwoKQm4xGOiwcEpRdnmd",
+  },
+  {
+    title: "查岗功能",
+    url: "https://docs.qq.com/doc/p/6e3326acd1cf9f3b181904d74f49386792fce71e",
+    file: "查岗全部功能使用说明txt",
+    note: "第一次配置查岗，先看群文件【IOS查岗教程图文版】docx；链接版是图文 + 快捷指令配置的整合",
+  },
+  {
+    title: "搬家（转移记忆）",
+    url: "https://docs.qq.com/doc/DVnpndW11TGVFVFVW",
+    file: "如何搬家？（转移记忆）docx",
+    note: "在别的地方已经有记忆，要迁移过来",
+  },
+  {
+    title: "Windows 部署（详细版）",
+    url: "https://docs.qq.com/doc/DVnBIUW9xd2twdHpr",
+    file: "部署Uranus教程本地版docx",
+  },
+  { title: "Mac 部署", file: "Mac部署教程md" },
+  {
+    title: "VPS 云端部署",
+    url: "https://docs.qq.com/doc/DVnBRVWxZeEZwSEtQ",
+    file: "部署Uranus教程VPS版docx",
+  },
+  {
+    title: "绑定 IG",
+    url: "https://docs.qq.com/doc/DVmNTU29RYUhZdmtX",
+    file: "绑定IG教程docx",
+  },
+  {
+    title: "视频识别（含抖音 / 小红书）",
+    url: "https://docs.qq.com/doc/DVnJvRUFKZGJ0Z3dW",
+    note: "教程和限制",
+  },
+  {
+    title: "连 Photon",
+    url: "https://docs.qq.com/doc/p/2b72d49de9b6406f36357c0ced64d034024a0df7",
+  },
+  { title: "备份", url: "https://docs.qq.com/doc/DVnBsb0FQamNqeU93" },
+];

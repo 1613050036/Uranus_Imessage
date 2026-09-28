@@ -246,6 +246,15 @@ async function searchDuckDuckGo(query, limit) {
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     },
   });
+  /*
+   * 202 是它的人机验证页，不是结果 —— 机房 IP（Cloudflare Worker、大部分 VPS）
+   * 请求它基本都拿到这个。以前被 res.ok 放过去，扒不出结果，日志只说
+   * 「没有结果」，看着像真的搜不到。lite 端点一样时拦时不拦；Bing 对机房 IP
+   * 不拦但给的是随机的无关结果，比没有更糟 —— 所以不兜底，直接说清楚。
+   */
+  if (res.status === 202) {
+    throw new Error("DuckDuckGo 把这台机器的 IP 当成机器人拦了（人机验证页）。云端部署请在联网搜索那栏填 Tavily 或 Brave 的密钥");
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const html = await res.text();
 

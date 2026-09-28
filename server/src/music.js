@@ -16,7 +16,7 @@
  *
  * 两家**同时**查，谁给出的结果更像就用谁的：
  *
- *  - **网易云音乐**：`music.163.com/api/search/get/web` 是**非官方**接口
+ *  - **网易云音乐**：`music.163.com/api/search/get` 是**非官方**接口
  *    （网页版自己在用的那个），随时可能变或者被挡。华语曲库最全、简体直接
  *    能搜，歌曲页带正经的 og:title / og:image，iMessage 抓得到封面。出来的是
  *    普通链接卡片，不是网易云那种带 app 图标的品牌卡片 —— 那种要
@@ -270,9 +270,13 @@ async function searchApple(term) {
  * 网易云音乐：网页版自己在用的那个搜索接口。
  *
  * **非官方**，没有任何兼容性承诺。要带 Referer，不然直接被挡。
+ *
+ * 原来用的是 `/api/search/get/web`，2026 年 9 月起它的 result 变成了一串加密的
+ * 十六进制，扒不出 songs，每首歌都被当成「网易云那边没有」。去掉 `/web` 的这个
+ * 返回的还是明文、字段一样。
  */
 async function searchNetease(term) {
-  const res = await fetch("https://music.163.com/api/search/get/web", {
+  const res = await fetch("https://music.163.com/api/search/get", {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",

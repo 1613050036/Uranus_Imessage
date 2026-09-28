@@ -20,6 +20,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bell,
+  BookOpen,
   Brain,
   Check,
   CheckCircle2,
@@ -42,7 +43,7 @@ import {
   Wand2,
 } from "lucide-react";
 
-import { DEFAULT_QQ_GROUP, DOC_URL } from "../assistant-help.js";
+import { DEFAULT_QQ_GROUP, DOC_URL, TUTORIALS } from "../assistant-help.js";
 import { providerTypeOf, urlForType } from "../labels.js";
 import { useConfig } from "../store.jsx";
 import {
@@ -114,6 +115,71 @@ function Note({ children, icon: Icon = null }) {
       {Icon && <Icon size={15} className="mt-0.5 shrink-0 text-ink-faint" />}
       <span className="min-w-0">{children}</span>
     </p>
+  );
+}
+
+/**
+ * 快速配置弹窗左下角的「教程」小按钮：点开往上弹一张清单。
+ *
+ * 向导只带人走一遍基础配置，查岗、搬家、各平台部署这些细活都在群文件的文档里 ——
+ * 放在这儿，是因为新用户最常在配到一半卡住的时候想找它们。
+ */
+function TutorialMenu() {
+  const [open, setOpen] = useState(false);
+  const box = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => {
+      if (box.current && !box.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div ref={box} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className={`flex items-center gap-1.5 px-1 py-1 text-meta transition-colors duration-150 hover:text-ink ${
+          open ? "text-ink" : "text-ink-faint"
+        }`}
+      >
+        <BookOpen size={14} /> 教程
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 z-10 mb-2 max-h-[60vh] w-80 max-w-[calc(100vw-3rem)] overflow-y-auto border border-line bg-paper shadow-sm" data-scroll>
+          <p className="border-b border-line px-4 py-2.5 text-meta leading-relaxed text-ink-faint">
+            标着文件名的，也可以在 QQ 群 <span className="font-mono">{DEFAULT_QQ_GROUP}</span> 的群文件里找到。
+          </p>
+          <ul className="divide-y divide-line">
+            {TUTORIALS.map((t) => (
+              <li key={t.title} className="px-4 py-2.5">
+                {t.url ? (
+                  <a
+                    href={t.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between gap-2 text-body text-ink hover:underline"
+                  >
+                    {t.title}
+                    <ExternalLink size={13} className="shrink-0 text-ink-faint" />
+                  </a>
+                ) : (
+                  <span className="text-body text-ink">{t.title}</span>
+                )}
+                {t.file && (
+                  <p className="mt-0.5 text-meta text-ink-faint">群文件【{t.file}】{!t.url && "（只有群文件）"}</p>
+                )}
+                {t.note && <p className="mt-0.5 text-meta leading-relaxed text-ink-faint">{t.note}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1508,6 +1574,7 @@ export function SetupWizard({ open, onClose }) {
       footer={
         <div className="flex w-full items-center justify-between gap-3">
           <div className="flex items-center gap-2">
+            <TutorialMenu />
             {idx > 0 && (
               <Button variant="ghost" onClick={() => setStep((s) => Math.max(0, s - 1))}>
                 <ArrowLeft size={14} /> 上一步
