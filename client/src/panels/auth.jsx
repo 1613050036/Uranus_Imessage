@@ -71,20 +71,31 @@ export function AuthGate({ children }) {
   const [stage, setStage] = useState("probing"); // probing | login | change | ready
   const [username, setUsername] = useState("");
 
+  /*
+   * 小手机没有这一页：进门靠的是控制台登录 + 后端密钥（Uranus小手机/console），
+   * 这里的账号密码用户根本不知道。没认上就交回给外面那层，它去判断是登录掉了
+   * 还是后端连不上，退回对应的那一屏。
+   */
+  const lost = useCallback((error) => {
+    setStage("probing");
+    window.dispatchEvent(new CustomEvent("uranus:auth-lost", { detail: error ?? "" }));
+  }, []);
+
   const probe = useCallback(async () => {
     try {
       const res = await fetch("/api/auth/state");
       const data = await res.json();
       setUsername(data?.username ?? "");
       setServerZone(data?.timeZone);
-      if (!data?.loggedIn) return setStage("login");
+      if (!data?.loggedIn) return WORKER ? lost(data?.error) : setStage("login");
       setStage(data?.mustChange ? "change" : "ready");
     } catch {
       // 后端还没起来 / 拉不到。当没登录处理 —— 登录页上那句「后端没起来」
       // 比一个空白页有用
+      if (WORKER) return lost("连不上后端。");
       setStage("login");
     }
-  }, []);
+  }, [lost]);
 
   useEffect(() => {
     probe();
@@ -97,7 +108,10 @@ export function AuthGate({ children }) {
    * 改了密码，或者手动清了 auth.json。把界面切回门口比让各个面板各自报
    * 「请求失败 (401)」清楚得多。
    */
-  useEffect(() => watchSession((kind) => setStage(kind === "change" ? "change" : "login")), []);
+  useEffect(
+    () => watchSession((kind) => (WORKER ? lost() : setStage(kind === "change" ? "change" : "login"))),
+    [lost]
+  );
 
   if (stage === "probing") return null;
   if (stage === "ready") return children;

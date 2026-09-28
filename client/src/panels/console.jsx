@@ -579,7 +579,7 @@ function BackendLinkPanel() {
   return (
     <Card
       title="账号"
-      desc="这个控制台不用登录：连后端时填的后端密钥就是钥匙，这台浏览器记着它。"
+      desc="进控制台先登录 Uranus 小手机账号；连后端靠的是后端密钥，这台浏览器记着它。"
       actions={
         <Button variant="outline" onClick={() => window.dispatchEvent(new Event("uranus:disconnect"))}>
           <LogOut size={14} />
