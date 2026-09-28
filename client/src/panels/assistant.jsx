@@ -246,9 +246,13 @@ function AssistantPanel({ onClose }) {
           >
             Niki 写的那份
           </a>
-          <br />
-          答疑、反馈 BUG、许愿想要的功能：QQ 群{" "}
-          <span className="font-mono text-ink-faint">{qq}</span>
+          {qq && (
+            <>
+              <br />
+              答疑、反馈 BUG、许愿想要的功能：QQ 群{" "}
+              <span className="font-mono text-ink-faint">{qq}</span>
+            </>
+          )}
         </p>
       </div>
     </div>
@@ -265,7 +269,7 @@ function Opening({ hello, suggestions, blocked, qq, onPick }) {
         <p className="mt-3 border-l-2 border-warn pl-3 text-meta leading-relaxed text-warn">
           现在还没有能用的聊天模型，所以我答不了 T^T 去「连接」里加一个服务商源、填上地址和密钥，
           给一个模型勾上「聊天」分类，再到「角色 → 模型」里选上它。
-          卡住了就去 QQ 群 {qq} 问一声。
+          {qq && `卡住了就去 QQ 群 ${qq} 问一声。`}
         </p>
       )}
 

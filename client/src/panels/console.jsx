@@ -1416,7 +1416,9 @@ export function CloudBackupPanel() {
   const [pending, setPending] = useState(null); // { kind: "pull" | "delete", snap }
 
   const blank = (v) => !String(v ?? "").trim();
-  const nothingPicked = !CLOUD_SCOPES.some((s) => scopes[s.id]) && !includeSecrets;
+  // 小手机那边的包不带图（后端也会跳过），开关直接不给
+  const scopeList = WORKER ? CLOUD_SCOPES.filter((s) => s.id !== "images") : CLOUD_SCOPES;
+  const nothingPicked = !scopeList.some((s) => scopes[s.id]) && !includeSecrets;
 
   /*
    * 勾选变了就重估一次体积。防抖 300ms —— 连着拨三个开关不该打三次接口。
@@ -1509,7 +1511,11 @@ export function CloudBackupPanel() {
   return (
     <Card
       title="云备份"
-      desc="把选中的那几块打成一个压缩包传到云上，保留最近几份。硬盘挂了、文件误删了，从这儿拉回来"
+      desc={
+        WORKER
+          ? "把配置、聊天记录和记忆库打成一个压缩包传到云上，保留最近几份。表情包和参考图不在里面"
+          : "把选中的那几块打成一个压缩包传到云上，保留最近几份。硬盘挂了、文件误删了，从这儿拉回来"
+      }
     >
       <div className="grid grid-cols-1 gap-10">
         {/* ---- 传之前先把话说清楚 ---- */}
@@ -1644,7 +1650,7 @@ export function CloudBackupPanel() {
         <div className="grid grid-cols-1 gap-4 border-t border-line pt-8">
           <p className="text-eyebrow uppercase text-ink-faint">备份哪些</p>
 
-          {CLOUD_SCOPES.map((s) => (
+          {scopeList.map((s) => (
             <label key={s.id} className="flex items-start justify-between gap-4">
               <span className="min-w-0">
                 <span className="block text-ui text-ink">{s.name}</span>
@@ -1664,7 +1670,9 @@ export function CloudBackupPanel() {
             <span className="min-w-0">
               <span className="block text-ui text-ink">含 API 密钥和 Photon 凭据</span>
               <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-                不勾的话恢复时本地这些凭据保持不变，换机器恢复后自己补一遍就行
+                {WORKER
+                  ? "不勾的话包里没有这些，拿去恢复之后得自己补一遍"
+                  : "不勾的话恢复时本地这些凭据保持不变，换机器恢复后自己补一遍就行"}
               </span>
             </span>
             <Switch
@@ -1750,6 +1758,12 @@ export function CloudBackupPanel() {
         {/* ---- 云端已有的 ---- */}
         <div className="grid grid-cols-1 gap-4 border-t border-line pt-8">
           <p className="text-eyebrow uppercase text-ink-faint">云端快照</p>
+          {WORKER && (
+            <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
+              小手机这边只管传，不能直接从包恢复。包是标准的 .tar.gz，要回滚的话下载下来，
+              在桌面版「完整备份」那里导入；或者用上面「备份 / 恢复」导出的配置 JSON 和记忆库面板的导出。
+            </p>
+          )}
 
           {snapshots === null ? (
             <p className="text-meta leading-relaxed text-ink-faint">
@@ -1773,14 +1787,16 @@ export function CloudBackupPanel() {
                     </span>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={() => setPending({ kind: "pull", snap: s })}
-                      disabled={dirty || Boolean(busy)}
-                    >
-                      <RotateCcw size={14} />
-                      恢复
-                    </Button>
+                    {!WORKER && (
+                      <Button
+                        variant="outline"
+                        onClick={() => setPending({ kind: "pull", snap: s })}
+                        disabled={dirty || Boolean(busy)}
+                      >
+                        <RotateCcw size={14} />
+                        恢复
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       onClick={() => setPending({ kind: "delete", snap: s })}

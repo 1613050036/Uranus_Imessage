@@ -151,9 +151,11 @@ function TutorialMenu() {
       </button>
       {open && (
         <div className="absolute bottom-full left-0 z-10 mb-2 max-h-[60vh] w-80 max-w-[calc(100vw-3rem)] overflow-y-auto border border-line bg-paper shadow-sm" data-scroll>
-          <p className="border-b border-line px-4 py-2.5 text-meta leading-relaxed text-ink-faint">
-            标着文件名的，也可以在 QQ 群 <span className="font-mono">{DEFAULT_QQ_GROUP}</span> 的群文件里找到。
-          </p>
+          {DEFAULT_QQ_GROUP && (
+            <p className="border-b border-line px-4 py-2.5 text-meta leading-relaxed text-ink-faint">
+              标着文件名的，也可以在 QQ 群 <span className="font-mono">{DEFAULT_QQ_GROUP}</span> 的群文件里找到。
+            </p>
+          )}
           <ul className="divide-y divide-line">
             {TUTORIALS.map((t) => (
               <li key={t.title} className="px-4 py-2.5">
@@ -1309,12 +1311,16 @@ function StepDone({ role, project, saveState, saveError, onSave, onFinish }) {
             </p>
           </div>
           <Note icon={ExternalLink}>
-            卡住了有两个地方能找人：
+            {DEFAULT_QQ_GROUP ? "卡住了有两个地方能找人：" : "卡住了先看"}
             <a href={DOC_URL} target="_blank" rel="noreferrer" className="link-slide text-ink">
               Niki 写的图文教程
             </a>
-            ，或者 QQ 群 <span className="font-mono">{DEFAULT_QQ_GROUP}</span>{" "}
-            —— 答疑、反馈 BUG、许愿想要的功能都在那儿。
+            {DEFAULT_QQ_GROUP && (
+              <>
+                ，或者 QQ 群 <span className="font-mono">{DEFAULT_QQ_GROUP}</span>{" "}
+                —— 答疑、反馈 BUG、许愿想要的功能都在那儿。
+              </>
+            )}
           </Note>
         </>
       ) : (

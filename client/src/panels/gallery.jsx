@@ -21,6 +21,7 @@ import { SaveBar, useSection } from "../section.jsx";
 import { api, useConfig } from "../store.jsx";
 import { Button, Card, Field, inputCls } from "../ui.jsx";
 import { EMOJI_MAX_SIDE, REF_MAX_SIDE, compressImage } from "../imagefile.js";
+import { isZip, unzipImages } from "../unzip.js";
 import { Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
 
 /**
@@ -92,6 +93,7 @@ function useEmojiTags() {
 
 /**
  * 「上传图片…」按钮：选文件 → 在浏览器里压 → 一张张 POST 上去。
+ * 选的是 .zip 的话先在浏览器里拆开（unzip.js），里面的图照样一张张走这条路。
  *
  * 压缩的规矩全在 imagefile.js 里（为什么不放后端也写在那儿）。这个组件只管两件事：
  *
@@ -112,28 +114,49 @@ function UploadButton({ maxSide, upload, onDone, hint }) {
   const [errors, setErrors] = useState([]);
 
   async function pick(e) {
-    const files = [...(e.target.files ?? [])];
+    const picked = [...(e.target.files ?? [])];
     // 立刻清空：不清的话连传两次同一个文件不会触发 change，用户会以为按钮坏了
     e.target.value = "";
-    if (!files.length) return;
+    if (!picked.length) return;
 
     setBusy(true);
     setErrors([]);
     setDone(0);
-    setAt({ done: 0, total: files.length });
 
     const results = [];
     const bad = [];
-    for (const file of files) {
+
+    // 压缩包先摊平成一串「待打开的图」，和直接选的图排进同一个队列
+    const files = [];
+    for (const file of picked) {
+      if (!isZip(file)) {
+        files.push({ name: file.name, open: async () => file });
+        continue;
+      }
       try {
-        const img = await compressImage(file, { maxSide });
+        const { images, skipped } = await unzipImages(file);
+        files.push(...images);
+        if (!images.length) bad.push(`「${file.name}」里没有图片`);
+        if (skipped.length) {
+          const list = skipped.slice(0, 5).join("、") + (skipped.length > 5 ? ` 等 ${skipped.length} 个` : "");
+          bad.push(`「${file.name}」里这些不是能用的图片，跳过了：${list}`);
+        }
+      } catch (err) {
+        bad.push(err?.message || `「${file.name}」解不开`);
+      }
+    }
+    setAt({ done: 0, total: files.length });
+
+    for (const entry of files) {
+      try {
+        const img = await compressImage(await entry.open(), { maxSide });
         const r = await upload(img);
         // 上传那两条路由写盘失败时回的是 200 + {ok:false}（不是 4xx），
         // api() 不会 throw —— 不在这儿拦一下，一张根本没落盘的图会被算成「成功」
-        if (r?.ok === false) throw new Error(r.error || `「${file.name}」没能写进硬盘`);
+        if (r?.ok === false) throw new Error(r.error || `「${entry.name}」没能写进硬盘`);
         results.push(r);
       } catch (err) {
-        bad.push(err?.message || `「${file.name}」传不上去`);
+        bad.push(err?.message || `「${entry.name}」传不上去`);
       }
       setAt((s) => ({ ...s, done: s.done + 1 }));
     }
@@ -150,7 +173,7 @@ function UploadButton({ maxSide, upload, onDone, hint }) {
         <input
           ref={inputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,.zip,application/zip"
           multiple
           className="hidden"
           onChange={pick}
@@ -315,7 +338,7 @@ function HowTo({ dir, files, loading, onReload, onUploaded }) {
           await onReload();
           onUploaded?.(results.map((r) => r?.name).filter(Boolean));
         }}
-        hint="可以一次选多张"
+        hint="可以一次选多张，也可以直接选一个 .zip"
       />
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="ghost" onClick={onReload} disabled={loading}>
@@ -778,7 +801,7 @@ function EmojiDetail({ tag, dir, gone, onReloadTags, onBack, onGoto }) {
               // 侧栏和总览那个张数是另一份数据算的，传完得让它重数一遍
               onReloadTags?.();
             }}
-            hint={`可以一次选多张，会自动压到长边 ${EMOJI_MAX_SIDE}（GIF 原样传）`}
+            hint={`可以一次选多张或一个 .zip，会自动压到长边 ${EMOJI_MAX_SIDE}（GIF 原样传）`}
           />
           {loading && <p className="text-meta text-ink-faint">读取中…</p>}
           {!loading && files.length === 0 && (

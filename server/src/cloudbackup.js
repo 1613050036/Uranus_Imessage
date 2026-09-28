@@ -179,6 +179,16 @@ export function planPrune(names, keep) {
 
 /* ================= 选中的文件 ================= */
 
+/**
+ * 实际会打进包的那几块。小手机（Cloudflare Worker）不带图：整包要在 128MB
+ * 内存里打，图一多就撑爆。清单、日志、界面回执都按这份说，别勾了图却没传还报「含表情包」。
+ */
+function packable(scopes) {
+  const out = Object.fromEntries(Object.keys(SCOPES).map((k) => [k, Boolean(scopes?.[k])]));
+  if (process.env.URANUS_WORKER === "1") out.images = false;
+  return out;
+}
+
 /** 这几种一律不进包，理由见文件头。 */
 function skipped(name) {
   return (
@@ -201,8 +211,8 @@ function skipped(name) {
  */
 export function collectEntries(scopes, { includeSecrets = false } = {}) {
   const picked = [];
-  for (const [key, scope] of Object.entries(SCOPES)) {
-    if (scopes?.[key]) picked.push(...scope.paths);
+  for (const [key, scope] of Object.entries(packable(scopes))) {
+    if (scope) picked.push(...SCOPES[key].paths);
   }
   if (includeSecrets) picked.push(SECRET_REL);
 
@@ -283,6 +293,7 @@ async function dropTmp(dir) {
  */
 export async function packSnapshot(scopes, { includeSecrets = false } = {}) {
   ensureLayout();
+  scopes = packable(scopes);
   const { entries, bytes, missing } = collectEntries(scopes, { includeSecrets });
   if (!entries.length) {
     throw new Error("选中的范围里一个文件都没有，没什么可备份的");
@@ -320,9 +331,7 @@ export async function packSnapshot(scopes, { includeSecrets = false } = {}) {
       version: VERSION,
       exportedAt: new Date().toISOString(),
       includesSecrets: Boolean(includeSecrets),
-      scopes: Object.fromEntries(
-        Object.keys(SCOPES).map((k) => [k, Boolean(scopes?.[k])])
-      ),
+      scopes,
       files: fileCount,
       rawBytes: bytes,
     };
@@ -667,7 +676,7 @@ export function describeManifest(manifest) {
  */
 export async function runBackup(cloudBackup, why = "控制台") {
   const { label, driver, settings } = driverFor(cloudBackup);
-  const scopes = cloudBackup?.scopes ?? {};
+  const scopes = packable(cloudBackup?.scopes);
   const includeSecrets = Boolean(cloudBackup?.includeSecrets);
 
   /*

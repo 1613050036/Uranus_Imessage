@@ -12,7 +12,6 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from "react";
-import { WORKER } from "./edition.js";
 import { NAV, sectionById, sectionGroups } from "./nav.js";
 import { NewProviderModal, ProviderPanel } from "./panels/api.jsx";
 import { AssistantBubble } from "./panels/assistant.jsx";
@@ -695,8 +694,7 @@ export function AppShell() {
                       <AccountPanel />
                       <ServicePanel />
                       <BackupPanel />
-                      {/* 云备份也走 tar 打包，Worker 里没有 */}
-                      {!WORKER && <CloudBackupPanel />}
+                      <CloudBackupPanel />
                     </>
                   )}
                 </div>

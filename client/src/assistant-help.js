@@ -6,11 +6,15 @@
  * 前端一个字都不需要看见。抄一份到前端只会多一处会过期的副本。
  */
 
+import { WORKER } from "./edition.js";
+
 /**
  * 群号的兜底写法，只在 /api/assistant/hello 还没回来的那一瞬间派得上用场。
  * 正主是 server/src/assistant.js 的 QQ_GROUP，改那边记得改这边。
+ *
+ * 小手机不放群号（用户点名要的），是空串；界面上凡是提群的地方见空就不画。
  */
-export const DEFAULT_QQ_GROUP = "1125033956";
+export const DEFAULT_QQ_GROUP = WORKER ? "" : "1125033956";
 
 /**
  * Niki 写的图文教程。比内置世界书详细，而且有图。
@@ -30,8 +34,9 @@ export const MAX_TURNS = 12;
  *
  * 大多是 Niki 放在 QQ 群群文件里的文档，有链接版的给链接；
  * `file` 是群文件里的文件名，没有链接版的只能照这个名字去群里找。
+ * 小手机不提群，只留有链接的，也不报群文件名（见文件末尾）。
  */
-export const TUTORIALS = [
+const ALL_TUTORIALS = [
   {
     title: "常见问题与功能介绍",
     url: "https://ccnb9dqqjtkg.feishu.cn/docx/NaMmd5mhwoKQm4xGOiwcEpRdnmd",
@@ -75,3 +80,10 @@ export const TUTORIALS = [
   },
   { title: "备份", url: "https://docs.qq.com/doc/DVnBsb0FQamNqeU93" },
 ];
+
+export const TUTORIALS = WORKER
+  ? ALL_TUTORIALS.filter((t) => t.url).map(({ file, note, ...t }) => ({
+      ...t,
+      ...(note && !note.includes("群文件") && { note }),
+    }))
+  : ALL_TUTORIALS;
