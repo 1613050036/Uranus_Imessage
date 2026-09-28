@@ -28,7 +28,7 @@ import {
 import { EFFECT_KEYS } from "./media.js";
 // 能点歌的曲库只在 music.js 列一处，这里跟着它收口
 import { MUSIC_SOURCES } from "./music.js";
-// 手机上那十九件事的总表。查岗的「单项开关」按它的 key 存（见 normalizeSpyFeatures）
+// 手机上那二十件事的总表。查岗的「单项开关」按它的 key 存（见 normalizeSpyFeatures）
 import { FEATURES as SPY_FEATURES } from "./spyfeatures.js";
 import { normalizePresets, makeDefaultPreset, defaultEntries, defaultRegexRules } from "./preset.js";
 // 转账卡片缩略图的背景色和画布档位：合不合法只在 transferlogo.js 判一处
@@ -574,10 +574,10 @@ export const DEFAULT_CONFIG = {
       // 见 normalizeSpy）。电脑那头默认指向本地截图程序的 127.0.0.1:6878；
       // 手机那头没有地址 —— 走触发邮件，凭据在全局的 spyApi 里。
       // 两份文案留空 = 用 spy.js 里的默认
-      // phoneView / phoneControl / phoneMusic 管的是手机**里面**那十九件事
+      // phoneView / phoneControl / phoneMusic 管的是手机**里面**那二十件事
       // （spyfeatures.js），和「看一眼手机屏幕」是两码事，所以另有三个开关，
       // 也全默认关 —— 理由见 normalizeSpy
-      // features 是那十九件事各自的单项开关。三个组开关全关着，所以这十九个
+      // features 是那二十件事各自的单项开关。三个组开关全关着，所以这二十个
       // 默认开也注入不了任何东西（见 normalizeSpyFeatures）
       spy: {
         pcEnabled: false,
@@ -2045,13 +2045,13 @@ function normalizeWebSearch(input) {
  * （不然用户刚关掉的那条腿会被老字段又打开）。返回值里**不再带 `enabled`** ——
  * 留着会让「哪个才是真开关」有两个答案。
  *
- * ── 手机里那十八件事：另外三个开关 ──
+ * ── 手机里那二十件事：另外三个开关 ──
  *
- * `phoneEnabled` 管的是**看一眼手机屏幕**（`[查岗实时手机屏幕]`）。手机里那十八件
+ * `phoneEnabled` 管的是**看一眼手机屏幕**（`[查岗实时手机屏幕]`）。手机里那二十件
  * 事（spyfeatures.js）是另一码事，再拆三个开关：
  *
  *   phoneViewEnabled     查看类，`[查岗手机:支付宝账单]`。会打开用户的 App 截一张图
- *   phoneControlEnabled  操控类里的闹钟和锁屏，`[操控手机:锁屏]`
+ *   phoneControlEnabled  操控类里的闹钟、锁屏、把聊天界面叫回前台，`[操控手机:锁屏]`
  *   phoneMusicEnabled    网易云那六件事，`[操控手机:放歌 晴天]`
  *
  * 为什么不跟着 `phoneEnabled` 一起开：**看一眼和动手是两件事**。屏幕查岗只是
@@ -2065,7 +2065,7 @@ function normalizeWebSearch(input) {
  *
  * 三个全默认 false，和 pc/phone 那两个一个道理：这一整套的代价都是外溢的，
  * 必须是用户自己一个一个点开的。**不继承老的 `enabled`** —— 那个字段的年代
- * 压根没有这十八件事，拿它当「用户同意过」的证据是假的。
+ * 压根没有这二十件事，拿它当「用户同意过」的证据是假的。
  *
  * ── 再往下一层：每件事一个开关（`features`）──
  *
@@ -2083,7 +2083,7 @@ function normalizeSpy(input) {
   return {
     pcEnabled: input?.pcEnabled === undefined ? legacy : Boolean(input.pcEnabled),
     phoneEnabled: input?.phoneEnabled === undefined ? legacy : Boolean(input.phoneEnabled),
-    // 手机里那十九件事，三类各一个开关（见上面那段）。全默认关，不继承 legacy
+    // 手机里那二十件事，三类各一个开关（见上面那段）。全默认关，不继承 legacy
     phoneViewEnabled: Boolean(input?.phoneViewEnabled),
     phoneControlEnabled: Boolean(input?.phoneControlEnabled),
     phoneMusicEnabled: Boolean(input?.phoneMusicEnabled),
@@ -2107,7 +2107,7 @@ function normalizeSpy(input) {
 }
 
 /**
- * 十九件事的单项开关，全开。新角色和「没有这个字段的老配置」都用它。
+ * 二十件事的单项开关，全开。新角色和「没有这个字段的老配置」都用它。
  *
  * 全开而不是全关，是因为上面那三个**组**开关默认就是关的 —— 组关着的时候这
  * 十九个开成什么样都注入不了东西。让新角色一打开「查看手机里的东西」就立刻有

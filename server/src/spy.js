@@ -50,15 +50,19 @@
  * 回退**只走一次**，不来回弹：两头都不通时第二次注定也不通，多打一轮只是让
  * 用户在那头多等十几秒。
  *
- * ── 还有两个标签，管的是手机**里面** ──
+ * ── 还有几个标签，管的是手机**里面** ──
  *
- * 上面那两个只看一眼屏幕。手机上另有十八件事（spyfeatures.js 那张表），
+ * 上面那两个只看一眼屏幕。手机上另有二十件事（spyfeatures.js 那张表），
  * 各带一个参数，所以标签也是带参数的：
  *
  *   [查岗手机:支付宝账单]   查看类。和屏幕查岗同一个形态 —— 抓回来 → 识图/读
  *                           数据 → 接在回复后面再问一次模型（imessage.js:spyRound）
  *   [操控手机:锁屏]         操控类。干完了给模型一句「已经照做了」就收尾，
  *                           **不识图**（锁屏之后截图必然是锁屏画面，见 spyrun.js 头）
+ *   [回到当前聊天界面]      操控类里那件 openChat 的**裸写法**，没有冒号。和
+ *                           `[操控手机:回到当前聊天界面]` 完全等价，多认一个短的
+ *                           是因为这件事出现的时机（「你怎么不回我」）模型正在
+ *                           说人话，带冒号的格式那一刻最容易写坏
  *
  * 认标签、挑 pool、驱动那一趟、拼给模型的话都在这个文件（`phoneTargetIn` /
  * `phonePool` / `runPhone`）；真去发邮件等回传在 spyrun.js。两类各查一份自己的
@@ -75,7 +79,7 @@
  * `phonePool` 要按开关再滤一道：只开放歌的用户写 `[操控手机:锁屏]` 必须匹配
  * 不上，不然那部手机就真的被锁了，而用户从没同意过这件事。
  *
- * 第二层是那十九件事**各自一个开关**（`role.spy.features`，键名是
+ * 第二层是那二十件事**各自一个开关**（`role.spy.features`，键名是
  * spyfeatures.js 的 key）。同一组里各项的外溢程度也差得远：查看类里「电量」
  * 只回一个数，「微信」是把聊天列表整屏念出来；控制类里「设置闹钟」是帮忙，
  * 「关闭闹钟」能把用户定好的起床闹钟关掉。所以真正可用 = 组开着 **且** 这项
@@ -152,9 +156,22 @@ const PHONE_VIEW_TAG =
 const PHONE_CONTROL_TAG =
   /[[［]\s*(?:操控|控制|操作)手机\s*[:：]\s*([^\]］]{0,120}?)\s*[\]］]/g;
 
-/** 手机里那两个标签一起认。剥标签用，也用来判「这轮有没有要做手机上的事」。 */
+/**
+ * 「把聊天界面叫回前台」的**裸标签**：`[回到当前聊天界面]`，没有冒号也没有参数。
+ *
+ * 它和 `[操控手机:回到当前聊天界面]` 是同一件事（同一张表里的 openChat、同一封
+ * 触发邮件、同一道开关），多认这一个写法纯粹是因为它会被写得最多 —— 这件事在
+ * 对话里出现的时机就是「你怎么不回我」，那一刻模型正在说人话，让它拐去写
+ * `[操控手机:…]` 这种带冒号的格式反而容易写坏。人设里直接教它写这一个短的。
+ *
+ * 没有捕获组，所以 phoneTargetIn 那边的 keyword 是写死的功能名（见那里）。
+ */
+const PHONE_OPEN_CHAT_TAG =
+  /[[［]\s*回到(?:当前)?聊天界面\s*[\]］]/g;
+
+/** 手机里这几个标签一起认。剥标签用，也用来判「这轮有没有要做手机上的事」。 */
 const PHONE_ANY_TAG = new RegExp(
-  `${PHONE_VIEW_TAG.source}|${PHONE_CONTROL_TAG.source}`,
+  `${PHONE_VIEW_TAG.source}|${PHONE_CONTROL_TAG.source}|${PHONE_OPEN_CHAT_TAG.source}`,
   "g"
 );
 
@@ -165,10 +182,10 @@ export const DEVICE_NAMES = { pc: "电脑", phone: "手机" };
 const OTHER = { pc: "phone", phone: "pc" };
 
 /**
- * 这个角色的查岗开关都开成什么样：五个组 + 十九件事各自那一个。
+ * 这个角色的查岗开关都开成什么样：五个组 + 二十件事各自那一个。
  *
  * 前两个是屏幕（`spy.pcEnabled` / `spy.phoneEnabled`，老配置的单个 `enabled`
- * 由 config.js:normalizeSpy 迁过来），后三个管手机**里面**那十九件事，按
+ * 由 config.js:normalizeSpy 迁过来），后三个管手机**里面**那二十件事，按
  * spyfeatures.js 的 group 一一对应：
  *
  *   view     `[查岗手机:…]` 那九件（截图七件 + 电量位置两件）
@@ -213,7 +230,7 @@ export function spyLegs(role) {
   /*
    * 单项开关。**缺键当开** —— 和 config.js:normalizeSpyFeatures 同一条规矩，
    * 在这儿再写一遍是因为这个函数也吃没过归一化的对象（测试、老备份、
-   * 手改过的 data.config.json）。少了这一句，那些路径下十九件事会全变成关的。
+   * 手改过的 data.config.json）。少了这一句，那些路径下二十件事会全变成关的。
    */
   const picked = spy.features && typeof spy.features === "object" ? spy.features : {};
   const on = (key) => {
@@ -355,6 +372,17 @@ function deadExample(line, legs) {
       m = scan.exec(line);
     }
   }
+
+  /*
+   * 裸标签 `[回到当前聊天界面]` 没有捕获组，上面那套「拿标签体去查表」认不到它，
+   * 功能是写死的那一件。一行里写两个也只算一次 —— seen/dead 同进同退，
+   * 「全死才删」那条判断照样成立。
+   */
+  if (new RegExp(PHONE_OPEN_CHAT_TAG.source).test(line)) {
+    seen += 1;
+    if (!legs.on("openChat")) dead += 1;
+  }
+
   return seen > 0 && dead === seen;
 }
 
@@ -433,7 +461,7 @@ export function trimSpyPrompt(text, legs, { playlists = [], kind = "" } = {}) {
   const has = (leg) => mine.includes(leg);
   /*
    * 手机那三组这儿问的是「**还有活着的项吗**」，不是「组开关开没开」：一组开着
-   * 但里面十九件事被用户一个个关光了，和这组关着对提示词是同一件事。
+   * 但里面二十件事被用户一个个关光了，和这组关着对提示词是同一件事。
    */
   const on = {
     pc: has("pc") && Boolean(legs?.pc),
@@ -498,6 +526,13 @@ export function trimSpyPrompt(text, legs, { playlists = [], kind = "" } = {}) {
   if (on.phone) live.push("[查岗实时手机屏幕]");
   if (on.view) live.push("[查岗手机:…]");
   if (on.control || on.music) live.push("[操控手机:…]");
+  /*
+   * 裸标签是 openChat 独有的写法，**那一项自己开着才提**。组开着但它被单独关掉
+   * 的时候提了等于教模型去写一个一定被 phonePool 挡掉的标签。
+   */
+  if (on.control && liveInGroup(legs, "control").some((f) => f.key === "openChat")) {
+    live.push("[回到当前聊天界面]");
+  }
 
   const notes = [
     `你这一轮能用的标签只有这些：${live.join("、")}。别的写法一律不生效，写了也白写。`,
@@ -716,6 +751,10 @@ export function hasSpyTag(text) {
  * 查看和操控**都写了的时候按先出现的算** —— 这两类的下游形态不一样
  * （一个要识图往返、一个只回一句话），混着做没法收尾成一段话。
  *
+ * 裸标签 `[回到当前聊天界面]` 也在这儿认，算操控类、关键词写死成表里那件事的
+ * 名字（它没有捕获组，冒号后面本来就没东西）。往下的路和 `[操控手机:锁屏]`
+ * 一模一样：phonePool("control") → runByName → 发那封 ASTRBOT_OPEN_CHAT。
+ *
  * @returns {{kind:"view"|"control", keyword:string, at:number}|null}
  *          没写手机标签时返回 null。`keyword` 是冒号后面那串原文（含参数），
  *          拆成功能名 + 参数是 spyrun.js:splitArg 的事
@@ -727,13 +766,14 @@ export function phoneTargetIn(text) {
   const outside = (m) => !ranges.some(([a, b]) => m.index >= a && m.index < b);
 
   let best = null;
-  for (const [kind, re] of [
-    ["view", new RegExp(PHONE_VIEW_TAG.source, "g")],
-    ["control", new RegExp(PHONE_CONTROL_TAG.source, "g")],
+  for (const [kind, re, fixed] of [
+    ["view", new RegExp(PHONE_VIEW_TAG.source, "g"), ""],
+    ["control", new RegExp(PHONE_CONTROL_TAG.source, "g"), ""],
+    ["control", new RegExp(PHONE_OPEN_CHAT_TAG.source, "g"), "回到当前聊天界面"],
   ]) {
     for (const m of src.matchAll(re)) {
       if (!outside(m)) continue;
-      const keyword = String(m[1] ?? "").trim();
+      const keyword = fixed || String(m[1] ?? "").trim();
       // 体内是空的（`[查岗手机:]`）：当没写 —— 交给下游只会换回一句
       // 「没有「」这个功能」，那句话对模型毫无信息
       if (!keyword) continue;

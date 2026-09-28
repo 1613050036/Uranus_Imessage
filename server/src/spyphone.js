@@ -261,7 +261,7 @@ export function phoneConfigProblem(api) {
  * ── 主题和正文为什么能覆盖 ──
  *
  * 一开始只有「看一眼当前屏幕」这一件事，主题是配置里那个固定的
- * `PHONESPY_TRIGGER`。现在手机上有十八件事（见 spyfeatures.js），每件事在
+ * `PHONESPY_TRIGGER`。现在手机上有二十件事（见 spyfeatures.js），每件事在
  * iPhone 上是**各自一条**邮件自动化，靠主题词区分（iOS 的邮件自动化只能按
  * 「发件人 + 主题包含」触发）。所以主题得能按功能给。
  *

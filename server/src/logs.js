@@ -10,6 +10,10 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// net.js 自己一个 import 都没有，所以这条不会成环（datadir.js 那种反向依赖
+// 的坑见下面 ROOT_SLASH 那段注释）
+import { netCodes, whyNetwork } from "./net.js";
+
 /**
  * 内存里留多少条。
  *
@@ -130,6 +134,32 @@ function tidyStack(text) {
   return out.join("\n");
 }
 
+/**
+ * detail 是个网络异常时，在栈前面补一句人话。
+ *
+ * 为什么必须在这儿补：全仓几十处 `logWarn(scope, "中文说明", e)` 把原始 Error
+ * 直接丢进 detail，栈的第一行是 undici 那句光秃秃的 `TypeError: fetch failed`
+ * —— 用户在控制台展开明细看到的就是它，而那句话**什么都没说**（云备份、IG、
+ * 卡片抓取、更新检查全都是这一句）。挨个调用点去套 whyNetwork 要改几十处、
+ * 还会漏；在这一个出口补，所有调用点一次都有了，小手机那版（同一份服务端
+ * 源码打包）也跟着有。
+ *
+ * 只在真是网络错时补：挖到了网络码，或者消息就是 `fetch failed`。
+ * 判「挖到了网络码」而不是「有 code」，是因为业务错误也常带 code
+ * （比如 GitHub 的 `HTTP 404`），那种补一句「先看能不能出网」是误导。
+ *
+ * 栈照旧留在后面 —— 那句话是给人看的，栈是给「到底哪一行发的请求」看的，
+ * 两个都要。
+ */
+const NET_CODE = /^(?:UND_ERR_|ECONN|ENOTFOUND$|EAI_AGAIN$|ENET|EHOSTUNREACH$|EPIPE$|ETIMEDOUT$|CERT_|ERR_TLS)/;
+
+function netHint(e) {
+  const msg = String(e?.message ?? "");
+  const hit =
+    netCodes(e).some((c) => NET_CODE.test(c)) || /^fetch failed$/i.test(msg.trim());
+  return hit ? whyNetwork(e) : "";
+}
+
 /** detail 可能是 Error / 对象 / 长字符串，统一压成可读的短文本。 */
 function stringifyDetail(detail) {
   if (detail == null) return undefined;
@@ -137,7 +167,9 @@ function stringifyDetail(detail) {
   if (typeof detail === "string") {
     text = detail;
   } else if (detail instanceof Error) {
-    text = detail.stack ?? `${detail.name}: ${detail.message}`;
+    const hint = netHint(detail);
+    const stack = detail.stack ?? `${detail.name}: ${detail.message}`;
+    text = hint ? `${hint}\n${stack}` : stack;
   } else {
     try {
       text = JSON.stringify(detail, null, 2);

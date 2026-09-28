@@ -26,6 +26,7 @@ const C = await import("../server/src/config.js");
 const S = await import("../server/src/spy.js");
 const P = await import("../server/src/preset.js");
 const PR = await import("../server/src/prompt.js");
+const F = await import("../server/src/spyfeatures.js");
 
 let passed = 0;
 function ok(name) {
@@ -242,16 +243,17 @@ console.log("\n[pool：按开关滤，不许越权]");
   ok("只开放歌：pool 里只有网易云那六件，锁屏进不来");
 
   const ctrlOnly = S.phonePool("control", legs({ phoneControlEnabled: true }));
-  assert.equal(ctrlOnly.length, 4);
+  assert.equal(ctrlOnly.length, 5);
   assert.ok(!ctrlOnly.some((f) => f.group === "music"), "只开操控时网易云不许在 pool 里");
-  ok("只开操控：pool 里只有闹钟锁屏那四件，网易云进不来");
+  assert.ok(ctrlOnly.some((f) => f.key === "openChat"), "回到聊天界面归操控组");
+  ok("只开操控：pool 里只有闹钟锁屏回聊天那五件，网易云进不来");
 
   assert.equal(
     S.phonePool("control", legs({ phoneControlEnabled: true, phoneMusicEnabled: true })).length,
-    10
+    11
   );
   assert.equal(S.phonePool("control", legs({})).length, 0);
-  ok("两个都开给十条，都关给空");
+  ok("两个都开给十一条，都关给空");
 }
 
 console.log("\n[标签：手机那两个]");
@@ -291,6 +293,48 @@ console.log("\n[标签：手机那两个]");
   const messy = "在的[查岗实时电脑屏幕][查岗手机:微信][操控手机:锁屏]好";
   assert.equal(S.stripSpyTags(messy), "在的好");
   ok("stripSpyTags 四个标签一起剥");
+}
+
+console.log("\n[裸标签：回到当前聊天界面]");
+{
+  /*
+   * `[回到当前聊天界面]` 没有冒号。它要被认成操控类、关键词写死成表里那件事的
+   * 名字 —— 这样往下就和 `[操控手机:回到当前聊天界面]` 走同一条路。
+   */
+  assert.deepEqual(S.phoneTargetIn("[回到当前聊天界面]"), {
+    kind: "control",
+    keyword: "回到当前聊天界面",
+    at: 0,
+  });
+  assert.equal(S.phoneTargetIn("［回到聊天界面］")?.keyword, "回到当前聊天界面");
+  ok("裸标签认成操控类，「当前」两个字可省，全角也认");
+
+  // 带前缀的写法必须等价：同一个 key，走同一个 pool
+  const legs = S.spyLegs({ spy: { phoneControlEnabled: true } });
+  const pool = S.phonePool("control", legs);
+  for (const text of ["[回到当前聊天界面]", "[操控手机:回到当前聊天界面]"]) {
+    const want = S.phoneTargetIn(text);
+    assert.equal(want.kind, "control", text);
+    assert.equal(F.matchFeature(want.keyword, pool)?.key, "openChat", text);
+  }
+  ok("两种写法落到同一件事（openChat）");
+
+  // 剥干净：认不出来就会原样发到对方手机上
+  assert.equal(S.stripSpyTags("在呢[回到当前聊天界面]怎么了"), "在呢怎么了");
+  ok("裸标签照样剥得掉");
+
+  // 它自己那个开关关掉：pool 里没有它，模型硬写也不生效
+  const off = S.spyLegs({
+    spy: { phoneControlEnabled: true, features: { openChat: false } },
+  });
+  assert.ok(!S.phonePool("control", off).some((f) => f.key === "openChat"));
+  assert.ok(S.phonePool("control", off).some((f) => f.key === "lock"), "别的项不受影响");
+  ok("单项关掉：裸标签被 phonePool 挡住");
+
+  // 操控类总闸关着更是一样（它归 control 组，不跟着网易云那个开关走）
+  const musicOnly = S.spyLegs({ spy: { phoneMusicEnabled: true } });
+  assert.ok(!S.phonePool("control", musicOnly).some((f) => f.key === "openChat"));
+  ok("只开网易云：回到聊天界面进不来");
 }
 
 console.log("\n[提示词：五个开关各自决定注入什么]");
@@ -388,7 +432,26 @@ console.log("\n[提示词：五个开关各自决定注入什么]");
   assert.ok(s6.includes("锁屏"), "操控那条必须注入：\n" + s6);
   assert.ok(!s6.includes(MUSIC), "网易云那条必须整条跳过：\n" + s6);
   assert.ok(!s6.includes("每日推荐"), "网易云那条一个字都不该剩：\n" + s6);
+  assert.ok(s6.includes("[回到当前聊天界面]"), "裸写法要教给模型：\n" + s6);
   ok("只开操控：网易云那条整条跳过、操控那条留着");
+
+  /*
+   * 单独关掉「回到当前聊天界面」：**裸标签的写法一个字都不许留**。
+   * 留着就是教模型去写一个一定被 phonePool 挡掉的标签，白烧一轮生成 ——
+   * 它和别的项不一样的地方在于那行写法说明里就嵌着标签本身（preset.js）。
+   */
+  const noOpen = setup({
+    spy: { phoneControlEnabled: true, features: { openChat: false } },
+  });
+  const sOpenOff = await formatSection(noOpen.config, noOpen.role);
+  assert.ok(sOpenOff.includes(CONTROL), "操控那条还该在（别的项还开着）：\n" + sOpenOff);
+  assert.ok(sOpenOff.includes("锁屏"), sOpenOff);
+  assert.ok(
+    !sOpenOff.includes("回到当前聊天界面"),
+    "关掉之后这几个字都不许出现：\n" + sOpenOff
+  );
+  assert.ok(!sOpenOff.includes("回到聊天界面"), sOpenOff);
+  ok("单独关掉「回到当前聊天界面」：清单、写法说明和示例一起删干净");
 
   /*
    * 预设里的子条目开关是**第二道闸**，四条各管自己那一摊：关掉「放歌」那条，
@@ -446,7 +509,7 @@ console.log("\n[提示词：五个开关各自决定注入什么]");
 
   /*
    * legs 要用 spyLegs 现造，别手搓一个 `{pc:true,…}` —— 它还带着 `features`
-   * （十九件事里活着的那些）和 `on()`，手搓的对象里那两样是空的，
+   * （二十件事里活着的那些）和 `on()`，手搓的对象里那两样是空的，
    * trimSpyPrompt 会以为用户把所有单项都关了。
    */
   const allLegs = S.spyLegs({
@@ -958,6 +1021,43 @@ console.log("\n[迁移：老配置里合在一起的那条 spy → 四条]");
   assert.equal(music2.content, "我改的放歌", "新结构里的正文不许被老的 spy 冲掉");
   assert.equal(music2.enabled, false, "新结构里的开关也不许被冲掉");
   ok("已经是新结构的配置：手改出来的老 spy 冲不掉它");
+
+  /*
+   * 「动他的手机」那条：存着加「回到当前聊天界面」之前那一版正文 = 没改过，
+   * 要换成新的。裸写法是写死在规则和示例里的（`{{操控项}}` 那行只管清单），
+   * 不换正文的话老用户永远学不到 `[回到当前聊天界面]` 这个写法。
+   */
+  const oldControl = C.normalizeConfig({
+    presets: [
+      {
+        id: "p-1",
+        name: "老一版的操控正文",
+        entries: [
+          {
+            id: "e-1",
+            kind: "format",
+            enabled: true,
+            children: [
+              { kind: "spyControl", enabled: true, content: P.LEGACY_SPY_CONTROL_CHILD },
+              { kind: "spyView", enabled: true, content: "我改过的查看正文" },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const kids3 = oldControl.presets[0].entries.find((e) => e.kind === "format").children;
+  const ctrl3 = kids3.find((c) => c.kind === "spyControl");
+  assert.equal(ctrl3.content, P.DEFAULT_FORMAT_CHILDREN.spyControl, "老默认正文该换成新的");
+  assert.ok(ctrl3.content.includes("[回到当前聊天界面]"), "换过之后要教裸写法");
+  assert.equal(ctrl3.enabled, true, "换正文不许把开关也改掉");
+  // 改过的那条照旧不动
+  assert.equal(
+    kids3.find((c) => c.kind === "spyView").content,
+    "我改过的查看正文",
+    "用户改过的正文一律不动"
+  );
+  ok("老一版的「动他的手机」正文：认成没改过、换成教裸写法的新默认");
 }
 
 console.log("\n[单项开关：组开着但某几项被关掉]");
@@ -971,16 +1071,22 @@ console.log("\n[单项开关：组开着但某几项被关掉]");
   assert.ok(pool.some((f) => f.key === "lock"), "没关的项该留着");
   ok("单项关掉：phonePool 挡住它（模型硬写也不生效）");
 
-  // 缺 features 字段的老配置：十九件事全当开着
+  // 缺 features 字段的老配置：二十件事全当开着
   const legacy = S.spyLegs({ spy: { phoneControlEnabled: true } });
-  assert.equal(S.phonePool("control", legacy).length, 4, "缺键当开，控制类四项都在");
-  ok("老配置没有 features 字段：十九件事全当开着（缺键当开）");
+  assert.equal(S.phonePool("control", legacy).length, 5, "缺键当开，控制类五项都在");
+  ok("老配置没有 features 字段：二十件事全当开着（缺键当开）");
 
   // 一组里全关光：那一条整条不注入
   const allOff = S.spyLegs({
     spy: {
       phoneControlEnabled: true,
-      features: { alarmSet: false, alarmOn: false, alarmOff: false, lock: false },
+      features: {
+        alarmSet: false,
+        alarmOn: false,
+        alarmOff: false,
+        lock: false,
+        openChat: false,
+      },
     },
   });
   assert.equal(S.phonePool("control", allOff).length, 0);

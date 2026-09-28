@@ -78,6 +78,14 @@ export function whyNetwork(e, timeoutMs) {
   if (code === "ECONNRESET") {
     return `连接被重置${tag} —— 对方中途断了连接（也可能是被墙了）`;
   }
+  /*
+   * 这三个是**本机这一层就没通**：没有默认路由、网卡没起来、VPN 刚断。
+   * 和 ECONNREFUSED 那种「通到了但对方不收」是两回事，说法必须分开 ——
+   * 不然用户会去改接口地址，而那个地址本来是对的。
+   */
+  if (code === "ENETUNREACH" || code === "EHOSTUNREACH" || code === "ENETDOWN") {
+    return `这台机器出不了网${tag} —— 网卡 / WiFi / 路由这一层就没通，先试试能不能打开网页`;
+  }
   if (code === "CERT_HAS_EXPIRED" || code.startsWith("ERR_TLS") || /certificate/i.test(msg)) {
     return `证书校验失败${tag} —— 中间有东西在拦（企业网关、杀毒软件的 HTTPS 扫描）`;
   }
@@ -85,6 +93,20 @@ export function whyNetwork(e, timeoutMs) {
     return `连不上目标${tag} —— 先看这台机器能不能出网、地址填对没有`;
   }
   if (/fetch failed|socket|other side closed/i.test(msg)) {
+    /*
+     * 一个码都没挖到的 `fetch failed` —— 就是用户看见的那句光秃秃的
+     * `TypeError: fetch failed`。undici 在「压根没连上、连不上的原因也没往外
+     * 传」时抛的就是它，什么都不说。这一支要给最长的那句话，因为它是**唯一
+     * 一句用户拿不到任何线索的**，只好把最常见的两个原因直接写出来。
+     */
+    if (!code) {
+      return (
+        "连接失败（fetch failed，没带错误码）—— 这台机器没能连上对方。" +
+        "要翻墙的接口：Clash 这类客户端得开 TUN / 全局模式，" +
+        "只开「系统代理」那个开关不算 —— 这个程序不认它。" +
+        "不用翻墙的接口：去看地址和端口填对没有"
+      );
+    }
     return `连接失败${tag} —— 先看这台机器能不能出网、地址填对没有`;
   }
   return codes.length ? `${msg}（${codes.join("、")}）` : msg;

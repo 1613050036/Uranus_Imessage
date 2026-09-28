@@ -491,7 +491,7 @@ export const FORMAT_CHILD_UNWIRED = [];
  *
  * **查岗那四条在这里、但服务端那张表里没有**：查岗在角色上是五个组开关
  * （`spy.pcEnabled` / `spy.phoneEnabled` 看屏幕，另外三个管手机里那些事，
- * 见 SPY_SWITCHES）外加十九件事各自一个（SPY_FEATURE_SWITCHES），没有单个
+ * 见 SPY_SWITCHES）外加二十件事各自一个（SPY_FEATURE_SWITCHES），没有单个
  * `.enabled` 可查，所以服务端由 prompt.js 走 trimSpyPrompt 单独判。前端这张表
  * 只用来判「这一条要不要显示『还得去角色那儿开』的提示」（preset.jsx），
  * 查岗当然要显示，所以留着。
@@ -588,7 +588,7 @@ export const SPY_SWITCHES = [
     field: "phoneControlEnabled",
     label: "操控手机",
     tag: "[操控手机:锁屏]",
-    hint: "让角色真的动你的手机：设闹钟、开关已有的闹钟、锁屏。做完只回一句「已经照做了」，不截图。",
+    hint: "让角色真的动你的手机：设闹钟、开关已有的闹钟、锁屏，还能把和它的聊天界面从后台叫回你眼前。做完只回一句「已经照做了」，不截图。",
   },
   {
     field: "phoneMusicEnabled",
@@ -599,7 +599,7 @@ export const SPY_SWITCHES = [
 ];
 
 /**
- * 手机里那十九件事，**一件一个开关**：`server/src/spyfeatures.js:FEATURES` 的镜像。
+ * 手机里那二十件事，**一件一个开关**：`server/src/spyfeatures.js:FEATURES` 的镜像。
  *
  * 上面那三个手机开关（查看 / 操控 / 网易云）是**组**开关，这张表是组里每一件事
  * 自己那一个。真正可用 = 组开着 **且** 这一项开着（服务端 spy.js:spyLegs）。
@@ -609,7 +609,7 @@ export const SPY_SWITCHES = [
  * 「关闭闹钟」能把用户定好的起床闹钟关掉。一个组开关说不清用户同意了哪几件。
  *
  * 为什么在前端再写一份：这是个纯前端的开关清单，服务端没有「列一下有哪些功能」
- * 的接口，为一张十九行的常量表加一条路由不值得。存的是 **key**，和服务端那张表
+ * 的接口，为一张二十行的常量表加一条路由不值得。存的是 **key**，和服务端那张表
  * 对齐 —— 显示名以后改了字，存名字的配置就全对不上了。
  *
  * **服务端那张表加/删/改一项时，这儿要一起改。** 少列一项的后果是用户在界面上
@@ -652,6 +652,12 @@ export const SPY_FEATURE_SWITCHES = [
     hint: "能把你已经定好的闹钟关掉 —— 这一项关着比较稳。",
   },
   { key: "lock", name: "锁屏", group: "control", hint: "直接把你手机屏幕锁掉。" },
+  {
+    key: "openChat",
+    name: "回到当前聊天界面",
+    group: "control",
+    hint: "把退到后台的 iMessage 拉回前台，停在和它的那个对话上 —— 你半天不回，它能把窗口叫到你眼前。对应快捷指令里的「打开与 xxx 的对话」，邮件主题是 ASTRBOT_OPEN_CHAT，那条快捷指令没配好这一项就不会有反应。",
+  },
   { key: "musicDaily", name: "每日推荐", group: "music" },
   { key: "musicFm", name: "私人漫游", group: "music" },
   { key: "musicFavorite", name: "红心歌单", group: "music" },
