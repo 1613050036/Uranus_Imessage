@@ -139,7 +139,7 @@ const DOCS = [
     name: "Photon 项目（iMessage 号码）",
     where: "iMessage → 某个项目",
     what: "一个项目 = 一条 iMessage 号码。云端模式要填 Photon 的 projectId 和 projectSecret，再登记你自己的手机号，拿到一条共享线路号码。",
-    note: "凭据只写在数据目录的 data.config.json 里，不进普通配置、也不进可分享的备份。填齐凭据但没绑角色的项目不会上线。",
+    note: "凭据只写在数据目录的 data.config.json 里，不进普通配置、也不进可分享的备份。填齐凭据但没绑角色的项目不会上线。projectId 和 projectSecret 在 app.photon.codes 项目页的 Configure 一栏；建完项目找不到侧边栏或 Configure（手机上常见）的，看这篇：https://ccnb9dqqjtkg.feishu.cn/wiki/PSOvwac77iExhtkR9iqcuWgLnYe",
   },
   {
     name: "发送节奏",

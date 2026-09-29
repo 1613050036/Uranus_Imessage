@@ -36,7 +36,9 @@ export const GUIDE_STEPS = [
   },
   {
     title: "拿 Project ID 和 Project Secret",
-    body: "进项目页面的 Configure 一栏，把这两个值复制到下面的输入框里。Secret 只会完整显示一次，记得当场存好。",
+    body: "进项目页面的 Configure 一栏，把这两个值复制到下面的输入框里。Secret 只会完整显示一次，记得当场存好。建完项目找不到侧边栏或 Configure（手机上常见）的，看下面这篇。",
+    link: "https://ccnb9dqqjtkg.feishu.cn/wiki/PSOvwac77iExhtkR9iqcuWgLnYe",
+    linkLabel: "找不到侧边栏怎么办",
   },
   {
     title: "开通 iMessage",

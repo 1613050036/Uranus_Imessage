@@ -78,6 +78,11 @@ const ALL_TUTORIALS = [
     title: "连 Photon",
     url: "https://docs.qq.com/doc/p/2b72d49de9b6406f36357c0ced64d034024a0df7",
   },
+  {
+    title: "Photon 建完项目找不到侧边栏",
+    url: "https://ccnb9dqqjtkg.feishu.cn/wiki/PSOvwac77iExhtkR9iqcuWgLnYe",
+    note: "手机上看不到 Configure、拿不到 Project ID 和 Secret",
+  },
   { title: "备份", url: "https://docs.qq.com/doc/DVnBsb0FQamNqeU93" },
 ];
 
