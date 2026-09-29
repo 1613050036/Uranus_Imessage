@@ -1193,6 +1193,9 @@ function normalizeRole(input, id, legacy) {
     // 投票：认出对方发起的投票、能投票、能自己发起、能加选项。一个开关管这四件事，
     // 见下面那个函数（也见 poll.js）
     poll: normalizePoll(input?.poll),
+    // 位置推送：对方在「查找」里给线路共享了位置，每隔 N 秒把位置报给模型一次。
+    // 默认关，见下面那个函数（也见 friendloc.js）
+    locationPush: normalizeLocationPush(input?.locationPush),
     // 手写消息 / Digital Touch 看内容：取那条气泡的字节送去识图，见下面那个函数
     handwriting: normalizeHandwriting(input?.handwriting),
     // 记忆库：三个开关 + 日记注入几天。设置全在全局的 config.memories
@@ -1755,6 +1758,29 @@ function normalizeTransfer(input) {
 function normalizeChatBackground(input) {
   return {
     enabled: Boolean(input?.enabled),
+  };
+}
+
+/**
+ * 位置推送：对方在「查找」里把位置共享给了线路那个号，就每隔 intervalSec 秒
+ * 去问一次对方在哪，把位置当成一句系统提示送给模型、叫醒它回一轮。
+ *
+ * **默认关**：每推一次就是一整轮模型调用，而且角色会就着位置主动说话 ——
+ * 有人就是不想被这么盯着（用户原话「有些人不想被烦」）。
+ *
+ * - intervalSec：60 秒到一天。下限一分钟：再密 token 烧不起，「查找」那边的
+ *   定位本来也不是秒级刷新的。默认十分钟。
+ * - onlyWhenMoved：默认开 —— 到点了但位置没变（挪了不到 LOCATION_MOVE_M 米、
+ *   也没换地址）就不叫醒模型，人在家躺着不该每十分钟被问一句「还在家？」。
+ *   关掉就是严格的「每隔 N 秒推一次」。
+ *
+ * 只有云端模式能用：本地 Mac 模式没有 Photon 的位置接口。
+ */
+function normalizeLocationPush(input) {
+  return {
+    enabled: Boolean(input?.enabled),
+    intervalSec: clampInt(input?.intervalSec, 600, 60, 86400),
+    onlyWhenMoved: input?.onlyWhenMoved === undefined ? true : Boolean(input.onlyWhenMoved),
   };
 }
 

@@ -108,7 +108,8 @@ import {
 } from "./promptmode.js";
 import { applyAndLog } from "./regex.js";
 import { requestRestart } from "./restart.js";
-import { appendTurn, recentMessages, sessionIdFor } from "./sessions.js";
+import { appendTurn, readSession, recentMessages, sessionIdFor } from "./sessions.js";
+import { hasFix, hasMoved, locationHint, watchFriendLocations } from "./friendloc.js";
 import {
   DEVICE_NAMES,
   phonePool,
@@ -376,6 +377,12 @@ function createRunner(projectRefId) {
     // poll.enabled 且是云端模式才起（见 startPollWatcher）
     pollWatcher: null, // { stop() } | null
     pollWatcherStarting: false,
+    // 位置推送：friendloc.js 的定时器。角色开了 locationPush 且是云端模式才起
+    // （见 syncLocWatcher）
+    locWatcher: null, // { stop(), intervalMs } | null
+    // peerKey -> 上一次推给模型的那份位置，onlyWhenMoved 拿它比。只在内存里，
+    // 重启后第一次到点会再报一次
+    locLast: new Map(),
     // spaceId -> { title, at }。发起投票时那行标题会作为一条**独立的普通文本
     // 消息**再进来一次，靠这张表把它压掉，免得模型看两遍。见 notePollTitle
     pollTitles: new Map(),
@@ -6280,6 +6287,152 @@ function syncWatchers(getConfig, runner) {
 
   if (rolePollEnabled(getConfig, runner)) startPollWatcher(getConfig, runner, project);
   else stopPollWatcher(runner);
+
+  syncLocWatcher(getConfig, runner, project);
+}
+
+/* ================= 位置推送 ================= */
+
+/**
+ * 让位置推送的定时器对齐当前配置：开了没起就起，关了就停，
+ * **间隔改了就重起**（定时器是按起的那一刻的间隔排的）。
+ *
+ * 不用 *Starting 牌子：watchFriendLocations 是同步返回的，没有「起到一半」。
+ */
+function syncLocWatcher(getConfig, runner, project) {
+  const lp = currentRole(getConfig(), runner)?.locationPush;
+  if (!lp?.enabled) {
+    stopLocWatcher(runner);
+    return;
+  }
+  if (runner.mode !== "cloud") {
+    if (!runner.locLocalWarned) {
+      runner.locLocalWarned = true;
+      logWarn(scopeOf(runner, "位置推送"), "本地 Mac 模式拿不到「查找」里的位置，这个开关先不起作用");
+    }
+    return;
+  }
+  const intervalMs = lp.intervalSec * 1000;
+  if (runner.locWatcher?.intervalMs === intervalMs) return;
+  stopLocWatcher(runner);
+  runner.locWatcher = watchFriendLocations({
+    projectId: project.projectId,
+    projectSecret: project.projectSecret,
+    label: runner.label ?? "",
+    intervalMs,
+    onLocations: (list) => handleFriendLocations(getConfig, runner, list),
+  });
+}
+
+function stopLocWatcher(runner) {
+  if (runner.locWatcher) {
+    try {
+      runner.locWatcher.stop();
+    } catch {
+      /* ignore */
+    }
+    runner.locWatcher = null;
+  }
+  // 关了再开是想马上看到效果：留着上一份的话人没动就永远等不来第一条
+  runner.locLast?.clear();
+}
+
+/**
+ * 这个角色在跟谁聊 —— 位置只推给这些人，归一成 peerKey。
+ *
+ * **必须过滤**：「查找」列出来的是所有给线路那个 Apple ID 共享位置的人，
+ * 共享线路上那不一定只有这个角色的用户。把别人的位置念给这个角色听，
+ * 是实打实的泄露。认的是两处：这次连接里最近说过话的那个人、会话存档里
+ * 记着的对方地址（进程重启后还没人说过话时靠它）。
+ */
+function locPeersOf(runner, role) {
+  const keys = new Set();
+  const last = peerKeyOf(runner.lastSpace?.peer);
+  if (last) keys.add(last);
+  const stored = peerKeyOf(readSession(sessionIdOf(runner, role, "")).peer);
+  if (stored) keys.add(stored);
+  return keys;
+}
+
+/**
+ * 问到了一批位置：挑出这个角色的聊天对象，动了（或者用户选了不管动没动）就
+ * 送一句系统提示进会话、叫醒模型回一轮。
+ */
+async function handleFriendLocations(getConfig, runner, list) {
+  if (runner.stopped) return;
+  const scope = scopeOf(runner, "位置推送");
+  const role = currentRole(getConfig(), runner);
+  const lp = role?.locationPush;
+  if (!lp?.enabled) return;
+
+  const peers = locPeersOf(runner, role);
+  const mine = list.filter((loc) => peers.has(peerKeyOf(loc?.address)));
+  if (!mine.length) {
+    logDebug(
+      scope,
+      list.length
+        ? `「查找」里有 ${list.length} 个人在共享位置，但都不是这个角色的聊天对象`
+        : "「查找」里没人给这条线路共享位置"
+    );
+    return;
+  }
+
+  for (const loc of mine) {
+    const key = peerKeyOf(loc.address);
+    const expires = loc.expiresAt instanceof Date ? loc.expiresAt.getTime() : NaN;
+    if (Number.isFinite(expires) && expires < Date.now()) {
+      logDebug(scope, "对方的位置共享已经过期了，跳过");
+      continue;
+    }
+    if (!hasFix(loc)) {
+      logDebug(scope, loc.isLocatingInProgress ? "还在定位，这次先跳过" : "这次没拿到坐标，跳过");
+      continue;
+    }
+    const prev = runner.locLast.get(key);
+    if (lp.onlyWhenMoved && !hasMoved(prev, loc)) {
+      logDebug(scope, "位置没怎么变，这次不叫醒模型");
+      continue;
+    }
+
+    // 找会话：最近说过话的那条最准；没有就按地址现拼一个单聊 GUID。
+    // 最近那条要是**群聊**（`;+;`，同 SDK 的 chatTypeFromGuid）不能用 —— 模型会在
+    // 群里接一句「你到某某路了啊」，等于把对方的位置念给全群听
+    const last = runner.lastSpace;
+    const same =
+      Boolean(last?.space) && !String(last.spaceId ?? "").includes(";+;") && peerKeyOf(last.peer) === key;
+    const spaceId = same ? last.spaceId : `any;-;${loc.address}`;
+    const peer = same ? last.peer : loc.address;
+
+    // 协助模式 / 线下模式：角色这会儿不该冒出来。不记 locLast，下次到点再看
+    if (isAssistOn(runner.projectRefId, spaceId)) {
+      logDebug(scope, "协助模式开着，这次位置不推");
+      continue;
+    }
+    if (isOfflineOn(memoryKeyFor(role))) {
+      logDebug(scope, "线下模式开着，这次位置不推");
+      continue;
+    }
+
+    const hint = locationHint(loc);
+    if (!hint) continue;
+
+    await chain(
+      runner,
+      spaceId,
+      async () => {
+        const space = same ? last.space : await spaceForChat(runner, spaceId);
+        if (!space) {
+          logWarn(scope, `${spaceId}：拿不到会话，这次位置送不进去`);
+          return;
+        }
+        if (runner.stopped) return;
+        runner.locLast.set(key, loc);
+        logInfo(scope, hint);
+        enqueue(getConfig, runner, space, spaceId, { text: hint }, peer);
+      },
+      "推送位置出错"
+    );
+  }
 }
 
 /**
@@ -6591,6 +6744,7 @@ async function startRunner(getConfig, project, meta, retries = 0) {
 
     startBgWatcher(getConfig, runner, project);
     startPollWatcher(getConfig, runner, project);
+    syncLocWatcher(getConfig, runner, project);
 
     /*
      * 探一下这条线路的号码有没有真的注册成 iMessage。
@@ -6846,8 +7000,15 @@ async function startRunner(getConfig, project, meta, retries = 0) {
               projectId: runner.mode === "cloud" ? project.projectId : "",
               projectSecret: runner.mode === "cloud" ? project.projectSecret : "",
               label: runner.label,
+              chatGuid: spaceId,
             });
-            const userText = [cardHint, plainText].filter(Boolean).join("\n") || null;
+            /*
+             * 有些卡片会把那行字**同时**当正文送来（平安确认超时那条就是：
+             * 「報平安：尚未按預期報平安，已共享位置」），而 cardHintFor 已经把它
+             * 写进提示了。原样拼的话模型会连着看到两遍，所以提示里已经有正文就不再拼。
+             */
+            const bodyText = cardHint && plainText && cardHint.includes(plainText) ? "" : plainText;
+            const userText = [cardHint, bodyText].filter(Boolean).join("\n") || null;
 
             // 文本、图片、语音、视频、能读的文件都不是（贴纸、位置…）就跳过
             if (
@@ -7705,6 +7866,7 @@ async function stopRunner(runner) {
    */
   stopBgWatcher(runner);
   stopPollWatcher(runner);
+  stopLocWatcher(runner);
   // 待认领的 tapback 同理：这条线路都停了，重连后再补报一句「刚才给你贴了个👍」
   // 只会莫名其妙
   runner.reactPending.clear();

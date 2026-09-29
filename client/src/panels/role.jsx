@@ -3440,6 +3440,78 @@ function RoleChatBackgroundFields({ role }) {
 }
 
 /**
+ * 「位置推送」那一段：开关 + 隔多久 + 没动要不要也推。
+ *
+ * 和聊天背景那栏不同，这个**会叫醒模型** —— 每推一次就是一整轮回复，
+ * 角色会就着位置主动说话。所以默认关，而且界面上要把「花钱」和「会被搭话」
+ * 两件事说在前面（见服务端 friendloc.js / imessage.js:handleFriendLocations）。
+ */
+function RoleLocationPushFields({ role }) {
+  const { updateRole } = useConfig();
+  const lp = role.locationPush ?? {};
+  const set = (patch) =>
+    updateRole(role.id, {
+      locationPush: { enabled: false, intervalSec: 600, onlyWhenMoved: true, ...lp, ...patch },
+    });
+
+  return (
+    <div className="grid grid-cols-1 gap-6">
+      <label className="flex items-start justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-ui text-ink">推送位置给角色</span>
+          <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+            先在 iPhone 的「查找」里把你的位置共享给线路那个号码。开了之后每隔下面那么久
+            问一次你在哪，送一句
+            <code className="mx-1 bg-sunken px-1">{"[系统提示:「查找」里{{user}}现在的位置：…]"}</code>
+            给模型，<strong className="text-ink-soft">它会就着位置回你一条</strong>。
+            <br />
+            每推一次就是一整轮回复（要花 token），而且角色会主动搭话，不想被烦就别开。
+            协助模式、线下模式开着的时候不推。只推给跟这个角色聊过的人，
+            「查找」里别的人不会被念出来。只支持云端 Photon 模式。
+          </span>
+        </span>
+        <Switch
+          checked={Boolean(lp.enabled)}
+          onChange={(v) => set({ enabled: v })}
+          label="启用位置推送"
+        />
+      </label>
+
+      {lp.enabled && (
+        <NumberField
+          label="每隔多久推一次"
+          value={lp.intervalSec ?? 600}
+          min={60}
+          max={86400}
+          step={60}
+          suffix="秒"
+          hint="默认 600 秒（十分钟）；最少 60 秒，最多 86400 秒（一天）。改完立刻按新间隔重新计时"
+          onChange={(v) => set({ intervalSec: v })}
+        />
+      )}
+
+      {lp.enabled && (
+        <label className="flex items-start justify-between gap-4">
+          <span className="min-w-0">
+            <span className="block text-ui text-ink">位置没变就不推</span>
+            <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+              到点了但你挪了不到 100 米、地址也没变，这次就跳过，不叫醒模型 ——
+              人在家躺着不用每十分钟被问一句「还在家？」。关掉就是不管动没动都按时推。
+              默认开。
+            </span>
+          </span>
+          <Switch
+            checked={lp.onlyWhenMoved !== false}
+            onChange={(v) => set({ onlyWhenMoved: v })}
+            label="位置没变就不推"
+          />
+        </label>
+      )}
+    </div>
+  );
+}
+
+/**
  * 「记忆库」那一段：三个开关 + 日记的「注入近 N 天」。
  *
  * 和联网搜索 / 发语音同一个路子 —— **闸在角色、设置在别处**：
@@ -5493,6 +5565,10 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
   const mem = role.memories ?? {};
   const memOn = [mem.memory?.enabled, mem.memo?.enabled, mem.diary?.enabled].filter(Boolean).length;
   const bgOn = Boolean(role.chatBackground?.enabled);
+  const lp = role.locationPush ?? {};
+  const locBadge = lp.enabled
+    ? `每 ${lp.intervalSec ?? 600} 秒${lp.onlyWhenMoved !== false ? " · 动了才推" : ""}`
+    : "关";
   const pollOn = Boolean(role.poll?.enabled);
   const hwOn = Boolean(role.handwriting?.enabled);
   // 回应和特效都是白名单：开着但一个都没勾 = 模型其实用不了，得在折起来的时候
@@ -6055,6 +6131,14 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
           badge={onOff(bgOn)}
         >
           <RoleChatBackgroundFields role={role} />
+        </Fold>
+
+        <Fold
+          title="位置推送"
+          desc="对方在「查找」里给线路共享了位置，就每隔一段时间把位置告诉模型"
+          badge={locBadge}
+        >
+          <RoleLocationPushFields role={role} />
         </Fold>
 
         {/*
