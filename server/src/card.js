@@ -185,8 +185,17 @@ const CHECK_IN_ACTIVE_MS = 12 * 3600_000;
 /** 会话 → 还开着的那次平安确认是什么时候发起的。超时 / 到达 / 结束 / 有变化就删掉。不落盘。 */
 const activeCheckInAt = new Map();
 
+/** 会话 → 还开着的那次「抵达时」的目的地。空白件来的时候告诉模型是去哪的那次变了。 */
+const activeCheckInDest = new Map();
+
+/** 平安确认没取到字时，隔多久再取（依次）。实测字有时晚十几秒才落到消息上。测试里改小。 */
+let CHECK_IN_RETRY_MS = [3000, 10000];
+export function _setCheckInRetryMs(ms) {
+  CHECK_IN_RETRY_MS = [].concat(ms);
+}
+
 /**
- * 「報平安：南宁市 长虹路66号 (…)」—— 前缀后面跟的不是状态词，就是「抵达时」模式的目的地。
+ * 「報平安：上海市 示例路1号 (…)」—— 前缀后面跟的不是状态词，就是「抵达时」模式的目的地。
  * 实测手机上那张卡片旁边显示的就是这一行。
  */
 const CHECK_IN_DEST_RE = /^(?:報平安|报平安|平安確認|平安确认|check ?in)\s*[:：]\s*(.+)$/i;
@@ -208,6 +217,8 @@ function checkInState(text) {
   }
   if (/到達|到达|抵達|抵达|arrived|safely/i.test(t)) return "arrived";
   if (/結束|结束|取消|完成|ended|cancel|complete/i.test(t)) return "ended";
+  // 「報平安：計時已開始」—— 计时器模式的发起卡片（实物）
+  if (/開始|开始|start|began/i.test(t)) return "start";
   return "update";
 }
 
@@ -231,6 +242,10 @@ function checkInHint(state, text, extra) {
       return `[{{user}}发送了平安确认：${where}会自动通知你${eta}。如果{{user}}没按时到、也没回应，15分钟后会向你推送消息与共享{{user}}的位置。]`;
     }
     case "changed":
+      if (extra?.destination) {
+        // 「抵达时」模式到了目的地，手机会自动发这张空白卡片；也可能是手动结束 / 延长
+        return `[系统提示:{{user}}去「${extra.destination}」的「平安确认」有变化：多半是已经到了，也可能是手动结束或者延长了时间。到没到以{{user}}说的为准]`;
+      }
       // 没字、也读不到详情，只知道这次平安确认变了。别让模型猜是哪种，更别让它自己算时间
       return "[系统提示:{{user}}的「平安确认」有变化：可能是到了、手动结束了，或者延长了时间，这边看不出是哪一种，别自己推断。什么时候到期以{{user}}手机上的为准]";
     case "overdue":
@@ -434,7 +449,7 @@ function layoutSummary(layout) {
  *
  * @returns {Promise<null | {appName: string, title: string, url: string, layout: object|null, sessionId: string, live: boolean}>}
  */
-async function fetchCardDetail({ projectId, projectSecret, messageGuid, scope }) {
+async function fetchCardDetail({ projectId, projectSecret, messageGuid, scope, wantText = false }) {
   let opened = [];
   try {
     opened = await createLineClients(projectId, projectSecret, { timeout: DETAIL_TIMEOUT_MS });
@@ -443,6 +458,12 @@ async function fetchCardDetail({ projectId, projectSecret, messageGuid, scope })
       try {
         const native = await client.messages.get(messageGuid);
         const mini = native?.content?.miniApp;
+        // 平安确认实测：没有 miniApp，但单独取这条消息时 content.text 里有那行字
+        // （「報平安：計時已開始」「報平安：某某路66号」），实时推过来的那份反而是空的
+        const plain = String(native?.content?.text ?? native?.text ?? "").trim();
+        if (!mini && wantText && plain) {
+          return { appName: "", title: plain, url: "", layout: null, sessionId: "", live: false };
+        }
         if (!mini) {
           // 实测平安确认就是这样：消息查得到，但底层没解出 miniApp。留一行，下次好对着看
           logDebug(
@@ -563,13 +584,21 @@ export async function cardHintFor(message, { projectId, projectSecret, label, ch
 async function checkInHintFor(message, { projectId, projectSecret, chatGuid, scope }) {
   let text = "";
   let detail = null;
+  // 按收到那一刻算：下面取字可能要等十几秒，不能让等待把空白件挤出去重窗口
+  const now = Date.now();
+  const chatKey = chatGuid && `c:${chatGuid}`;
+  const chatPrev = chatKey ? lastCheckInAt.get(chatKey) : undefined;
+  if (chatKey) lastCheckInAt.set(chatKey, now);
   if (projectId && projectSecret && message?.id) {
-    detail = await fetchCardDetail({
-      projectId,
-      projectSecret,
-      messageGuid: String(message.id),
-      scope,
-    });
+    const ask = () =>
+      fetchCardDetail({ projectId, projectSecret, messageGuid: String(message.id), scope, wantText: true });
+    detail = await ask();
+    // 刚收到那一刻字可能还没落到消息上，隔一下再问。真空白件（到了 / 结束）因此晚十几秒，无所谓
+    for (const wait of CHECK_IN_RETRY_MS) {
+      if (detail?.title) break;
+      await new Promise((r) => setTimeout(r, wait));
+      detail = (await ask()) ?? detail;
+    }
     /*
      * 「抵达时」那种手机上看得见目的地和预计到达，但排版字段是空的 —— 平安确认
      * 用的是 live layout（卡片由扩展自己画），字很可能在 url 里。还没拿到实物，
@@ -598,9 +627,10 @@ async function checkInHintFor(message, { projectId, projectSecret, chatGuid, sco
    * 两个键**都记、都查**：详情是 best-effort，前一张读到了 sessionId、紧跟的
    * 空白件恰好没读到（或者反过来）是会发生的，只认一个键的话两张对不上。
    */
-  const now = Date.now();
-  const keys = [detail?.sessionId && `s:${detail.sessionId}`, chatGuid && `c:${chatGuid}`].filter(Boolean);
-  const seen = keys.map((k) => lastCheckInAt.get(k)).filter((t) => t !== undefined);
+  const keys = [detail?.sessionId && `s:${detail.sessionId}`, chatKey].filter(Boolean);
+  const seen = keys
+    .map((k) => (k === chatKey ? chatPrev : lastCheckInAt.get(k)))
+    .filter((t) => t !== undefined);
   const prev = seen.length ? Math.max(...seen) : undefined;
   for (const k of keys) lastCheckInAt.set(k, now);
   if (!text && prev !== undefined && now - prev < CHECK_IN_ECHO_MS) {
@@ -623,14 +653,27 @@ async function checkInHintFor(message, { projectId, projectSecret, chatGuid, sco
     if (dest) trip = { destination: dest, eta: "" };
   }
   if (trip) state = "trip";
-  if (state === "start") {
+  if (state === "start" && !text) {
     // 这个会话里还开着一次：这张没字的是那次的后续（到了 / 结束 / 延长），不是又发起了一次
     const since = keys.map((k) => activeCheckInAt.get(k)).filter((t) => t !== undefined);
     if (since.length && now - Math.max(...since) < CHECK_IN_ACTIVE_MS) state = "changed";
   }
+  if (state === "changed") {
+    const dest = keys.map((k) => activeCheckInDest.get(k)).find(Boolean);
+    if (dest) trip = { destination: dest, eta: "" };
+  }
   for (const k of keys) {
-    if (state === "start" || state === "trip") activeCheckInAt.set(k, now);
+    /*
+     * 超时了也还算开着（之后手动报平安 / 结束的空白件是这次的后续）—— 但只在真读到了详情时：
+     * 读不到字的话，超时后再发起的那张看上去也是空的，实测过，那种要当新发起
+     */
+    if (state === "start" || state === "trip" || (state === "overdue" && detail)) activeCheckInAt.set(k, now);
     else if (state !== "update") activeCheckInAt.delete(k);
+    if (state === "trip" && trip?.destination) activeCheckInDest.set(k, trip.destination);
+    else if (state !== "update" && state !== "overdue") activeCheckInDest.delete(k);
+  }
+  if (activeCheckInDest.size > 200) {
+    for (const k of activeCheckInDest.keys()) if (!activeCheckInAt.has(k)) activeCheckInDest.delete(k);
   }
   const hint = checkInHint(state, text, trip);
   logDebug(
@@ -1114,15 +1157,15 @@ function parseLatLon(ll) {
  *
  * ── 两种形态，按有没有坐标分 ──
  *
- *   有坐标  `/place?coordinate=22.817,108.3665&name=南宁万象城&span=…`
- *   没坐标  `/?q=南宁万象城`
+ *   有坐标  `/place?coordinate=31.23,121.47&name=示例商场&span=…`
+ *   没坐标  `/?q=示例商场`
  *
  * 上面那条**就是 iPhone 自己分享大头针时发出来的格式**（用户把实物链接贴过来
  * 对过了）。原来这儿拼的是 `/?ll=…&q=…`，卡片效果实测和它一模一样，但既然
  * 苹果自己用的是前者，就跟苹果一致 —— 我们发出去的和对方发过来的长一个样，
  * 顺手也让下面 parseMapsUrl 认自己发的链接时走同一条路。
  *
- * **为什么没坐标时不用 `/place?name=`**：实测 `/place?name=南宁万象城`（不带
+ * **为什么没坐标时不用 `/place?name=`**：实测 `/place?name=示例商场`（不带
  * coordinate）的 og:title 是「Minami」、缩略图 center 在 `35.43,139.62`——
  * 它去日本找了个同名的地方，而且一点也看不出错。`?q=` 那条至少标题是对的
  * （只多个 🔎 前缀）、点开能正确搜到，缩略图不准而已。宁可缩略图不准，

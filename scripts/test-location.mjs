@@ -243,8 +243,8 @@ await okAsync("发起超过 12 小时再来的无字件 → 当新的发起", as
   assert.equal(late, START_TEXT);
 });
 
-await okAsync("「報平安：南宁市 长虹路66号 (…)」→ 抵达时模式，读出目的地", async () => {
-  const addr = "南宁市 长虹路66号 (火车东站地铁站B口步行230米)";
+await okAsync("「報平安：上海市 示例路1号 (…)」→ 抵达时模式，读出目的地", async () => {
+  const addr = "上海市 示例路1号 (某某地铁站A口步行100米)";
   const hint = await CARD.cardHintFor(checkIn(`報平安：${addr}`), { chatGuid: "any;-;+18005550111" });
   assert.ok(hint.includes(`到达「${addr}」时会自动通知你`), hint);
   assert.ok(!hint.includes("系统提示"), hint);
@@ -255,7 +255,7 @@ await okAsync("「報平安：南宁市 长虹路66号 (…)」→ 抵达时模�
 await okAsync("抵达时模式发起之后的无字件 → 有变化", async () => {
   const chat = "any;-;+18005550113";
   const t0 = Date.now();
-  await atTime(t0, () => CARD.cardHintFor(checkIn("報平安：南宁市 长虹路66号"), { chatGuid: chat }));
+  await atTime(t0, () => CARD.cardHintFor(checkIn("報平安：上海市 示例路1号"), { chatGuid: chat }));
   const next = await atTime(t0 + 60_000, () => CARD.cardHintFor(checkIn(), { chatGuid: chat }));
   assert.match(next, /「平安确认」有变化/);
 });
@@ -414,6 +414,73 @@ await okAsync("云端：前一张有 sessionId、空白件没读到详情 ——
 });
 
 /* ================= 2. friendloc 纯逻辑 ================= */
+
+/*
+ * 实测（2026-09-30）：推过来的平安确认 text 永远是空的，字只在单独 messages.get
+ * 那条消息的 content.text 里，而且有时要过一会儿才有。
+ */
+const SM = { projectId: "p", projectSecret: "s" };
+const smMsg = (text) => ({
+  guid: "x",
+  content: { balloonBundleId: CHECK_IN_BALLOON, ...(text === undefined ? {} : { text }) },
+});
+CARD._setCheckInRetryMs([1, 1]);
+
+await okAsync("事件里没字、get 出「報平安：地址」→ 抵达时模式带目的地", async () => {
+  const m = checkIn();
+  photon.messages[m.id] = smMsg("報平安：上海市 示例路1号(某某地铁站A口步行100米)");
+  const hint = await CARD.cardHintFor(m, { ...SM, chatGuid: "any;-;+18005550301" });
+  assert.ok(hint.includes("到达「上海市 示例路1号(某某地铁站A口步行100米)」时会自动通知你"), hint);
+});
+
+await okAsync("get 出「報平安：計時已開始」→ 计时发起，不当成目的地", async () => {
+  const m = checkIn();
+  photon.messages[m.id] = smMsg("報平安：計時已開始");
+  assert.equal(await CARD.cardHintFor(m, { ...SM, chatGuid: "any;-;+18005550302" }), START_TEXT);
+});
+
+await okAsync("第一次 get 没字、重试时有了 → 用重试读到的", async () => {
+  const m = checkIn();
+  let n = 0;
+  Object.defineProperty(photon.messages, m.id, {
+    get: () => (n++ ? smMsg("報平安：計時已開始") : smMsg()),
+    configurable: true,
+  });
+  assert.equal(await CARD.cardHintFor(m, { ...SM, chatGuid: "any;-;+18005550303" }), START_TEXT);
+  assert.ok(n >= 2);
+});
+
+await okAsync("实测顺序：地址 → 10 秒后空白件吞掉 → 过一阵空白件说去「地址」的有变化", async () => {
+  const chat = "any;-;+18005550304";
+  const t0 = Date.now();
+  const card = (text) => {
+    const m = checkIn();
+    photon.messages[m.id] = smMsg(text);
+    return m;
+  };
+  await atTime(t0, () => CARD.cardHintFor(card("報平安：示例路1号"), { ...SM, chatGuid: chat }));
+  assert.equal(await atTime(t0 + 10_000, () => CARD.cardHintFor(card(), { ...SM, chatGuid: chat })), "");
+  const later = await atTime(t0 + 20 * 60_000, () => CARD.cardHintFor(card(), { ...SM, chatGuid: chat }));
+  assert.ok(later.includes("去「示例路1号」的「平安确认」有变化"), later);
+});
+
+await okAsync("实测顺序：计时 → 超时 → 3 秒后空白件吞掉 → 再来空白件是有变化", async () => {
+  const chat = "any;-;+18005550305";
+  const t0 = Date.now();
+  const card = (text) => {
+    const m = checkIn();
+    photon.messages[m.id] = smMsg(text);
+    return m;
+  };
+  assert.equal(await atTime(t0, () => CARD.cardHintFor(card("報平安：計時已開始"), { ...SM, chatGuid: chat })), START_TEXT);
+  const over = await atTime(t0 + 20 * 60_000, () =>
+    CARD.cardHintFor(card("報平安：尚未按預期報平安，已共享位置"), { ...SM, chatGuid: chat })
+  );
+  assert.match(over, /超时了/);
+  assert.equal(await atTime(t0 + 20 * 60_000 + 3000, () => CARD.cardHintFor(card(), { ...SM, chatGuid: chat })), "");
+  const after = await atTime(t0 + 40 * 60_000, () => CARD.cardHintFor(card(), { ...SM, chatGuid: chat }));
+  assert.match(after, /「平安确认」有变化/);
+});
 
 section("位置的纯逻辑（friendloc.js）");
 
