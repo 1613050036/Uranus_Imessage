@@ -13,6 +13,15 @@
  * 直接每 N 秒问一次。N 最小一分钟，所以这里每次都是**用完就关**的短连接
  * （同 card.js:fetchCardDetail），不常驻，token 走 photongrpc 的缓存，不会多铸。
  *
+ * ── 按号码一个个问，不用 list() ──
+ *
+ * `locations.list()` 不带号码，**共享线路**上网关不知道该路由到哪个实例，
+ * 直接回 FAILED_PRECONDITION「No instance routed for this request」—— 实测过，
+ * 共享线路上位置推送因此一次都没成过。`locations.get(address)` 带着号码，
+ * 路由得过去；对方没共享时抛 NotFoundError（「Address is not currently sharing
+ * a location」），那是正常答案，不算失败。反正也只推给这个角色的聊天对象
+ * （见 imessage.js:locPeersOf），按号码问正好省掉「拿全表再过滤」。
+ *
  * 只用在云端模式。本地 Mac 模式没有 Photon 可连。
  */
 
@@ -32,6 +41,25 @@ const FIRST_DELAY_MS = 20_000;
 
 /** onlyWhenMoved 下，挪了多少米以内算「没动」。GPS 在室内飘个几十米很正常。 */
 export const LOCATION_MOVE_M = 100;
+
+/** 这个错误是不是「对方没在共享位置」—— 那是正常答案，不是接口坏了。 */
+export function isNotSharing(e) {
+  return e?.name === "NotFoundError" || /not currently sharing/i.test(String(e?.message ?? ""));
+}
+
+/** 在一条线路上挨个问这几个号码。没共享的跳过；别的错误照抛（算这条线路没问到）。 */
+async function getEach(client, addresses) {
+  const out = [];
+  for (const address of addresses) {
+    try {
+      const loc = await client.locations.get(address);
+      if (loc) out.push(loc.address ? loc : { ...loc, address });
+    } catch (e) {
+      if (!isNotSharing(e)) throw e;
+    }
+  }
+  return out;
+}
 
 /** 两个经纬度之间的距离（米，haversine）。 */
 export function distanceM(a, b) {
@@ -108,10 +136,12 @@ export function locationHint(loc, now = Date.now()) {
  * @param {string} opts.projectSecret
  * @param {string} opts.label 日志里显示的角色名
  * @param {number} opts.intervalMs 两次之间隔多久
+ * @param {() => Iterable<string>} [opts.addresses] 每次到点现取：问哪几个号码（见文件头「按号码一个个问」）。
+ *   不给就退回 list()；给了但是空的，这一轮不连 Photon，直接交一个空数组
  * @param {(list: object[]) => void | Promise<void>} opts.onLocations 每问到一次就给一次（可能是空数组）
  * @returns {{stop: () => void, intervalMs: number}}
  */
-export function watchFriendLocations({ projectId, projectSecret, label, intervalMs, onLocations }) {
+export function watchFriendLocations({ projectId, projectSecret, label, intervalMs, onLocations, addresses }) {
   const scope = label ? `位置推送·${label}` : "位置推送";
   let stopped = false;
   let timer = null;
@@ -129,13 +159,21 @@ export function watchFriendLocations({ projectId, projectSecret, label, interval
     if (stopped) return;
     let opened = [];
     try {
+      const want = addresses ? [...new Set(addresses())].filter(Boolean) : null;
+      if (want && !want.length) {
+        if (!stopped) await onLocations([]);
+        return;
+      }
       opened = await createLineClients(projectId, projectSecret, { timeout: QUERY_TIMEOUT_MS });
       const all = [];
       let lastErr = null;
       let okCount = 0;
       for (const { client, instanceId } of opened) {
         try {
-          all.push(...(await client.locations.list()));
+          for (const loc of want ? await getEach(client, want) : await client.locations.list()) {
+            // 专线多条线路时同一个人可能两条上都问得到，留先问到的那份
+            if (!all.some((x) => x?.address && x.address === loc?.address)) all.push(loc);
+          }
           okCount += 1;
         } catch (e) {
           // 专线多条线路时，一条问不到不耽误别的；全都问不到才算这次失败
@@ -154,8 +192,9 @@ export function watchFriendLocations({ projectId, projectSecret, label, interval
       else logDebug(scope, `${msg}（连着第 ${fails} 次）`);
     } finally {
       await closeClients(opened);
+      // 放在 finally 里：上面「没人可问」那条是直接 return 的
+      schedule(intervalMs);
     }
-    schedule(intervalMs);
   }
 
   schedule(Math.min(FIRST_DELAY_MS, intervalMs));

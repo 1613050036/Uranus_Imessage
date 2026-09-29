@@ -3468,6 +3468,8 @@ function RoleLocationPushFields({ role }) {
             每推一次就是一整轮回复（要花 token），而且角色会主动搭话，不想被烦就别开。
             协助模式、线下模式开着的时候不推。只推给跟这个角色聊过的人，
             「查找」里别的人不会被念出来。只支持云端 Photon 模式。
+            <br />
+            <strong className="text-ink-soft">国区（云上贵州）Apple ID 用不了</strong>：实测它的位置共享到不了线路那边的美区账号。
           </span>
         </span>
         <Switch

@@ -92,6 +92,9 @@ const photon = {
   created: 0,
   listCalls: 0,
   closed: 0,
+  /** address -> (lineId) => 位置；没有的号码 get 抛 NotFoundError */
+  getImpl: {},
+  getCalls: [],
   /** messageGuid -> 原始消息（card.js:fetchCardDetail 会问）；给 Error 就抛 */
   messages: {},
 };
@@ -113,6 +116,15 @@ mock.module(new URL("../server/src/photongrpc.js", import.meta.url).href, {
               photon.listCalls += 1;
               const impl = photon.listImpl[l.id];
               return impl ? impl() : photon.result;
+            },
+            // 同真接口：没共享的号码抛 NotFoundError
+            get: async (address) => {
+              photon.getCalls.push(address);
+              const impl = photon.getImpl[address];
+              if (impl) return impl(l.id);
+              const e = new Error("[upstream] Address is not currently sharing a location");
+              e.name = "NotFoundError";
+              throw e;
             },
           },
           messages: {
@@ -207,6 +219,45 @@ await okAsync("带字的第二张不吞（只吞空白件）", async () => {
   await CARD.cardHintFor(checkIn(), { chatGuid: chat });
   const hint = await CARD.cardHintFor(checkIn("報平安：已抵達"), { chatGuid: chat });
   assert.match(hint, /已经平安到达/);
+});
+
+await okAsync("用户实测那一串：超时 → 5 分钟后新发起 → 7 分钟后无字的结束件 → 有变化，不是又发起", async () => {
+  const chat = "any;-;+18005550109";
+  const t0 = Date.now();
+  const at = (min, text) => atTime(t0 + min * 60_000, () => CARD.cardHintFor(checkIn(text), { chatGuid: chat }));
+  assert.equal(await at(-17, ""), START_TEXT);
+  assert.match(await at(0, "報平安：尚未按預期報平安，已共享位置"), /超时/);
+  assert.equal(await at(5, ""), START_TEXT);
+  const end = await at(12, "");
+  assert.match(end, /「平安确认」有变化/);
+  assert.match(end, /以\{\{user\}\}手机上的为准/);
+  // 变化过一次就当这次收尾了：再来一张没字的是新的发起
+  assert.equal(await at(20, ""), START_TEXT);
+});
+
+await okAsync("发起超过 12 小时再来的无字件 → 当新的发起", async () => {
+  const chat = "any;-;+18005550110";
+  const t0 = Date.now();
+  await atTime(t0, () => CARD.cardHintFor(checkIn(), { chatGuid: chat }));
+  const late = await atTime(t0 + 12 * 3600_000 + 1000, () => CARD.cardHintFor(checkIn(), { chatGuid: chat }));
+  assert.equal(late, START_TEXT);
+});
+
+await okAsync("「報平安：南宁市 长虹路66号 (…)」→ 抵达时模式，读出目的地", async () => {
+  const addr = "南宁市 长虹路66号 (火车东站地铁站B口步行230米)";
+  const hint = await CARD.cardHintFor(checkIn(`報平安：${addr}`), { chatGuid: "any;-;+18005550111" });
+  assert.ok(hint.includes(`到达「${addr}」时会自动通知你`), hint);
+  assert.ok(!hint.includes("系统提示"), hint);
+  const en = await CARD.cardHintFor(checkIn("Check In: 1 Infinite Loop"), { chatGuid: "any;-;+18005550112" });
+  assert.ok(en.includes("到达「1 Infinite Loop」时"), en);
+});
+
+await okAsync("抵达时模式发起之后的无字件 → 有变化", async () => {
+  const chat = "any;-;+18005550113";
+  const t0 = Date.now();
+  await atTime(t0, () => CARD.cardHintFor(checkIn("報平安：南宁市 长虹路66号"), { chatGuid: chat }));
+  const next = await atTime(t0 + 60_000, () => CARD.cardHintFor(checkIn(), { chatGuid: chat }));
+  assert.match(next, /「平安确认」有变化/);
 });
 
 await okAsync("没有 chatGuid 也没有 sessionId：不去重（不会误吞）", async () => {
@@ -507,6 +558,8 @@ function resetPhoton() {
   photon.created = 0;
   photon.listCalls = 0;
   photon.closed = 0;
+  photon.getImpl = {};
+  photon.getCalls = [];
 }
 const warnsOf = (label) => LOGS.filter((e) => e.level === "warn" && e.scope === `位置推送·${label}`);
 
@@ -654,6 +707,113 @@ await okAsync("多条线路全都问不到：算失败（warn、不回调空数�
   w.stop();
   assert.equal(got.length, 0);
   assert.equal(warnsOf("全挂").length - before, 1);
+});
+
+/*
+ * 共享线路上 list() 回「No instance routed」（实测），所以给了号码就只按号码 get。
+ */
+await okAsync("给了号码：按号码 get、不碰 list；没共享的（NotFoundError）不算失败", async () => {
+  resetPhoton();
+  photon.listImpl.L1 = async () => {
+    throw new Error("No instance routed for this request");
+  };
+  photon.getImpl["+18005550100"] = async () => ({ address: "+18005550100", latitude: 1, longitude: 2 });
+  const before = warnsOf("按号").length;
+  const got = [];
+  const w = FL.watchFriendLocations({
+    projectId: "p",
+    projectSecret: "s",
+    label: "按号",
+    intervalMs: 20,
+    addresses: () => ["+18005550100", "+18005550199", "+18005550100"],
+    onLocations: (l) => got.push(l),
+  });
+  await waitFor("回调一次", () => got.length >= 1);
+  w.stop();
+  assert.deepEqual(got[0], [{ address: "+18005550100", latitude: 1, longitude: 2 }]);
+  assert.equal(photon.listCalls, 0);
+  assert.deepEqual(photon.getCalls.slice(0, 2), ["+18005550100", "+18005550199"], "重复的号码只问一次");
+  assert.equal(warnsOf("按号").length - before, 0);
+});
+
+await okAsync("给了号码但都没共享：交空数组、不 warn", async () => {
+  resetPhoton();
+  const before = warnsOf("没共享").length;
+  const got = [];
+  const w = FL.watchFriendLocations({
+    projectId: "p",
+    projectSecret: "s",
+    label: "没共享",
+    intervalMs: 20,
+    addresses: () => ["+18005550199"],
+    onLocations: (l) => got.push(l),
+  });
+  await waitFor("回调一次", () => got.length >= 1);
+  w.stop();
+  assert.deepEqual(got[0], []);
+  assert.equal(warnsOf("没共享").length - before, 0);
+});
+
+await okAsync("号码列表是空的：不连 Photon、照样到点再看", async () => {
+  resetPhoton();
+  let peers = [];
+  const got = [];
+  const w = FL.watchFriendLocations({
+    projectId: "p",
+    projectSecret: "s",
+    label: "没人",
+    intervalMs: 15,
+    addresses: () => peers,
+    onLocations: (l) => got.push(l),
+  });
+  await waitFor("空跑两次", () => got.length >= 2);
+  assert.equal(photon.created, 0);
+  // 后来有人说话了，下一轮就该去问
+  photon.getImpl["+18005550100"] = async () => ({ address: "+18005550100", latitude: 3, longitude: 4 });
+  peers = ["+18005550100"];
+  await waitFor("问到了", () => got.some((l) => l.length === 1));
+  w.stop();
+  assert.ok(photon.created >= 1);
+});
+
+await okAsync("get 抛的不是 NotFoundError：算这次失败，warn 一次", async () => {
+  resetPhoton();
+  photon.getImpl["+18005550100"] = async () => {
+    throw new Error("Unknown server error");
+  };
+  const before = warnsOf("get炸").length;
+  const got = [];
+  const w = FL.watchFriendLocations({
+    projectId: "p",
+    projectSecret: "s",
+    label: "get炸",
+    intervalMs: 15,
+    addresses: () => ["+18005550100"],
+    onLocations: (l) => got.push(l),
+  });
+  await waitFor("问了三轮", () => photon.created >= 3);
+  w.stop();
+  assert.equal(got.length, 0);
+  assert.equal(warnsOf("get炸").length - before, 1);
+});
+
+await okAsync("两条线路都问到同一个人：只留一份", async () => {
+  resetPhoton();
+  photon.lines = [{ id: "L1" }, { id: "L2" }];
+  photon.getImpl["+18005550100"] = async (line) => ({ address: "+18005550100", latitude: 1, longitude: 1, line });
+  const got = [];
+  const w = FL.watchFriendLocations({
+    projectId: "p",
+    projectSecret: "s",
+    label: "去重",
+    intervalMs: 20,
+    addresses: () => ["+18005550100"],
+    onLocations: (l) => got.push(l),
+  });
+  await waitFor("回调一次", () => got.length >= 1);
+  w.stop();
+  assert.equal(got[0].length, 1);
+  assert.equal(got[0][0].line, "L1");
 });
 
 /* ================= 4. 配置规整 ================= */

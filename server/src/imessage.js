@@ -6320,6 +6320,9 @@ function syncLocWatcher(getConfig, runner, project) {
     projectSecret: project.projectSecret,
     label: runner.label ?? "",
     intervalMs,
+    // 到点现取：进程刚起时可能还没人说过话，过一阵才知道该问谁。
+    // 按号码问是因为共享线路上 list() 路由不过去（见 friendloc.js 文件头）
+    addresses: () => locPeersOf(runner, currentRole(getConfig(), runner)),
     onLocations: (list) => handleFriendLocations(getConfig, runner, list),
   });
 }
@@ -6372,7 +6375,9 @@ async function handleFriendLocations(getConfig, runner, list) {
       scope,
       list.length
         ? `「查找」里有 ${list.length} 个人在共享位置，但都不是这个角色的聊天对象`
-        : "「查找」里没人给这条线路共享位置"
+        : peers.size
+          ? "聊天对象没在「查找」里给这条线路共享位置"
+          : "这个角色还没跟谁聊过，不知道该问谁的位置"
     );
     return;
   }

@@ -174,6 +174,24 @@ const CHECK_IN_ECHO_MS = 30_000;
 const lastCheckInAt = new Map();
 
 /**
+ * 发起之后多久之内，同一个会话再来的**无字**卡片算「这次有变化」而不是「又发起了一次」。
+ *
+ * 用户实测：发起那张和结束那张都没带字、也读不到详情，只认「没字 = 发起」的话，
+ * 结束的那一下角色会再听一遍「发送了平安到达计时」，回一句「你要测几次」。
+ * 平安确认的计时最长也就十来个小时，窗口给 12 小时。
+ */
+const CHECK_IN_ACTIVE_MS = 12 * 3600_000;
+
+/** 会话 → 还开着的那次平安确认是什么时候发起的。超时 / 到达 / 结束 / 有变化就删掉。不落盘。 */
+const activeCheckInAt = new Map();
+
+/**
+ * 「報平安：南宁市 长虹路66号 (…)」—— 前缀后面跟的不是状态词，就是「抵达时」模式的目的地。
+ * 实测手机上那张卡片旁边显示的就是这一行。
+ */
+const CHECK_IN_DEST_RE = /^(?:報平安|报平安|平安確認|平安确认|check ?in)\s*[:：]\s*(.+)$/i;
+
+/**
  * 按卡片上那行字认状态。
  *
  * 卡片上的字是**发件人手机的系统语言**（用户实测是繁中），所以繁简英都列上。
@@ -212,6 +230,9 @@ function checkInHint(state, text, extra) {
       const eta = extra?.eta ? `，预计${extra.eta}到` : "";
       return `[{{user}}发送了平安确认：${where}会自动通知你${eta}。如果{{user}}没按时到、也没回应，15分钟后会向你推送消息与共享{{user}}的位置。]`;
     }
+    case "changed":
+      // 没字、也读不到详情，只知道这次平安确认变了。别让模型猜是哪种，更别让它自己算时间
+      return "[系统提示:{{user}}的「平安确认」有变化：可能是到了、手动结束了，或者延长了时间，这边看不出是哪一种，别自己推断。什么时候到期以{{user}}手机上的为准]";
     case "overdue":
       return `[系统提示:{{user}}的「平安确认」超时了：没有按预期报平安，系统已经把{{user}}的位置共享给你，但具体在哪这边看不到${raw}]`;
     case "arrived":
@@ -422,7 +443,16 @@ async function fetchCardDetail({ projectId, projectSecret, messageGuid, scope })
       try {
         const native = await client.messages.get(messageGuid);
         const mini = native?.content?.miniApp;
-        if (!mini) continue;
+        if (!mini) {
+          // 实测平安确认就是这样：消息查得到，但底层没解出 miniApp。留一行，下次好对着看
+          logDebug(
+            scope,
+            `这条消息上没有卡片详情（content 里有：${Object.keys(native?.content ?? {}).join("/") || "无"}，正文：${JSON.stringify(
+              String(native?.text ?? native?.content?.text ?? "").slice(0, 120)
+            )}）`
+          );
+          continue;
+        }
         return {
           appName: String(mini.appName ?? "").trim(),
           title: layoutSummary(mini.layout),
@@ -581,11 +611,34 @@ async function checkInHintFor(message, { projectId, projectSecret, chatGuid, sco
     for (const [k, t] of lastCheckInAt) if (now - t > CHECK_IN_ECHO_MS) lastCheckInAt.delete(k);
   }
 
+  if (activeCheckInAt.size > 200) {
+    for (const [k, t] of activeCheckInAt) if (now - t > CHECK_IN_ACTIVE_MS) activeCheckInAt.delete(k);
+  }
+
   let state = checkInState(text);
-  const trip = state === "start" ? checkInTrip(detail?.url) : null;
+  let trip = state === "start" ? checkInTrip(detail?.url) : null;
+  if (state === "update") {
+    // 「報平安：某个地址」：前缀后面不是状态词，那就是目的地
+    const dest = text.match(CHECK_IN_DEST_RE)?.[1]?.trim();
+    if (dest) trip = { destination: dest, eta: "" };
+  }
   if (trip) state = "trip";
+  if (state === "start") {
+    // 这个会话里还开着一次：这张没字的是那次的后续（到了 / 结束 / 延长），不是又发起了一次
+    const since = keys.map((k) => activeCheckInAt.get(k)).filter((t) => t !== undefined);
+    if (since.length && now - Math.max(...since) < CHECK_IN_ACTIVE_MS) state = "changed";
+  }
+  for (const k of keys) {
+    if (state === "start" || state === "trip") activeCheckInAt.set(k, now);
+    else if (state !== "update") activeCheckInAt.delete(k);
+  }
   const hint = checkInHint(state, text, trip);
-  logDebug(scope, `认出平安确认（${message?.balloonBundleId ?? ""}）→ ${hint}`);
+  logDebug(
+    scope,
+    `认出平安确认（${message?.balloonBundleId ?? ""}，正文 ${JSON.stringify(String(message?.nativeText ?? ""))}，${
+      detail ? "读到了详情" : "没读到详情"
+    }）→ ${hint}`
+  );
   return hint;
 }
 
