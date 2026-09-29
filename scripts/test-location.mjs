@@ -482,6 +482,23 @@ await okAsync("实测顺序：计时 → 超时 → 3 秒后空白件吞掉 → 
   assert.match(after, /「平安确认」有变化/);
 });
 
+await okAsync("发起时读不到字 → 先当计时发起；下一张到了时补读出目的地", async () => {
+  const chat = "any;-;+18005550306";
+  const t0 = Date.now();
+  const first = checkIn();
+  let ready = false;
+  Object.defineProperty(photon.messages, first.id, {
+    get: () => smMsg(ready ? "報平安：上海市 示例路1号" : undefined),
+    configurable: true,
+  });
+  assert.equal(await atTime(t0, () => CARD.cardHintFor(first, { ...SM, chatGuid: chat })), START_TEXT);
+  ready = true;
+  const end = checkIn();
+  photon.messages[end.id] = smMsg();
+  const hint = await atTime(t0 + 20 * 60_000, () => CARD.cardHintFor(end, { ...SM, chatGuid: chat }));
+  assert.ok(hint.includes("去「上海市 示例路1号」的「平安确认」有变化"), hint);
+});
+
 section("位置的纯逻辑（friendloc.js）");
 
 const HOME = { latitude: 31.23, longitude: 121.47 };

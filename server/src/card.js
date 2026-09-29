@@ -188,6 +188,15 @@ const activeCheckInAt = new Map();
 /** 会话 → 还开着的那次「抵达时」的目的地。空白件来的时候告诉模型是去哪的那次变了。 */
 const activeCheckInDest = new Map();
 
+/**
+ * 会话 → 发起时没读到字的那张平安确认卡片的消息 id。
+ *
+ * 实测「我抵达时」的发起卡片，那行「報平安：某某路1号」可能过了一阵才落到消息上，
+ * 当场取三次都是空的。所以先按「发起了」告诉角色，等同一会话的下一张卡片（到了 /
+ * 超时 / 结束）来时再读一遍这张，读出目的地就在那条提示里带上。不落盘。
+ */
+const unreadCheckIn = new Map();
+
 /** 平安确认没取到字时，隔多久再取（依次）。实测字有时晚十几秒才落到消息上。测试里改小。 */
 let CHECK_IN_RETRY_MS = [3000, 10000];
 export function _setCheckInRetryMs(ms) {
@@ -645,6 +654,19 @@ async function checkInHintFor(message, { projectId, projectSecret, chatGuid, sco
     for (const [k, t] of activeCheckInAt) if (now - t > CHECK_IN_ACTIVE_MS) activeCheckInAt.delete(k);
   }
 
+  // 上一张发起卡片当时没读到字：这会儿再读一次，读出目的地就记上（见 unreadCheckIn）
+  const unreadId = chatKey ? unreadCheckIn.get(chatKey) : undefined;
+  if (chatKey) unreadCheckIn.delete(chatKey);
+  if (unreadId && projectId && projectSecret) {
+    const again = await fetchCardDetail({ projectId, projectSecret, messageGuid: unreadId, scope, wantText: true });
+    const late = again?.title ?? "";
+    const dest = checkInState(late) === "update" ? late.match(CHECK_IN_DEST_RE)?.[1]?.trim() : "";
+    if (dest) {
+      logDebug(scope, `补读到上一张平安确认的目的地：${dest}`);
+      for (const k of keys) activeCheckInDest.set(k, dest);
+    }
+  }
+
   let state = checkInState(text);
   let trip = state === "start" ? checkInTrip(detail?.url) : null;
   if (state === "update") {
@@ -674,6 +696,10 @@ async function checkInHintFor(message, { projectId, projectSecret, chatGuid, sco
   }
   if (activeCheckInDest.size > 200) {
     for (const k of activeCheckInDest.keys()) if (!activeCheckInAt.has(k)) activeCheckInDest.delete(k);
+  }
+  if (state === "start" && !text && chatKey && message?.id) {
+    unreadCheckIn.set(chatKey, String(message.id));
+    if (unreadCheckIn.size > 200) unreadCheckIn.delete(unreadCheckIn.keys().next().value);
   }
   const hint = checkInHint(state, text, trip);
   logDebug(
