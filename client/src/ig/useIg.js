@@ -259,6 +259,13 @@ export const igApi = {
   deleteStory(owner, id) {
     return api(`/api/ig/stories/${enc(owner)}/${enc(id)}`, { method: "DELETE" });
   },
+  /** 快拍的赞。和 likePost 一样是切换，回来的 `story` 是改完那一份。 */
+  likeStory(owner, id, actor = "user") {
+    return api(`/api/ig/stories/${enc(owner)}/${enc(id)}/like`, {
+      method: "POST",
+      body: { actor },
+    });
+  },
 
   /** 存进精选。满三个时后端返回 409，错误信息里写了「先删一个」。 */
   saveHighlight(owner, body) {

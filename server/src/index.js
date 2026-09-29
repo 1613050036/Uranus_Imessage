@@ -1984,6 +1984,25 @@ app.put("/api/ig/stories/:owner/:id", (req, res) => {
   res.json({ ok: true, story });
 });
 
+/**
+ * 给快拍点赞 / 取消赞。
+ *
+ * 和帖子那条（/api/ig/posts/:owner/:id/like）一个形状，也一样**不惊动模型**：
+ * 一个赞没有内容可回，角色接一句反而突兀。想让角色说话得回一条（走上面那条 PUT）。
+ */
+app.post("/api/ig/stories/:owner/:id/like", (req, res) => {
+  const { actor = USER_OWNER } = req.body ?? {};
+  const story = readStories(req.params.owner).find((s) => s.id === req.params.id);
+  if (!story) return res.status(404).json({ ok: false, error: "找不到这条快拍" });
+
+  const had = (story.likes ?? []).includes(actor);
+  const likes = had
+    ? story.likes.filter((a) => a !== actor)
+    : [...(story.likes ?? []), actor];
+  const saved = updateStory(req.params.owner, req.params.id, { likes });
+  res.json({ ok: true, story: saved, liked: !had });
+});
+
 app.delete("/api/ig/stories/:owner/:id", (req, res) => {
   if (!removeStory(req.params.owner, req.params.id)) {
     return res.status(404).json({ ok: false, error: "找不到这条快拍" });

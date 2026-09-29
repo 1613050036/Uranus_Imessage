@@ -10,7 +10,21 @@
  * Uranus 控制台的 Instagram 分区里做（真 IG 上你本来也删不掉别人的快拍）。
  *
  * 自动播放：每条 5 秒，进度条动画填充。点左右半屏翻页，Esc / × 关掉。
- * 长按暂停没做 —— 那需要 pointer 事件配合定时器暂停恢复，值不回来。
+ *
+ * ── 什么时候暂停 ──
+ *
+ * 光标进了回复框（`typing`）、指针停在底下那摞回复上（`hover`）、菜单开着、
+ * 输入框里有字，这四种任意一种都停。**光标进框就停**这条是补的 bug：以前只看
+ * 「输入框里有没有字」，于是看完一条快拍再去点输入框，5 秒早就到了、播放器
+ * 自己关掉了 —— 用户的原话是「快拍发不了评论」，症状就是这个。
+ * 长按暂停还是没做（那要 pointer 事件配合定时器暂停恢复，值不回来）。
+ *
+ * ── 回复为什么全摊开给人看 ──
+ *
+ * 真 IG 上快拍回复是私信，别人看不见。这儿故意反着来：谁回的都列出来，
+ * 角色 A 回角色 B 的快拍也列。这个面板本来就是上帝视角（角色的快拍能在控制台
+ * 里删、能存进它的精选），而「角色之间在互相说什么」正是用户要看的东西 ——
+ * 藏起来的话，`[story:]` 这条线上发生的所有事都只剩一张图。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -30,6 +44,10 @@ import { Avatar, Sheet, igMediaUrl, timeAgo } from "./parts.jsx";
 const DURATION = 5000;
 /** 进度条刷新间隔。60ms 够顺，又不至于每帧都 setState。 */
 const TICK = 60;
+/** 底下最多摊开几条回复，再多就折起来只报个数。 */
+const MAX_REPLIES = 4;
+/** 用户在 IG 这套数据里的 owner（服务端 igstore 的 USER_OWNER）。 */
+const SELF = "user";
 
 export default function Story({
   owner,
@@ -43,13 +61,18 @@ export default function Story({
   onSaveHighlight,
   onDelete,
   onReply,
+  onLike,
 }) {
   const [index, setIndex] = useState(start);
   const [elapsed, setElapsed] = useState(0);
   const [menu, setMenu] = useState(false);
   const [draft, setDraft] = useState("");
-  // 打开菜单或者在输入框里打字时暂停，不然会在打字过程中翻页
-  const paused = menu || Boolean(draft);
+  // 光标在回复框里
+  const [typing, setTyping] = useState(false);
+  // 指针停在底下那摞回复上（读别人说了什么的时候别翻页）
+  const [reading, setReading] = useState(false);
+  // 四种情况都暂停，理由见文件头那段
+  const paused = menu || typing || reading || Boolean(draft);
   const desktop = view === "desktop";
   const story = stories[index];
 
@@ -99,7 +122,19 @@ export default function Story({
 
   if (!story) return null;
   const url = igMediaUrl(story.image?.file);
-  const lastReply = (story.replies ?? [])[story.replies.length - 1];
+
+  /*
+   * 底下那摞：谁赞过、谁回了什么。
+   *
+   * 只留最近 MAX_REPLIES 条 —— 一条快拍活 24 小时，几个角色刷下来能攒十几条，
+   * 全铺开会把画面盖掉。上面那行「前面还有 N 条」说清楚被折了多少。
+   */
+  const replies = story.replies ?? [];
+  const shown = replies.slice(-MAX_REPLIES);
+  const folded = replies.length - shown.length;
+  const likes = story.likes ?? [];
+  const likedByMe = likes.includes(SELF);
+  const likeLine = likes.map((who) => (who === SELF ? "你" : who)).join("、");
 
   const send = () => {
     const text = draft.trim();
@@ -226,15 +261,39 @@ export default function Story({
           )}
         </div>
 
-        {story.caption ? <div className="ig-story-caption">{story.caption}</div> : null}
+        {/*
+          * 配文和回复摞在一起，整体压在底栏上面。
+          *
+          * z-index 3 在翻页那两块透明按钮（2）之上 —— 不然点回复、滚回复都会
+          * 被当成「点了半屏」翻到下一条。指针进来就暂停，读完再走。
+          */}
+        {story.caption || replies.length || likes.length ? (
+          <div
+            className="ig-story-bottom"
+            onPointerEnter={() => setReading(true)}
+            onPointerLeave={() => setReading(false)}
+          >
+            {story.caption ? <div className="ig-story-caption">{story.caption}</div> : null}
 
-        {/* 自己的快拍上飘着最近收到的一条回复 */}
-        {isSelf && lastReply ? (
-          <div className="ig-story-reply">
-            <Avatar name={lastReply.owner} size={24} />
-            <span>
-              <b>{lastReply.owner}</b>：{lastReply.text}
-            </span>
+            {likes.length ? (
+              <div className="ig-story-likes">
+                <Heart size={13} fill="currentColor" />
+                <span>{likeLine} 赞过</span>
+              </div>
+            ) : null}
+
+            {folded > 0 ? (
+              <div className="ig-story-folded">…前面还有 {folded} 条</div>
+            ) : null}
+
+            {shown.map((r) => (
+              <div className="ig-story-reply" key={r.id}>
+                <Avatar name={r.owner === SELF ? "你" : r.owner} size={24} />
+                <span>
+                  <b>{r.owner === SELF ? "你" : r.owner}</b>：{r.text}
+                </span>
+              </div>
+            ))}
           </div>
         ) : null}
 
@@ -267,14 +326,25 @@ export default function Story({
             <input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
+              onFocus={() => setTyping(true)}
+              onBlur={() => setTyping(false)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") send();
               }}
               placeholder="发消息…"
               aria-label="回复这条快拍"
             />
-            <button type="button" className="ig-icon-btn" aria-label="赞">
-              <Heart size={24} />
+            <button
+              type="button"
+              className="ig-icon-btn"
+              onClick={() => onLike?.(story.id)}
+              aria-label={likedByMe ? "取消赞" : "赞"}
+            >
+              <Heart
+                size={24}
+                color={likedByMe ? "#ff3040" : "currentColor"}
+                fill={likedByMe ? "#ff3040" : "none"}
+              />
             </button>
             <button
               type="button"

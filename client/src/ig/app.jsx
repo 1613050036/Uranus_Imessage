@@ -24,7 +24,7 @@
  * 手动切换的按钮跟着「不在 IG 里设置」一起挪走了。
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Compass,
   Heart,
@@ -46,6 +46,14 @@ import { igApi, useActivity, useFeed, useIgSettings, useProfile } from "./useIg.
 
 /** 手机版的分界。768px 以下当手机。 */
 const MOBILE_MAX = 768;
+
+/**
+ * 页面自己重拉数据的间隔（毫秒）。
+ *
+ * 角色那边是「几十分钟掷一次刷 IG」的节奏，所以这个数不用小。30 秒只是让
+ * 「角色刚回了我快拍」这种事在你还盯着屏幕的时候能自己冒出来。
+ */
+const REFRESH_MS = 30000;
 
 /**
  * 当前该用哪套版式。
@@ -212,6 +220,97 @@ export default function IgApp() {
     profile.reload();
     activity.reload();
   };
+
+  /*
+   * 隔一会儿自己刷一次。
+   *
+   * 角色的评论、点赞、回快拍全是**过一阵子才回来**的（刷 IG 那一轮是随机
+   * 几十分钟掷一次，回一条评论也要等模型）。以前这个页面只在自己动手之后
+   * 刷，于是角色回了什么，不手动刷新整页就永远看不见 —— 用户说的「看不到
+   * 其他角色的互动」有一半是这个。
+   *
+   * 只在页面真被人看着的时候刷（`visibilityState`）：标签页丢在后台一整天
+   * 还在拉数据，对 VPS 和小手机那版（Worker 按请求计费）都不合适。
+   *
+   * `refresh` 存进 ref 再用：`profile.reload` 是跟着 owner 变的（useIg 里
+   * 它的 useCallback 依赖 owner），定时器里直接闭包住第一版的话，进了别人
+   * 主页之后那一下就成了空转 —— 只有 feed 在刷，主页永远停在进来那一刻。
+   */
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState === "visible") refreshRef.current();
+    };
+    const timer = setInterval(tick, REFRESH_MS);
+    // 从别的标签页切回来时立刻对一次，不用等这一轮走完
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, []);
+
+  /**
+   * 把播放器里的那条快拍换成新的一份。
+   *
+   * `player.list` 是**打开那一刻的快照**，`refresh()` 只重拉 feed / profile，
+   * 不会回头改它。不补这一下的话，自己刚发出去的回复得关掉播放器再打开才
+   * 看得见 —— 用户说的「快拍发不了评论」，另一半就是这个。
+   */
+  const syncStory = (fresh) => {
+    if (!fresh?.id) return;
+    setPlayer((p) =>
+      p ? { ...p, list: p.list.map((s) => (s.id === fresh.id ? fresh : s)) } : p
+    );
+  };
+
+  /*
+   * 覆盖层开着的时候跟着新数据走。
+   *
+   * 播放器和九宫格点开的那层帖子都是**快照**（`player.list` / `openPost`），
+   * 而角色回你快拍、评你帖子那条消息，多半是你正看着的时候才到的。按 id 换，
+   * 不动列表的顺序和长度 —— 整个换掉的话正在看的那条会跳。
+   *
+   * 内容一样就原样返回：每 30 秒换一批新对象的话，Story 那边的播放定时器会
+   * 跟着重建（它的依赖里有当前这条 story），进度条每轮都要抖一下。
+   */
+  useEffect(() => {
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+    const stories = new Map();
+    for (const ring of feed.rings ?? []) {
+      for (const s of ring.stories ?? []) stories.set(s.id, s);
+    }
+    for (const s of [...(profile.data?.active ?? []), ...(profile.data?.expired ?? [])]) {
+      stories.set(s.id, s);
+    }
+    if (stories.size) {
+      setPlayer((p) => {
+        if (!p) return p;
+        let changed = false;
+        const list = p.list.map((s) => {
+          const fresh = stories.get(s.id);
+          if (!fresh || same(fresh, s)) return s;
+          changed = true;
+          return fresh;
+        });
+        return changed ? { ...p, list } : p;
+      });
+    }
+
+    const posts = [...(feed.posts ?? []), ...(profile.data?.posts ?? [])];
+    setOpenPost((cur) => {
+      if (!cur) return cur;
+      const hit = posts.find((p) => p.id === cur.id && p.owner === cur.owner);
+      if (!hit) return cur;
+      // `head` 保着旧的：主页接口回来的帖子身上没有这个字段（见上面 onOpenPost
+      // 那行的注释），直接换过去弹层里的头像和账号名就空了
+      const fresh = { ...hit, head: hit.head ?? cur.head };
+      return same(fresh, cur) ? cur : fresh;
+    });
+  }, [feed.rings, feed.posts, profile.data]);
 
   const openStory = (ownerOrRing, startIndex = 0, which = "active") => {
     // 从 feed 的快拍条进来：整个 ring 对象
@@ -574,9 +673,17 @@ export default function IgApp() {
           }}
           onReply={async (storyId, text) => {
             const story = player.list.find((s) => s.id === storyId);
-            await igApi.editStory(player.owner, storyId, {
+            const r = await igApi.editStory(player.owner, storyId, {
               replies: [...(story?.replies ?? []), { owner: "user", text }],
             });
+            // 用返回的那一份立刻换进播放器：自己刚说的话得马上看得见，
+            // 不能等 refresh() 那两个请求回来（而且 refresh 不动 player.list）
+            syncStory(r?.story);
+            refresh();
+          }}
+          onLike={async (storyId) => {
+            const r = await igApi.likeStory(player.owner, storyId);
+            syncStory(r?.story);
             refresh();
           }}
         />

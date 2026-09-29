@@ -340,7 +340,13 @@ const web = spawn(
     stdio: "inherit",
     // Windows 上 npm 是个 .cmd，Node 20 之后不给 shell 就 spawn EINVAL
     shell: process.platform === "win32",
-    env: { ...process.env, PORT: WEB_PORT, URANUS_API: `http://localhost:${API_PORT}` },
+    env: {
+      ...process.env,
+      PORT: WEB_PORT,
+      // 外面设了就听外面的 —— 有的机器上 localhost 解到 IPv4，而这个后端只
+      // 在 ::1 上答话，那时候得能手动写成 http://[::1]:8790
+      URANUS_API: process.env.URANUS_API || `http://localhost:${API_PORT}`,
+    },
   }
 );
 
