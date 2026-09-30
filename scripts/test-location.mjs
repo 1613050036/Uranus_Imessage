@@ -158,7 +158,7 @@ const C = await import("../server/src/config.js");
 const CHECK_IN_BALLOON =
   "com.apple.messages.MSMessageExtensionBalloonPlugin:0000000000:com.apple.SafetyMonitorApp.SafetyMonitorMessages";
 const START_TEXT =
-  "[{{user}}发送了平安到达计时，如果到了时间用户还未确认，那么将会在15分钟后向你推送消息与共享{{user}}的位置。]";
+  "[{{user}}发送了一张平安确认：到达目的地时 / 计时结束后会自动通知你，如果{{user}}没按时到、也没回应，15分钟后会向你推送消息与共享{{user}}的位置。但目前系统暂时无法识别具体位置，请根据上下文和人设回应{{user}}，禁止瞎编目的地。]";
 
 /** 一张假的平安确认卡片。 */
 const checkIn = (nativeText = "", extra = {}) => ({
@@ -482,7 +482,7 @@ await okAsync("实测顺序：计时 → 超时 → 3 秒后空白件吞掉 → 
   assert.match(after, /「平安确认」有变化/);
 });
 
-await okAsync("发起时读不到字 → 先当计时发起；下一张到了时补读出目的地", async () => {
+await okAsync("发起时读不到字 → 发统一那句；下一张到了时补读出目的地", async () => {
   const chat = "any;-;+18005550306";
   const t0 = Date.now();
   const first = checkIn();
@@ -499,48 +499,6 @@ await okAsync("发起时读不到字 → 先当计时发起；下一张到了时
   assert.ok(hint.includes("去「上海市 示例路1号」的「平安确认」有变化"), hint);
 });
 
-const PENDING = /暂时无法识别具体位置.*禁止瞎编目的地/;
-
-await okAsync("发起时读不到字 → 先发不带位置的那句，读到目的地再补", async () => {
-  CARD._setCheckInLaterMs([5, 5, 5]);
-  const first = checkIn();
-  let n = 0;
-  Object.defineProperty(photon.messages, first.id, {
-    get: () => smMsg(++n > 5 ? "報平安：上海市 示例路2号" : undefined),
-    configurable: true,
-  });
-  const later = [];
-  const hint = await CARD.cardHintFor(first, { ...SM, chatGuid: "any;-;+18005550307", onLater: (h) => later.push(h) });
-  assert.match(hint, PENDING);
-  await new Promise((r) => setTimeout(r, 100));
-  assert.equal(later.length, 1);
-  assert.ok(later[0].includes("要去「上海市 示例路2号」"), later[0]);
-});
-
-await okAsync("后台读到的是「計時已開始」→ 补一句更正", async () => {
-  CARD._setCheckInLaterMs([5, 5]);
-  const first = checkIn();
-  let n = 0;
-  Object.defineProperty(photon.messages, first.id, {
-    get: () => smMsg(++n > 3 ? "報平安：計時已開始" : undefined),
-    configurable: true,
-  });
-  const later = [];
-  await CARD.cardHintFor(first, { ...SM, chatGuid: "any;-;+18005550308", onLater: (h) => later.push(h) });
-  await new Promise((r) => setTimeout(r, 60));
-  assert.equal(later.length, 1);
-  assert.match(later[0], /更正.*计时模式/);
-});
-
-await okAsync("一直读不到字 → 只有开头那句，不再补", async () => {
-  CARD._setCheckInLaterMs([5, 5]);
-  const first = checkIn();
-  photon.messages[first.id] = smMsg();
-  const later = [];
-  assert.match(await CARD.cardHintFor(first, { ...SM, chatGuid: "any;-;+18005550309", onLater: (h) => later.push(h) }), PENDING);
-  await new Promise((r) => setTimeout(r, 60));
-  assert.deepEqual(later, []);
-});
 
 section("位置的纯逻辑（friendloc.js）");
 

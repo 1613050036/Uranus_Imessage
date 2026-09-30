@@ -7006,11 +7006,6 @@ async function startRunner(getConfig, project, meta, retries = 0) {
               projectSecret: runner.mode === "cloud" ? project.projectSecret : "",
               label: runner.label,
               chatGuid: spaceId,
-              // 平安确认「我抵达时」的目的地晚几分钟才读得到，读到了从这儿补进同一个会话
-              onLater: (hint) => {
-                if (runner.stopped) return;
-                enqueue(getConfig, runner, space, spaceId, { text: hint }, peer);
-              },
             });
             /*
              * 有些卡片会把那行字**同时**当正文送来（平安确认超时那条就是：

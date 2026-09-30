@@ -197,17 +197,6 @@ const activeCheckInDest = new Map();
  */
 const unreadCheckIn = new Map();
 
-/** 后台补读的间隔（依次）：前 2 分钟每 15 秒，再 8 分钟每 30 秒，再 20 分钟每分钟。测试里改小。 */
-let CHECK_IN_LATER_MS = [...Array(8).fill(15_000), ...Array(16).fill(30_000), ...Array(20).fill(60_000)];
-export function _setCheckInLaterMs(ms) {
-  CHECK_IN_LATER_MS = [].concat(ms);
-}
-
-/** 平安确认没取到字时，隔多久再取（依次）。实测字有时晚十几秒才落到消息上。测试里改小。 */
-let CHECK_IN_RETRY_MS = [3000, 10000];
-export function _setCheckInRetryMs(ms) {
-  CHECK_IN_RETRY_MS = [].concat(ms);
-}
 
 /**
  * 「報平安：上海市 示例路1号 (…)」—— 前缀后面跟的不是状态词，就是「抵达时」模式的目的地。
@@ -248,8 +237,8 @@ function checkInHint(state, text, extra) {
   const raw = text ? `（原文：${text}）` : "";
   switch (state) {
     case "start":
-      // 文案是用户定的，照抄。发起那张卡片三种模式（计时/抵达时/体能训练）都没字，分不出来
-      return "[{{user}}发送了平安到达计时，如果到了时间用户还未确认，那么将会在15分钟后向你推送消息与共享{{user}}的位置。]";
+      // 发起那张卡片三种模式（计时/抵达时/体能训练）多半没字、分不出来，一律用这句（用户定的）
+      return PENDING_CHECK_IN_HINT;
     case "trip": {
       // 「抵达时」模式，并且从卡片里读出了目的地 / 预计到达（见 checkInTrip）
       const where = extra?.destination ? `到达「${extra.destination}」时` : "到达目的地时";
@@ -259,10 +248,10 @@ function checkInHint(state, text, extra) {
     case "changed":
       if (extra?.destination) {
         // 「抵达时」模式到了目的地，手机会自动发这张空白卡片；也可能是手动结束 / 延长
-        return `[系统提示:{{user}}去「${extra.destination}」的「平安确认」有变化：多半是已经到了，也可能是手动结束或者延长了时间。到没到以{{user}}说的为准]`;
+        return `[系统提示:{{user}}去「${extra.destination}」的「平安确认」有变化：多半是已经到了，也可能是手动结束、延长了时间或者超时没报平安。到没到以{{user}}说的为准]`;
       }
       // 没字、也读不到详情，只知道这次平安确认变了。别让模型猜是哪种，更别让它自己算时间
-      return "[系统提示:{{user}}的「平安确认」有变化：可能是到了、手动结束了，或者延长了时间，这边看不出是哪一种，别自己推断。什么时候到期以{{user}}手机上的为准]";
+      return "[系统提示:{{user}}的「平安确认」有变化：可能是到了、手动结束了、延长了时间，或者超时没报平安，这边看不出是哪一种，别自己推断。什么时候到期以{{user}}手机上的为准]";
     case "overdue":
       return `[系统提示:{{user}}的「平安确认」超时了：没有按预期报平安，系统已经把{{user}}的位置共享给你，但具体在哪这边看不到${raw}]`;
     case "arrived":
@@ -526,7 +515,7 @@ async function fetchCardDetail({ projectId, projectSecret, messageGuid, scope, w
  * @param {string} [opts.chatGuid] 这条消息所在的会话，平安确认去重用
  * @returns {Promise<string>}
  */
-export async function cardHintFor(message, { projectId, projectSecret, label, chatGuid, onLater } = {}) {
+export async function cardHintFor(message, { projectId, projectSecret, label, chatGuid } = {}) {
   const info = parseBalloon(message?.balloonBundleId);
   if (!info) return "";
   const scope = label ? `卡片·${label}` : "卡片";
@@ -549,7 +538,7 @@ export async function cardHintFor(message, { projectId, projectSecret, label, ch
 
   // 平安确认同理，排在分支前面；它现在走的是扩展前缀，但别赌苹果不改
   if (isCheckIn(info.bundleId)) {
-    return checkInHintFor(message, { projectId, projectSecret, chatGuid, scope, onLater });
+    return checkInHintFor(message, { projectId, projectSecret, chatGuid, scope });
   }
 
   if (info.kind === "apple") {
@@ -596,45 +585,23 @@ export async function cardHintFor(message, { projectId, projectSecret, label, ch
  * 返回空串 = 这张是紧跟在上一张后面的空白重复件（见 CHECK_IN_ECHO_MS），
  * 调用方会把整条消息当成没有内容跳过。
  */
-/**
- * 发起卡片当场没读到字：先发 PENDING_CHECK_IN_HINT，后台隔一阵读一次，读到了再补 ——
- * 「抵达时」补目的地，「計時已開始」补一句更正。一直读不到就不补。
- *
- * 实测字要过几分钟（见过十分钟）才落到消息上。
- * 同一会话来了新卡片（unreadCheckIn 里换了 / 删了这条）就停，那边会自己补读、带上目的地。
- */
-async function laterCheckInDest({ projectId, projectSecret, scope, chatKey, keys, messageId, onLater }) {
-  const send = async (hint) => {
-    logDebug(scope, `平安确认发起卡片的字读到了 / 等够了，现在告诉角色 → ${hint}`);
-    try {
-      await onLater(hint);
-    } catch (e) {
-      logDebug(scope, `补发平安确认失败：${String(e?.message ?? e)}`);
-    }
-  };
-  for (const wait of CHECK_IN_LATER_MS) {
-    await new Promise((r) => setTimeout(r, wait));
-    if (unreadCheckIn.get(chatKey) !== messageId) return;
-    const got = await fetchCardDetail({ projectId, projectSecret, messageGuid: messageId, scope, wantText: true });
-    const late = got?.title ?? "";
-    if (!late) continue;
-    if (unreadCheckIn.get(chatKey) !== messageId) return;
-    unreadCheckIn.delete(chatKey);
-    const dest = checkInState(late) === "update" ? late.match(CHECK_IN_DEST_RE)?.[1]?.trim() : "";
-    if (!dest) {
-      if (checkInState(late) !== "start") return;
-      return send("[系统提示:更正：{{user}}刚才发的是平安确认的计时模式，不是到达目的地通知。如果到了时间{{user}}还未确认，15分钟后会向你推送消息与共享{{user}}的位置]");
-    }
-    for (const k of keys) activeCheckInDest.set(k, dest);
-    return send(`[系统提示:刚才那张平安确认的目的地识别出来了：{{user}}要去「${dest}」，到了会自动通知你]`);
-  }
+/** 平安确认没取到字时，隔多久再取（依次）。实测字有时晚十几秒才落到消息上。测试里改小。 */
+let CHECK_IN_RETRY_MS = [3000, 10000];
+export function _setCheckInRetryMs(ms) {
+  CHECK_IN_RETRY_MS = [].concat(ms);
 }
 
-/** 发起卡片当场读不到字时先发这句（文案是用户定的）。 */
+/**
+ * 发起卡片（读不到地址的抵达时 / 计时 / 体能训练）一律发这句（文案是用户定的）。
+ *
+ * 实测（2026-09-30）：「我抵达时」进行中，发起卡片上一个字都没有，整条消息只剩
+ * balloonBundleId；那行「報平安：地址」要等这次到了 / 取消才写上去。所以进行中
+ * 读不到地址，只能等结束那张来时补读（见 unreadCheckIn）。
+ */
 const PENDING_CHECK_IN_HINT =
-  "[{{user}}发送了一张平安确认：到达目的地时会自动通知你，但目前系统暂时无法识别具体位置，请根据人设回应{{user}}，禁止瞎编目的地。]";
+  "[{{user}}发送了一张平安确认：到达目的地时 / 计时结束后会自动通知你，如果{{user}}没按时到、也没回应，15分钟后会向你推送消息与共享{{user}}的位置。但目前系统暂时无法识别具体位置，请根据上下文和人设回应{{user}}，禁止瞎编目的地。]";
 
-async function checkInHintFor(message, { projectId, projectSecret, chatGuid, scope, onLater }) {
+async function checkInHintFor(message, { projectId, projectSecret, chatGuid, scope }) {
   let text = "";
   let detail = null;
   // 按收到那一刻算：下面取字可能要等十几秒，不能让等待把空白件挤出去重窗口
@@ -744,11 +711,6 @@ async function checkInHintFor(message, { projectId, projectSecret, chatGuid, sco
   if (state === "start" && !text && chatKey && message?.id) {
     unreadCheckIn.set(chatKey, String(message.id));
     if (unreadCheckIn.size > 200) unreadCheckIn.delete(unreadCheckIn.keys().next().value);
-    if (projectId && projectSecret && onLater) {
-      laterCheckInDest({ projectId, projectSecret, scope, chatKey, keys, messageId: String(message.id), onLater });
-      logDebug(scope, `平安确认发起卡片还没有字，先发一句不带位置的，后台接着读 → ${PENDING_CHECK_IN_HINT}`);
-      return PENDING_CHECK_IN_HINT;
-    }
   }
   const hint = checkInHint(state, text, trip);
   logDebug(
