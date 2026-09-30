@@ -1041,6 +1041,43 @@ function PlaylistFields({ playlists, updateSpyApi }) {
 }
 
 /**
+ * ElevenLabs 支持的语言（language_code 用 ISO 639-1），第一项空串 = 自动。
+ * 取的是 multilingual v2 那 29 种，v3 支持得更多，要用到再往这里加。
+ */
+const ELEVEN_LANGUAGES = [
+  ["", "自动"],
+  ["en", "英语"],
+  ["zh", "中文"],
+  ["ja", "日语"],
+  ["ko", "韩语"],
+  ["fr", "法语"],
+  ["de", "德语"],
+  ["es", "西班牙语"],
+  ["it", "意大利语"],
+  ["pt", "葡萄牙语"],
+  ["ru", "俄语"],
+  ["ar", "阿拉伯语"],
+  ["hi", "印地语"],
+  ["id", "印尼语"],
+  ["ms", "马来语"],
+  ["fil", "菲律宾语"],
+  ["ta", "泰米尔语"],
+  ["tr", "土耳其语"],
+  ["nl", "荷兰语"],
+  ["pl", "波兰语"],
+  ["sv", "瑞典语"],
+  ["da", "丹麦语"],
+  ["fi", "芬兰语"],
+  ["uk", "乌克兰语"],
+  ["cs", "捷克语"],
+  ["sk", "斯洛伐克语"],
+  ["hr", "克罗地亚语"],
+  ["bg", "保加利亚语"],
+  ["ro", "罗马尼亚语"],
+  ["el", "希腊语"],
+];
+
+/**
  * 「发语音」那一段。三层结构和 RoleSearchFields 一模一样：
  * 开关在角色、密钥全局（config.ttsApi，在「连接」面板里配）、
  * 提示词在「预设 → 消息格式与功能」。
@@ -1066,6 +1103,8 @@ function RoleVoiceFields({ role, onGoto }) {
     : !blank(tts.sovits?.url) && tts.sovits?.enabled
     ? "GPT-SoVITS"
     : "";
+  // 和 media.js:pickTtsSource 的 keepTags 同一个判据
+  const elevenV3 = /v3/i.test(String(tts.elevenlabs?.model ?? ""));
 
   return (
     <div className="grid grid-cols-1 gap-6">
@@ -1151,6 +1190,46 @@ function RoleVoiceFields({ role, onGoto }) {
               这个 ID 是<strong className="text-ink-soft">跟着上面那家</strong>走的
               —— 换一家 TTS 就得换一个 ID，MiniMax 的音色 ID 填给 ElevenLabs 是不认的。
             </p>
+          </Field>
+
+          <Field
+            label="语言"
+            hint="ElevenLabs 的 language_code。自动 = 不传，让它按文字自己认；有的模型不支持指定语言，选了报错就改回自动"
+          >
+            <select
+              className={inputCls}
+              value={vs.language ?? ""}
+              onChange={(e) =>
+                updateRole(role.id, { voiceSend: { ...vs, language: e.target.value } })
+              }
+            >
+              {ELEVEN_LANGUAGES.map(([code, name]) => (
+                <option key={code} value={code}>
+                  {code ? `${name}（${code}）` : name}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field
+            label="口音"
+            hint="每条语音合成前在最前面加一个 [口音] 标签，比如填 strong British accent 就会变成 [strong British accent]……。不用写方括号，留空不加"
+          >
+            <input
+              className={inputCls}
+              value={vs.accent ?? ""}
+              onChange={(e) =>
+                updateRole(role.id, { voiceSend: { ...vs, accent: e.target.value } })
+              }
+              placeholder="strong British accent"
+            />
+            {!blank(vs.accent) && !(source === "ElevenLabs" && elevenV3) && (
+              <p className="mt-2 text-meta leading-relaxed text-warn">
+                口音标签只有 ElevenLabs 的 eleven_v3 模型认，
+                {source === "ElevenLabs" ? "现在的模型不是 v3" : `现在用的是 ${source || "（没开 TTS）"}`}
+                ，这一项暂时不起作用。
+              </p>
+            )}
           </Field>
         </div>
       )}

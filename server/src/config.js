@@ -592,7 +592,7 @@ export const DEFAULT_CONFIG = {
         bothFailedTemplate: "",
       },
       // 发语音，默认关。TTS 密钥是全局的（ttsApi），这里只有开关和音色 ID
-      voiceSend: { enabled: false, voiceId: "" },
+      voiceSend: { enabled: false, voiceId: "", language: "", accent: "" },
       // 生图，默认关。生图模型是全局的（挑一个标了 image 分类的模型），
       // 这里只有开关 + 图生图开关 + 这个角色能用哪几张参考图
       imageGen: { enabled: false, img2img: false, refs: [] },
@@ -1844,11 +1844,17 @@ function normalizeHandwriting(input) {
  * 声音还是原来那个。真正的凭据在全局 config.ttsApi（见 normalizeTtsApi）。
  *
  * 留空时按当前那家 TTS 的默认音色走，不报错。
+ *
+ * language / accent 目前只对 ElevenLabs 起作用，见 media.js:synthesizeVoice。
  */
 function normalizeVoiceSend(input) {
   return {
     enabled: Boolean(input?.enabled),
     voiceId: str(input?.voiceId).trim(),
+    // ElevenLabs 的 language_code（ISO 639-1，如 en / ja）。空 = 自动，不发这个字段
+    language: str(input?.language).trim().toLowerCase(),
+    // 口音标签的内容，如 "strong British accent"。方括号由 media.js 拼，这里剥掉用户手写的
+    accent: str(input?.accent).replace(/[[\]［］]/g, "").trim(),
   };
 }
 

@@ -1410,7 +1410,7 @@ function clampSpeed(v) {
  *
  * 响应直接就是二进制 mp3，出错时才是 JSON —— 所以先看 res.ok 再读 body。
  */
-async function ttsElevenLabs(cfg, text, voiceId, { opus = false } = {}) {
+async function ttsElevenLabs(cfg, text, voiceId, { opus = false, language = "" } = {}) {
   // 留空时用官方文档里那个公开示例音色（Rachel），至少能出声
   const id = voiceId || "21m00Tcm4TlvDq8ikWAM";
   const url =
@@ -1427,6 +1427,8 @@ async function ttsElevenLabs(cfg, text, voiceId, { opus = false } = {}) {
     body: JSON.stringify({
       text,
       model_id: String(cfg?.model ?? "").trim() || "eleven_multilingual_v2",
+      // 角色上选了语言才发；留空（自动）时请求体和以前一样，让它自己认
+      ...(language ? { language_code: language } : {}),
       voice_settings: {
         stability: Number(cfg?.stability ?? 0.5),
         similarity_boost: Number(cfg?.similarityBoost ?? 0.75),
@@ -1607,14 +1609,22 @@ export function stripToneTags(text) {
  * @param {string} voiceId 角色上填的音色 ID（SoVITS 那家是参考音频路径），可空
  * @param {string} text 要念的内容
  * @param {string} [scope] 日志作用域
- * @param {{bubble?: boolean}} [opts] `bubble`：要发成 iMessage 语音条（不是给浏览器试听）
+ * @param {{bubble?: boolean, language?: string, accent?: string}} [opts]
+ *   `bubble`：要发成 iMessage 语音条（不是给浏览器试听）。
+ *   `language` / `accent`：角色 voiceSend 上的语言和口音，目前只有 ElevenLabs 用
  * @returns {Promise<{buffer: Buffer, mimeType: string, ext: string, duration: number|undefined, source: string, ms: number}>}
  *   `duration` 是秒数，读不出来时是 undefined —— 调用方**一定要**把它传给 voice()，
  *   不然 iMessage 那头的语音条显示 0:00。
  *   `ext` 是 `m4a`（转好了）、`caf`（没 ffmpeg，走 Opus 换壳）或者合成出来的原格式。
  * @throws {Error} 中文原因。调用方接住之后退化成文字发出去
  */
-export async function synthesizeVoice(api, voiceId, text, scope = "语音", { bubble = false } = {}) {
+export async function synthesizeVoice(
+  api,
+  voiceId,
+  text,
+  scope = "语音",
+  { bubble = false, language = "", accent = "" } = {}
+) {
   /*
    * 语音条要 m4a 或 caf。有 ffmpeg 就合成 mp3 再转 m4a（老路）；没有 ffmpeg
    * （小手机的 Worker 后端）就只剩一条路：让 TTS 直接出 Ogg Opus，换壳成 caf。
@@ -1647,6 +1657,16 @@ export async function synthesizeVoice(api, voiceId, text, scope = "语音", { bu
     if (plain) clean = plain;
   }
 
+  /*
+   * 口音：在整条前面拼一个 [strong British accent] 这样的标签。
+   * 只有 ElevenLabs 且模型认标签（v3）时才拼 —— 别的模型会把它当正文念出来。
+   * 拼在截断之前，超长时截的是尾巴，标签保得住。
+   */
+  const accentTag = String(accent ?? "").replace(/[[\]［］]/g, "").trim();
+  if (accentTag && source.name === "ElevenLabs" && source.keepTags) {
+    clean = `[${accentTag}]${clean}`;
+  }
+
   if (clean.length > MAX_TTS_CHARS) {
     logWarn(scope, `语音内容 ${clean.length} 字，超过 ${MAX_TTS_CHARS} 字上限，已截断`);
     clean = clean.slice(0, MAX_TTS_CHARS);
@@ -1670,7 +1690,7 @@ export async function synthesizeVoice(api, voiceId, text, scope = "语音", { bu
   let out;
   for (let attempt = 1; ; attempt += 1) {
     try {
-      out = await source.run(clean, id, { opus: caf });
+      out = await source.run(clean, id, { opus: caf, language: String(language ?? "").trim() });
       break;
     } catch (e) {
       if (attempt <= TTS_RETRIES && worthRetry(e)) {

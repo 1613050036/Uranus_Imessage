@@ -3505,7 +3505,10 @@ app.post("/api/offline/:roleKey/voice", async (req, res) => {
 
   const voiceId = ctx.role.voiceSend?.voiceId ?? "";
   try {
-    const out = await synthesizeVoice(ctx.config.ttsApi, voiceId, text, "线下语音");
+    const out = await synthesizeVoice(ctx.config.ttsApi, voiceId, text, "线下语音", {
+      language: ctx.role.voiceSend?.language,
+      accent: ctx.role.voiceSend?.accent,
+    });
     res.json({
       ok: true,
       source: out.source,
