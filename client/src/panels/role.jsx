@@ -1103,8 +1103,9 @@ function RoleVoiceFields({ role, onGoto }) {
     : !blank(tts.sovits?.url) && tts.sovits?.enabled
     ? "GPT-SoVITS"
     : "";
-  // 和 media.js:pickTtsSource 的 keepTags 同一个判据
-  const elevenV3 = /v3/i.test(String(tts.elevenlabs?.model ?? ""));
+  // 和 media.js:elevenTagsOk 同一个判据：模型 ID 里版本号 ≥ 3（eleven_v3、eleven_v4……）
+  const elevenVer = /(?:^|[^a-z0-9])v(\d+)/i.exec(String(tts.elevenlabs?.model ?? ""));
+  const elevenTags = Boolean(elevenVer) && Number(elevenVer[1]) >= 3;
 
   return (
     <div className="grid grid-cols-1 gap-6">
@@ -1223,10 +1224,12 @@ function RoleVoiceFields({ role, onGoto }) {
               }
               placeholder="strong British accent"
             />
-            {!blank(vs.accent) && !(source === "ElevenLabs" && elevenV3) && (
+            {!blank(vs.accent) && !(source === "ElevenLabs" && elevenTags) && (
               <p className="mt-2 text-meta leading-relaxed text-warn">
-                口音标签只有 ElevenLabs 的 eleven_v3 模型认，
-                {source === "ElevenLabs" ? "现在的模型不是 v3" : `现在用的是 ${source || "（没开 TTS）"}`}
+                口音标签只有 ElevenLabs 的 v3 及以后的模型（eleven_v3、eleven_v4……）认，
+                {source === "ElevenLabs"
+                  ? `现在的模型 ${tts.elevenlabs?.model || "eleven_multilingual_v2"} 不认方括号标签`
+                  : `现在用的是 ${source || "（没开 TTS）"}`}
                 ，这一项暂时不起作用。
               </p>
             )}

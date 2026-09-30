@@ -1541,7 +1541,7 @@ async function ttsSovits(cfg, text, voiceId) {
  * 四家都没配就返回 null，调用方据此退化成文字。
  *
  * `keepTags` 是给 synthesizeVoice 看的：这一家的**这个模型**认不认方括号的
- * 语气标签。ElevenLabs 只有 eleven_v3 认（[whispers] 这类是 v3 的功能）；
+ * 语气标签。ElevenLabs 是 v3 起才认（[whispers] 这类是 v3 引进的，v4 沿用）；
  * Fish Audio 的 S2 系（含留空时的默认模型）认方括号，老的 s1 只认圆括号。
  * 认不了的都会把它们当正文念出来 —— 那种情况下不如剥掉。
  *
@@ -1552,6 +1552,16 @@ async function ttsSovits(cfg, text, voiceId) {
  * @returns {{name: string, keepTags?: boolean, opus?: boolean,
  *            run: (text: string, voiceId: string, opts?: {opus?: boolean}) => Promise<object>}|null}
  */
+/**
+ * ElevenLabs 这个模型认不认方括号标签：模型 ID 里的版本号 ≥ 3 就认
+ * （eleven_v3、eleven_v4……）。v2 系（multilingual_v2 / turbo_v2_5 / flash_v2_5）不认。
+ * 前端 role.jsx 里有一份同样的判据，两处一起改。
+ */
+export function elevenTagsOk(model) {
+  const m = /(?:^|[^a-z0-9])v(\d+)/i.exec(String(model ?? ""));
+  return Boolean(m) && Number(m[1]) >= 3;
+}
+
 export function pickTtsSource(api, { needOpus = false } = {}) {
   const mm = api?.minimax;
   if (!needOpus && mm?.enabled && String(mm.key ?? "").trim()) {
@@ -1561,7 +1571,7 @@ export function pickTtsSource(api, { needOpus = false } = {}) {
   if (el?.enabled && String(el.key ?? "").trim()) {
     return {
       name: "ElevenLabs",
-      keepTags: /v3/i.test(String(el?.model ?? "")),
+      keepTags: elevenTagsOk(el?.model),
       opus: true,
       run: (t, v, o) => ttsElevenLabs(el, t, v, o),
     };
@@ -1646,7 +1656,7 @@ export async function synthesizeVoice(
   if (!clean) throw new Error("语音内容是空的");
 
   /*
-   * 语气标签剥不剥，跟着 TTS 的能力走：ElevenLabs 的 v3 认方括号音效标签，
+   * 语气标签剥不剥，跟着 TTS 的能力走：ElevenLabs 的 v3 及以后认方括号音效标签，
    * 其他模型和另外两家都会把它们当正文念出来（语音里真的说一句 "whispers"）。
    * 剥掉少一分情绪，留着多一句怪话 —— 取剥掉。
    * 整条剥完一件不剩（极端情况：整条语音就是个 [laughs]）时留着原样，
@@ -1659,7 +1669,7 @@ export async function synthesizeVoice(
 
   /*
    * 口音：在整条前面拼一个 [strong British accent] 这样的标签。
-   * 只有 ElevenLabs 且模型认标签（v3）时才拼 —— 别的模型会把它当正文念出来。
+   * 只有 ElevenLabs 且模型认标签（v3 及以后）时才拼 —— 别的模型会把它当正文念出来。
    * 拼在截断之前，超长时截的是尾巴，标签保得住。
    */
   const accentTag = String(accent ?? "").replace(/[[\]［］]/g, "").trim();
