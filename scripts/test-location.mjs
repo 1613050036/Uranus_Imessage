@@ -499,7 +499,9 @@ await okAsync("发起时读不到字 → 先当计时发起；下一张到了时
   assert.ok(hint.includes("去「上海市 示例路1号」的「平安确认」有变化"), hint);
 });
 
-await okAsync("发起时读不到字 → 后台过一会儿读到目的地，补一条抵达时提示", async () => {
+const PENDING = /暂时无法识别具体位置.*禁止瞎编目的地/;
+
+await okAsync("发起时读不到字 → 先发不带位置的那句，读到目的地再补", async () => {
   CARD._setCheckInLaterMs([5, 5, 5]);
   const first = checkIn();
   let n = 0;
@@ -509,13 +511,13 @@ await okAsync("发起时读不到字 → 后台过一会儿读到目的地，补
   });
   const later = [];
   const hint = await CARD.cardHintFor(first, { ...SM, chatGuid: "any;-;+18005550307", onLater: (h) => later.push(h) });
-  assert.equal(hint, START_TEXT);
+  assert.match(hint, PENDING);
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(later.length, 1);
-  assert.ok(later[0].includes("到达「上海市 示例路2号」时会自动通知你"), later[0]);
+  assert.ok(later[0].includes("要去「上海市 示例路2号」"), later[0]);
 });
 
-await okAsync("后台读到的是「計時已開始」→ 不补", async () => {
+await okAsync("后台读到的是「計時已開始」→ 补一句更正", async () => {
   CARD._setCheckInLaterMs([5, 5]);
   const first = checkIn();
   let n = 0;
@@ -526,7 +528,18 @@ await okAsync("后台读到的是「計時已開始」→ 不补", async () => {
   const later = [];
   await CARD.cardHintFor(first, { ...SM, chatGuid: "any;-;+18005550308", onLater: (h) => later.push(h) });
   await new Promise((r) => setTimeout(r, 60));
-  assert.equal(later.length, 0);
+  assert.equal(later.length, 1);
+  assert.match(later[0], /更正.*计时模式/);
+});
+
+await okAsync("一直读不到字 → 只有开头那句，不再补", async () => {
+  CARD._setCheckInLaterMs([5, 5]);
+  const first = checkIn();
+  photon.messages[first.id] = smMsg();
+  const later = [];
+  assert.match(await CARD.cardHintFor(first, { ...SM, chatGuid: "any;-;+18005550309", onLater: (h) => later.push(h) }), PENDING);
+  await new Promise((r) => setTimeout(r, 60));
+  assert.deepEqual(later, []);
 });
 
 section("位置的纯逻辑（friendloc.js）");

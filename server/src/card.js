@@ -597,12 +597,21 @@ export async function cardHintFor(message, { projectId, projectSecret, label, ch
  * 调用方会把整条消息当成没有内容跳过。
  */
 /**
- * 发起卡片当场没读到字：后台隔一阵读一次，读出「抵达时」的目的地就补一条提示给角色。
+ * 发起卡片当场没读到字：先发 PENDING_CHECK_IN_HINT，后台隔一阵读一次，读到了再补 ——
+ * 「抵达时」补目的地，「計時已開始」补一句更正。一直读不到就不补。
  *
- * 实测字要过几分钟才落到消息上，等下一张卡片（到了 / 结束）才补就太晚了。
- * 同一会话来了新卡片（unreadCheckIn 里换了 / 删了这条）就停，那边会自己补读。
+ * 实测字要过几分钟（见过十分钟）才落到消息上。
+ * 同一会话来了新卡片（unreadCheckIn 里换了 / 删了这条）就停，那边会自己补读、带上目的地。
  */
 async function laterCheckInDest({ projectId, projectSecret, scope, chatKey, keys, messageId, onLater }) {
+  const send = async (hint) => {
+    logDebug(scope, `平安确认发起卡片的字读到了 / 等够了，现在告诉角色 → ${hint}`);
+    try {
+      await onLater(hint);
+    } catch (e) {
+      logDebug(scope, `补发平安确认失败：${String(e?.message ?? e)}`);
+    }
+  };
   for (const wait of CHECK_IN_LATER_MS) {
     await new Promise((r) => setTimeout(r, wait));
     if (unreadCheckIn.get(chatKey) !== messageId) return;
@@ -612,19 +621,18 @@ async function laterCheckInDest({ projectId, projectSecret, scope, chatKey, keys
     if (unreadCheckIn.get(chatKey) !== messageId) return;
     unreadCheckIn.delete(chatKey);
     const dest = checkInState(late) === "update" ? late.match(CHECK_IN_DEST_RE)?.[1]?.trim() : "";
-    // 读出来是「計時已開始」之类：发起时那句已经对了，不用补
-    if (!dest) return;
-    for (const k of keys) activeCheckInDest.set(k, dest);
-    const hint = checkInHint("trip", late, { destination: dest, eta: "" });
-    logDebug(scope, `后台读到平安确认的目的地，补一条 → ${hint}`);
-    try {
-      await onLater(hint);
-    } catch (e) {
-      logDebug(scope, `补发平安确认目的地失败：${String(e?.message ?? e)}`);
+    if (!dest) {
+      if (checkInState(late) !== "start") return;
+      return send("[系统提示:更正：{{user}}刚才发的是平安确认的计时模式，不是到达目的地通知。如果到了时间{{user}}还未确认，15分钟后会向你推送消息与共享{{user}}的位置]");
     }
-    return;
+    for (const k of keys) activeCheckInDest.set(k, dest);
+    return send(`[系统提示:刚才那张平安确认的目的地识别出来了：{{user}}要去「${dest}」，到了会自动通知你]`);
   }
 }
+
+/** 发起卡片当场读不到字时先发这句（文案是用户定的）。 */
+const PENDING_CHECK_IN_HINT =
+  "[{{user}}发送了一张平安确认：到达目的地时会自动通知你，但目前系统暂时无法识别具体位置，请根据人设回应{{user}}，禁止瞎编目的地。]";
 
 async function checkInHintFor(message, { projectId, projectSecret, chatGuid, scope, onLater }) {
   let text = "";
@@ -738,6 +746,8 @@ async function checkInHintFor(message, { projectId, projectSecret, chatGuid, sco
     if (unreadCheckIn.size > 200) unreadCheckIn.delete(unreadCheckIn.keys().next().value);
     if (projectId && projectSecret && onLater) {
       laterCheckInDest({ projectId, projectSecret, scope, chatKey, keys, messageId: String(message.id), onLater });
+      logDebug(scope, `平安确认发起卡片还没有字，先发一句不带位置的，后台接着读 → ${PENDING_CHECK_IN_HINT}`);
+      return PENDING_CHECK_IN_HINT;
     }
   }
   const hint = checkInHint(state, text, trip);
