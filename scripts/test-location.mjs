@@ -499,6 +499,36 @@ await okAsync("发起时读不到字 → 先当计时发起；下一张到了时
   assert.ok(hint.includes("去「上海市 示例路1号」的「平安确认」有变化"), hint);
 });
 
+await okAsync("发起时读不到字 → 后台过一会儿读到目的地，补一条抵达时提示", async () => {
+  CARD._setCheckInLaterMs([5, 5, 5]);
+  const first = checkIn();
+  let n = 0;
+  Object.defineProperty(photon.messages, first.id, {
+    get: () => smMsg(++n > 5 ? "報平安：上海市 示例路2号" : undefined),
+    configurable: true,
+  });
+  const later = [];
+  const hint = await CARD.cardHintFor(first, { ...SM, chatGuid: "any;-;+18005550307", onLater: (h) => later.push(h) });
+  assert.equal(hint, START_TEXT);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(later.length, 1);
+  assert.ok(later[0].includes("到达「上海市 示例路2号」时会自动通知你"), later[0]);
+});
+
+await okAsync("后台读到的是「計時已開始」→ 不补", async () => {
+  CARD._setCheckInLaterMs([5, 5]);
+  const first = checkIn();
+  let n = 0;
+  Object.defineProperty(photon.messages, first.id, {
+    get: () => smMsg(++n > 3 ? "報平安：計時已開始" : undefined),
+    configurable: true,
+  });
+  const later = [];
+  await CARD.cardHintFor(first, { ...SM, chatGuid: "any;-;+18005550308", onLater: (h) => later.push(h) });
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(later.length, 0);
+});
+
 section("位置的纯逻辑（friendloc.js）");
 
 const HOME = { latitude: 31.23, longitude: 121.47 };

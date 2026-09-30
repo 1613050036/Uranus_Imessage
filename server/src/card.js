@@ -197,6 +197,12 @@ const activeCheckInDest = new Map();
  */
 const unreadCheckIn = new Map();
 
+/** 后台补读的间隔（依次）：前 2 分钟每 15 秒，再 8 分钟每 30 秒，再 20 分钟每分钟。测试里改小。 */
+let CHECK_IN_LATER_MS = [...Array(8).fill(15_000), ...Array(16).fill(30_000), ...Array(20).fill(60_000)];
+export function _setCheckInLaterMs(ms) {
+  CHECK_IN_LATER_MS = [].concat(ms);
+}
+
 /** 平安确认没取到字时，隔多久再取（依次）。实测字有时晚十几秒才落到消息上。测试里改小。 */
 let CHECK_IN_RETRY_MS = [3000, 10000];
 export function _setCheckInRetryMs(ms) {
@@ -520,7 +526,7 @@ async function fetchCardDetail({ projectId, projectSecret, messageGuid, scope, w
  * @param {string} [opts.chatGuid] 这条消息所在的会话，平安确认去重用
  * @returns {Promise<string>}
  */
-export async function cardHintFor(message, { projectId, projectSecret, label, chatGuid } = {}) {
+export async function cardHintFor(message, { projectId, projectSecret, label, chatGuid, onLater } = {}) {
   const info = parseBalloon(message?.balloonBundleId);
   if (!info) return "";
   const scope = label ? `卡片·${label}` : "卡片";
@@ -543,7 +549,7 @@ export async function cardHintFor(message, { projectId, projectSecret, label, ch
 
   // 平安确认同理，排在分支前面；它现在走的是扩展前缀，但别赌苹果不改
   if (isCheckIn(info.bundleId)) {
-    return checkInHintFor(message, { projectId, projectSecret, chatGuid, scope });
+    return checkInHintFor(message, { projectId, projectSecret, chatGuid, scope, onLater });
   }
 
   if (info.kind === "apple") {
@@ -590,7 +596,37 @@ export async function cardHintFor(message, { projectId, projectSecret, label, ch
  * 返回空串 = 这张是紧跟在上一张后面的空白重复件（见 CHECK_IN_ECHO_MS），
  * 调用方会把整条消息当成没有内容跳过。
  */
-async function checkInHintFor(message, { projectId, projectSecret, chatGuid, scope }) {
+/**
+ * 发起卡片当场没读到字：后台隔一阵读一次，读出「抵达时」的目的地就补一条提示给角色。
+ *
+ * 实测字要过几分钟才落到消息上，等下一张卡片（到了 / 结束）才补就太晚了。
+ * 同一会话来了新卡片（unreadCheckIn 里换了 / 删了这条）就停，那边会自己补读。
+ */
+async function laterCheckInDest({ projectId, projectSecret, scope, chatKey, keys, messageId, onLater }) {
+  for (const wait of CHECK_IN_LATER_MS) {
+    await new Promise((r) => setTimeout(r, wait));
+    if (unreadCheckIn.get(chatKey) !== messageId) return;
+    const got = await fetchCardDetail({ projectId, projectSecret, messageGuid: messageId, scope, wantText: true });
+    const late = got?.title ?? "";
+    if (!late) continue;
+    if (unreadCheckIn.get(chatKey) !== messageId) return;
+    unreadCheckIn.delete(chatKey);
+    const dest = checkInState(late) === "update" ? late.match(CHECK_IN_DEST_RE)?.[1]?.trim() : "";
+    // 读出来是「計時已開始」之类：发起时那句已经对了，不用补
+    if (!dest) return;
+    for (const k of keys) activeCheckInDest.set(k, dest);
+    const hint = checkInHint("trip", late, { destination: dest, eta: "" });
+    logDebug(scope, `后台读到平安确认的目的地，补一条 → ${hint}`);
+    try {
+      await onLater(hint);
+    } catch (e) {
+      logDebug(scope, `补发平安确认目的地失败：${String(e?.message ?? e)}`);
+    }
+    return;
+  }
+}
+
+async function checkInHintFor(message, { projectId, projectSecret, chatGuid, scope, onLater }) {
   let text = "";
   let detail = null;
   // 按收到那一刻算：下面取字可能要等十几秒，不能让等待把空白件挤出去重窗口
@@ -700,6 +736,9 @@ async function checkInHintFor(message, { projectId, projectSecret, chatGuid, sco
   if (state === "start" && !text && chatKey && message?.id) {
     unreadCheckIn.set(chatKey, String(message.id));
     if (unreadCheckIn.size > 200) unreadCheckIn.delete(unreadCheckIn.keys().next().value);
+    if (projectId && projectSecret && onLater) {
+      laterCheckInDest({ projectId, projectSecret, scope, chatKey, keys, messageId: String(message.id), onLater });
+    }
   }
   const hint = checkInHint(state, text, trip);
   logDebug(
