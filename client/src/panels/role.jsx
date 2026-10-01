@@ -26,6 +26,7 @@ import {
   userLabel,
   worldBookLabel,
 } from "../labels.js";
+import { WORKER } from "../edition.js";
 import { offlineMediaUrl, uploadOfflineAvatar } from "../offlinemedia.js";
 import { SaveBar, useSection } from "../section.jsx";
 import { api, useConfig } from "../store.jsx";
@@ -2556,6 +2557,80 @@ const LOGO_TILE = {
 };
 
 /**
+ * 两档画布里 logo 能占的那块留白框（像素），和 transferlogo.js:CANVAS 一一对应：
+ * banner 600×300 去掉四边 48，icon 600×156 去掉左右 24、上下 42。
+ */
+const LOGO_BOX = [
+  { w: 504, h: 204 },
+  { w: 552, h: 72 },
+];
+
+/** SVG 根标签上一个属性能不能当像素用（纯数字或 px）。和 transferlogo.js:svgPx 一个口径。 */
+function svgPx(tag, name) {
+  const m = new RegExp(`\\s${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, "i").exec(tag);
+  const v = /^\s*([+-]?[\d.]+)\s*(px)?\s*$/i.exec(m ? (m[2] ?? m[3]) : "");
+  const n = v ? Number(v[1]) : NaN;
+  return n > 0 && n <= 10000 ? n : null;
+}
+
+/**
+ * 小手机专用：传 logo 之前先在浏览器里转成 PNG。
+ *
+ * 小手机后端（Cloudflare Worker）没有 skia，画不了 SVG，只认 PNG / JPG
+ * （Uranus小手机/worker/src/shims/canvas.js）。浏览器自己就会画 SVG，那就在这儿画好。
+ *
+ * 尺寸照桌面版的规矩算，发出去才和桌面版一样大：SVG 的原始尺寸取根标签上的
+ * width/height，不能当像素用就按 viewBox 比例把长边拉到 1200（transferlogo.js:
+ * safeSvgBytes 的口径），然后**只缩不放**地缩到两档留白框里较大的那档 —— 服务端
+ * 也只缩不放，再大也是白传。顺带把用户随手丢的几 MB 大图压小，Worker 解码不吃力。
+ */
+async function logoToPng(file) {
+  let blob = file;
+  if (/svg/i.test(file.type) || /\.svg$/i.test(file.name)) {
+    let text = await file.text();
+    const m = /<svg\b[^>]*>/i.exec(text);
+    if (m && (svgPx(m[0], "width") === null || svgPx(m[0], "height") === null)) {
+      const vb = /\sviewBox\s*=\s*["']([^"']*)["']/i.exec(m[0]);
+      const [, , vw, vh] = (vb ? vb[1] : "").trim().split(/[\s,]+/).map(Number);
+      let attrs = "";
+      if (vw > 0 && vh > 0) {
+        const k = 1200 / Math.max(vw, vh);
+        attrs = ` width="${Math.max(1, Math.round(vw * k))}" height="${Math.max(1, Math.round(vh * k))}"`;
+      }
+      const tag = m[0]
+        .replace(/\s(width|height)\s*=\s*"[^"]*"/gi, "")
+        .replace(/\s(width|height)\s*=\s*'[^']*'/gi, "")
+        .replace(/\/?>$/, (end) => `${attrs}${end}`);
+      text = text.slice(0, m.index) + tag + text.slice(m.index + m[0].length);
+    }
+    blob = new Blob([text], { type: "image/svg+xml" });
+  }
+
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("浏览器读不出这张图"));
+      el.src = url;
+    });
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    if (!(W > 0) || !(H > 0)) throw new Error("这张图读出来是 0×0");
+    const k = Math.min(1, Math.max(...LOGO_BOX.map((b) => Math.min(b.w / W, b.h / H))));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(W * k));
+    canvas.height = Math.max(1, Math.round(H * k));
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/png");
+    const stem = file.name.replace(/\.[^.]+$/, "") || "logo";
+    return { name: `${stem}.png`, base64: dataUrl.split(",")[1], mimeType: "image/png" };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/**
  * 硬盘上有哪些转账 logo。
  *
  * 和表情包标签同一个道理：素材在 `data/transfer-logos/`（还有随程序自带的
@@ -2600,6 +2675,8 @@ function useTransferLogos() {
  * 矢量的好处全没了，还得看浏览器认不认（Firefox 的 createImageBitmap 压根
  * 不吃 SVG）。所以这儿照原文件传，服务端拿 skia 去渲（transferlogo.js）。
  * 代价是没有前端压缩，所以上限卡得小：一个 logo 用不到 2MB。
+ *
+ * 小手机是例外：那边的后端画不了 SVG，上传前走 logoToPng 在浏览器里转好。
  */
 function RoleTransferLogoPicker({ role, tr }) {
   const { updateRole } = useConfig();
@@ -2628,19 +2705,22 @@ function RoleTransferLogoPicker({ role, tr }) {
     }
     setBusy(true);
     try {
-      const base64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const b = String(reader.result ?? "").split(",")[1];
-          b ? resolve(b) : reject(new Error("读不出这个文件的内容"));
-        };
-        reader.onerror = () => reject(new Error("读取文件失败"));
-        reader.readAsDataURL(file);
-      });
-      const r = await api("/api/transfer-logo/upload", {
-        method: "POST",
-        body: { name: file.name, base64, mimeType: file.type },
-      });
+      const body = WORKER
+        ? await logoToPng(file)
+        : {
+            name: file.name,
+            mimeType: file.type,
+            base64: await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => {
+                const b = String(reader.result ?? "").split(",")[1];
+                b ? resolve(b) : reject(new Error("读不出这个文件的内容"));
+              };
+              reader.onerror = () => reject(new Error("读取文件失败"));
+              reader.readAsDataURL(file);
+            }),
+          };
+      const r = await api("/api/transfer-logo/upload", { method: "POST", body });
       // 写盘失败回的是 200 + {ok:false}，api() 不会 throw
       if (r?.ok === false || !r?.file) throw new Error(r?.error || "这个文件没能存进硬盘");
       setFiles(r.files ?? []);
@@ -2679,8 +2759,14 @@ function RoleTransferLogoPicker({ role, tr }) {
           SVG、PNG、JPG、WebP 都行，服务端会等比缩放居中放到一块固定画布上，
           所以方图和长条图发出来的卡片一样高，留白填下面那个底色。
           <br />
-          自己往 <code className="mx-1 bg-sunken px-1">data/transfer-logos/</code> 里丢文件也行，
-          回来点一下「重新读取」。
+          {WORKER ? (
+            <>小手机上传之前会先在浏览器里转成 PNG。以前传的 SVG 发不出图的话，删掉重新传一次。</>
+          ) : (
+            <>
+              自己往 <code className="mx-1 bg-sunken px-1">data/transfer-logos/</code> 里丢文件也行，
+              回来点一下「重新读取」。
+            </>
+          )}
         </p>
 
         {loading ? (

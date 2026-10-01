@@ -88,7 +88,7 @@ export const LOGO_EXTS = [".svg", ".png", ".jpg", ".jpeg", ".webp"];
  * 高的一条 —— 方图变成个小方块，长条 logo 变成一条窄横幅（Chase 那种 5.4:1
  * 在这档里仍然占满宽度，只是矮，见界面上那句提示）。
  */
-const CANVAS = {
+export const CANVAS = {
   banner: { w: 600, h: 300, padX: 48, padTop: 48, padBottom: 48 },
   icon: { w: 600, h: 156, padX: 24, padTop: 42, padBottom: 42 },
 };
@@ -193,9 +193,12 @@ function svgViewBox(tag) {
  *
  * @param {Buffer} buf 文件字节
  * @param {boolean} isSvg 位图不用管（它们的尺寸在像素数据里，不是一行文本属性）
+ * 导出是给小手机的 sync-core 用：Worker 上没有 skia，自带 logo 得在这边先按
+ * **同一份**弄干净的字节渲好（见 Uranus小手机/scripts/sync-core.mjs）。
+ *
  * @returns {Buffer} 能安全交给 loadImage 的字节
  */
-function safeSvgBytes(buf, isSvg) {
+export function safeSvgBytes(buf, isSvg) {
   if (!isSvg) return buf;
   const text = buf.toString("utf-8");
   const m = /<svg\b[^>]*>/i.exec(text);
