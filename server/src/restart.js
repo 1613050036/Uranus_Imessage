@@ -35,11 +35,24 @@ const EXIT_DELAY = 600;
 
 /** 有没有人接盘。见文件头。 */
 export function canRestart() {
-  return process.env.URANUS_SUPERVISOR === "1";
+  return process.env.URANUS_SUPERVISOR === "1" || Boolean(inProcess);
 }
 
 let shutdown = async () => {};
 let pending = false;
+let inProcess = null;
+
+/**
+ * 小手机（Cloudflare Worker）用：那边没有启动器，进程也退不了 —— 重置
+ * Durable Object 只会扔掉计时器和连接，模块状态还在同一个 isolate 里，
+ * 启动流程不会再跑一遍，反而半死不活。
+ *
+ * 所以那边注册一个「在原地重来」：收尾照旧停桥接，然后调它（清缓存、
+ * 按配置把连接重新连上），不退出。桌面版没人调这个，行为不变。
+ */
+export function setInProcessRestart(fn) {
+  if (typeof fn === "function") inProcess = fn;
+}
 
 /**
  * 注册退出前的收尾（停掉所有桥接）。index.js 启动时调一次。
@@ -68,7 +81,12 @@ export function restartNotice() {
   }
   // 连点两下不能退两次 —— 第二次会在收尾跑到一半的时候插进来
   if (pending) return { ok: true, text: "🔄 已经在重启了，稍等几秒。" };
-  return { ok: true, text: "🔄 收到，正在重启整个服务，大概十几秒后就能用了。" };
+  return {
+    ok: true,
+    text: inProcess
+      ? "🔄 收到，正在重启：断开所有连接、清掉缓存、再重新连上，几秒就好。"
+      : "🔄 收到，正在重启整个服务，大概十几秒后就能用了。",
+  };
 }
 
 /**
@@ -82,7 +100,10 @@ export function requestRestart(why) {
   if (!notice.ok || pending) return notice;
   pending = true;
 
-  logWarn("系统", `收到重启请求（${why}），${EXIT_DELAY} 毫秒后退出，由启动器重新拉起`);
+  logWarn(
+    "系统",
+    `收到重启请求（${why}），${EXIT_DELAY} 毫秒后${inProcess ? "原地重来" : "退出，由启动器重新拉起"}`
+  );
 
   setTimeout(async () => {
     try {
@@ -90,6 +111,18 @@ export function requestRestart(why) {
     } catch (e) {
       // 收尾失败也要退 —— 卡在这儿的话「重启」就成了「假死」，比收尾不干净糟
       logError("系统", "重启前的收尾出错，照样退出", e);
+    }
+    if (inProcess) {
+      try {
+        await inProcess();
+        logInfo("系统", "重启完成（原地重来）");
+      } catch (e) {
+        logError("系统", "原地重启出错", e);
+      } finally {
+        // 进程还在，下一次重启得放行
+        pending = false;
+      }
+      return;
     }
     logInfo("系统", "进程退出，等启动器把服务开回来");
     process.exit(RESTART_EXIT_CODE);

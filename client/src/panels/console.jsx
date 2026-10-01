@@ -761,7 +761,6 @@ export function ServicePanel() {
   const [confirming, setConfirming] = useState(false);
 
   useEffect(() => {
-    if (WORKER) return;
     api("/api/status")
       .then((r) => setCanRestart(Boolean(r.canRestart)))
       .catch(() => setCanRestart(false));
@@ -800,22 +799,25 @@ export function ServicePanel() {
       title="服务控制"
       desc={
         WORKER
-          ? "清掉算出来的缓存。不会动任何数据"
+          ? "重启整个后端、清掉算出来的缓存。都不会动任何数据"
           : "重启整个服务、清掉算出来的缓存、看看有没有新版本。都不会动 data/ 里的任何数据"
       }
     >
       <div className="grid grid-cols-1 gap-10">
-        {/* 重启。Worker 没有能重启的进程，也没有启动器 */}
-        {!WORKER && (
+        {/* 重启。小手机那边是原地重来，见 worker/src/index.js:installRestart */}
         <div className="grid grid-cols-1 gap-4">
           <p className="text-eyebrow uppercase text-ink-faint">重启服务</p>
           <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
-            让后端退出、再由启动器拉起来，十几秒后自己恢复。
-            和「连接」面板里的「重连」不一样 —— 那个只重连桥接，这个是整个服务重来。
-            聊天记录、记忆库、配置都在磁盘上，重启不会丢。
+            {WORKER
+              ? "断开所有连接、清掉缓存，再按配置重新连上，几秒就好。小手机没法像桌面版那样整个进程退出重来（Cloudflare 上没有这回事），但卡住的连接和脏了的缓存都会重来。"
+              : "让后端退出、再由启动器拉起来，十几秒后自己恢复。"}
+            {!WORKER && "和「连接」面板里的「重连」不一样 —— 那个只重连桥接，这个是整个服务重来。"}
+            聊天记录、记忆库、配置都{WORKER ? "存在 Cloudflare 上" : "在磁盘上"}，重启不会丢。
             {canRestart === false && (
               <span className="mt-1 block text-warn">
-                这份服务不是用「启动.bat」跑起来的，退出之后没人把它开回来，所以按钮是灰的。
+                {WORKER
+                  ? "这个后端还是旧版本，不会重启。到 GitHub 上自己那份仓库点 Sync fork 更新后再来。"
+                  : "这份服务不是用「启动.bat」跑起来的，退出之后没人把它开回来，所以按钮是灰的。"}
               </span>
             )}
           </p>
@@ -832,14 +834,15 @@ export function ServicePanel() {
             title="定时重启"
             desc={
               canRestart === false
-                ? "这份服务不是用「启动.bat」跑起来的，定时重启开着也不会生效（退出之后没人把它开回来）。"
+                ? WORKER
+                  ? "后端更新之前，定时重启开着也不会生效。"
+                  : "这份服务不是用「启动.bat」跑起来的，定时重启开着也不会生效（退出之后没人把它开回来）。"
                 : "隔一阵子自己重启一次，用在长时间挂机后内存涨上去、桥接卡住这类地方。到点那一下所有对话会断几十秒。重启本身不会让计时重来。"
             }
             value={maintenance.restart}
             onChange={(patch) => updateMaintenance("restart", patch)}
           />
         </div>
-        )}
 
         {/* 清缓存 */}
         <div className="grid grid-cols-1 gap-4">
@@ -889,7 +892,11 @@ export function ServicePanel() {
       {confirming && (
         <Modal
           title="重启整个服务？"
-          desc="后端会退出再由启动器拉起来，大概十几秒。这期间收到的消息要等服务回来才处理。"
+          desc={
+            WORKER
+              ? "所有连接会断开再重新连上，几秒就好。这期间收到的消息要等连回来才处理。"
+              : "后端会退出再由启动器拉起来，大概十几秒。这期间收到的消息要等服务回来才处理。"
+          }
           onClose={() => setConfirming(false)}
           footer={
             <div className="flex justify-end gap-2">
@@ -901,8 +908,10 @@ export function ServicePanel() {
           }
         >
           <p className="text-ui leading-relaxed text-ink-soft">
-            磁盘上的东西一样都不会动 —— 聊天记录、记忆库、日记、配置都在 data/ 里。
-            重启只是把内存里的状态清零、把桥接重新连一遍。
+            {WORKER
+              ? "存着的东西一样都不会动 —— 聊天记录、记忆库、日记、配置都在 Cloudflare 上。"
+              : "磁盘上的东西一样都不会动 —— 聊天记录、记忆库、日记、配置都在 data/ 里。"}
+            {WORKER ? "重启只是清掉缓存、把桥接重新连一遍。" : "重启只是把内存里的状态清零、把桥接重新连一遍。"}
           </p>
         </Modal>
       )}
