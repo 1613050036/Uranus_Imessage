@@ -965,7 +965,6 @@ export function BackupPanel() {
    * 数字上几乎看不出来，但「勾了之后数字没变」会让人怀疑勾选到底生效没有。
    */
   useEffect(() => {
-    if (WORKER) return undefined;
     let dead = false;
     estimateFullBackup(includeKeys)
       .then((r) => {
@@ -1094,7 +1093,7 @@ export function BackupPanel() {
         ]
       : [];
 
-  // 「含密钥」一个勾选框管两个导出，Worker 版没有完整备份，就挪到只导配置那一块
+  // 「含密钥」一个勾选框管两个导出，放完整备份那块（两边都看得到）
   const keysToggle = (
     <>
       <label className="flex cursor-pointer items-start gap-2.5 text-ui leading-relaxed text-ink-soft">
@@ -1125,20 +1124,28 @@ export function BackupPanel() {
       title="备份 / 恢复"
       desc={
         WORKER
-          ? "把角色、人设、预设、世界书这些设置导出成一份 JSON，或者用它恢复回来"
+          ? "打一份完整备份存到本地，或者用这个包（也认桌面版打的）恢复回来"
           : "把整个数据文件夹打成一个包存到本地，或者用这个包恢复回来"
       }
     >
       <div className="grid grid-cols-1 gap-10">
-        {/* 完整备份。Worker 里没有 tar 打包要的文件流和临时目录 */}
-        {!WORKER && (
         <div className="grid grid-cols-1 gap-4">
           <p className="text-eyebrow uppercase text-ink-faint">完整备份</p>
           <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
-            配置、聊天记录、记忆库、Instagram、表情包和参考图
-            <span className="text-ink-soft">全都在里面</span>
-            ，就是整个数据文件夹的一份快照。恢复的时候包里有的整体换掉，
-            包里没有的一个字节不动。
+            {WORKER ? (
+              <>
+                配置、聊天记录、记忆库<span className="text-ink-soft">都在里面</span>
+                。Instagram、表情包这些图没存在小手机上，不在包里；桌面版打出来的包
+                带这些图的话，恢复时会先超过内存上限报错，不会半途落一半。
+              </>
+            ) : (
+              <>
+                配置、聊天记录、记忆库、Instagram、表情包和参考图
+                <span className="text-ink-soft">全都在里面</span>
+                ，就是整个数据文件夹的一份快照。
+              </>
+            )}
+            {" "}恢复的时候包里有的整体换掉，包里没有的一个字节不动。
           </p>
 
           {keysToggle}
@@ -1165,18 +1172,16 @@ export function BackupPanel() {
             </p>
           )}
         </div>
-        )}
 
         {/* 只导配置 */}
-        <div className={`grid grid-cols-1 gap-4${WORKER ? "" : " border-t border-line pt-8"}`}>
-          <p className="text-eyebrow uppercase text-ink-faint">{WORKER ? "导出配置" : "只导配置（搬家用）"}</p>
+        <div className="grid grid-cols-1 gap-4 border-t border-line pt-8">
+          <p className="text-eyebrow uppercase text-ink-faint">只导配置（搬家用）</p>
           <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
             一份 JSON，只有角色、用户人设、预设、世界书这些设置，
             <span className="text-ink-soft">不含</span>
             聊天记录和记忆库。想把角色和预设挪到另一台机器、又不想连着几十兆
             聊天一起搬的时候用这个。当备份用不合适 —— 聊出来的东西都不在里面。
           </p>
-          {WORKER && keysToggle}
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={runExport} disabled={busy === "export"}>
               {busy === "export" ? (
@@ -1193,10 +1198,9 @@ export function BackupPanel() {
         <div className="grid grid-cols-1 gap-4 border-t border-line pt-8">
           <p className="text-eyebrow uppercase text-ink-faint">从备份恢复</p>
           <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
-            {WORKER
-              ? "选上面导出的那份 .json（桌面版「只导配置」导出来的也行）。"
-              : "上面两种文件都能选：.tar.gz 是完整备份，.json 是只有配置的那份。"}
-            {WORKER ? "它" : "两种都"}是<span className="text-ink-soft">整体替换</span>——包里有的那几类会覆盖掉
+            上面两种文件都能选：.tar.gz 是完整备份，.json 是只有配置的那份
+            {WORKER && "（桌面版打的包也认）"}。两种都是
+            <span className="text-ink-soft">整体替换</span>——包里有的那几类会覆盖掉
             现在的，比如包里有 2 个角色，恢复后就只剩这 2 个。选完会先让你确认一遍。
           </p>
 
@@ -1210,7 +1214,7 @@ export function BackupPanel() {
             <input
               ref={fileRef}
               type="file"
-              accept={WORKER ? "application/json,.json" : ".tar.gz,.tgz,application/gzip,application/json,.json"}
+              accept=".tar.gz,.tgz,application/gzip,application/json,.json"
               className="hidden"
               onChange={onPickFile}
             />
@@ -1287,8 +1291,8 @@ export function BackupPanel() {
             <div className="grid grid-cols-1 gap-6">
               <p className="text-ui leading-relaxed text-ink-soft">
                 包里有的那几块会<span className="text-ink">整体替换</span>
-                现在磁盘上的东西 —— 聊天记录、记忆库、Instagram、表情包都算。
-                包里没有的那几块保持不变。
+                现在{WORKER ? "Cloudflare 上" : "磁盘上"}的东西 —— 配置、聊天记录、记忆库
+                {!WORKER && "、Instagram、表情包"}都算。包里没有的那几块保持不变。
               </p>
               <p className="text-meta leading-relaxed text-ink-faint">
                 具体换掉哪几块由包里那份清单说了算，解包时会在日志里列出来。
