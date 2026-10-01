@@ -91,7 +91,7 @@ const DOCS = [
     name: "服务商源",
     where: "连接 → 某个服务商源",
     what: "填 API 地址和密钥的地方。一个源填一次，下面可以挂很多模型，所有角色共用这些模型。换一次密钥，用它的角色一起生效。",
-    note: "新建时先选 API 类型：中转站、自建反代选「自定义」，地址填到 /v1 那一层（例如 https://xxx.com/v1），程序自己接 /chat/completions；直连官方就选 OpenAI / Google Gemini / Anthropic Claude，地址会预填好，只要贴密钥。老版本升上来的源一律是「自定义」，行为不变。Claude 类型不能画图、听音、看视频、做向量。填完可以点「测试连接」当场验，不通就是地址或密钥的问题。",
+    note: "新建时先选 API 类型：中转站、自建反代选「自定义」，地址填到 /v1 那一层（例如 https://xxx.com/v1），程序自己接 /chat/completions；直连官方就选 OpenAI / Google Gemini / Anthropic Claude，地址会预填好，只要贴密钥。老版本升上来的源一律是「自定义」，行为不变。Claude 类型不能画图、听音、看视频、做向量；NovelAI 类型反过来只能画图（填 pst- 开头的 Persistent API Token，模型默认就归「生图」，角色写的中文画面描述会先借第一个聊天模型翻成英文 tag）。填完可以点「测试连接」当场验，不通就是地址或密钥的问题。",
   },
   {
     name: "模型分类",

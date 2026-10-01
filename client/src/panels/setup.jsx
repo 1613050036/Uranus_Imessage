@@ -448,6 +448,7 @@ function StepProvider({ provider }) {
       <div className="grid grid-cols-1 gap-6">
         <Field label="API 类型" hint={typeMeta.desc}>
           <ProviderTypeButtons
+            chatOnly
             value={typeMeta.id}
             onChange={(type) =>
               updateProvider(provider.id, { type, url: urlForType(provider?.url, type) })

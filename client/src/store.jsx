@@ -1361,6 +1361,8 @@ export function ConfigProvider({ children }) {
         ...c,
         providers: (c.providers ?? []).map((p) => {
           if (p.id !== providerId) return p;
+          // NovelAI 只会画图，拉回来的模型直接归生图，省得一个个去勾
+          const cats = p.type === "novelai" ? ["image"] : categories;
           const models = [...p.models];
           for (const raw of names) {
             const model = String(raw ?? "").trim();
@@ -1375,7 +1377,7 @@ export function ConfigProvider({ children }) {
               alias: "",
               enabled: true,
               pinned: false,
-              categories: [...categories],
+              categories: [...cats],
               visionPrompt: "",
               audioPrompt: "",
               imagePrompt: "",

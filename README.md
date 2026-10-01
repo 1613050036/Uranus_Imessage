@@ -190,6 +190,7 @@ Node.js 20+ / Express 后端，React 18 + Vite 5 + Tailwind 3 前端，npm works
 模型接口默认走 OpenAI 兼容协议（服务商源的「自定义」类型，中转站都是这种）；
 新建服务商源时也能直接选 OpenAI、Google Gemini、Anthropic Claude 三家官方接口，
 后两家打的是各自的原生接口。听音那条走 Gemini 原生接口。
+生图还能选 NovelAI（只能画图），中文画面描述会先借聊天模型翻成英文 tag。
 iMessage 走 Photon / Spectrum。
 
 ## 想再深入一点

@@ -21,6 +21,7 @@
 import { logDebug, logError, logInfo, logWarn } from "./logs.js";
 import { DEFAULT_AUDIO_PROMPT, DEFAULT_VIDEO_PROMPT, DEFAULT_VISION_PROMPT } from "./config.js";
 import { netCodes, whyNetwork } from "./net.js";
+import { NOVELAI_MODELS } from "./novelai.js";
 import {
   ANTHROPIC_DEFAULT_MAX_TOKENS,
   GEMINI_SAFETY_OFF,
@@ -886,6 +887,13 @@ export async function chatCompletion(endpoint, messages, opts = {}) {
   if (!base) throw faultKind(new Error(`${label} 没填接口地址`), "config");
   if (!key) throw faultKind(new Error(`${label} 没填密钥`), "config");
   if (!model) throw faultKind(new Error(`${label} 没填模型名`), "config");
+  // NovelAI 只会画图。聊天、识图、测试连接都走这里，打过去只会 404
+  if (type === "novelai") {
+    throw faultKind(
+      new Error(`${label} 是 NovelAI 的模型，NovelAI 只能画图，聊天和识图换一个别的服务商源`),
+      "config"
+    );
+  }
 
   // Gemini 3.7 / 3.8 的两条硬规矩，见 GEMINI_STRICT
   const strict = GEMINI_STRICT.test(model);
@@ -1349,6 +1357,11 @@ export async function listModels(endpoint, label = "API") {
   if (!key) return { ok: false, error: `${label} 没填密钥` };
 
   const type = apiType(endpoint);
+  // NovelAI 没有列模型的接口，给一份写死的清单（media.js:NOVELAI_MODELS）
+  if (type === "novelai") {
+    logInfo(label, `NovelAI 没有模型列表接口，给的是内置清单（${NOVELAI_MODELS.length} 个）`);
+    return { ok: true, models: [...NOVELAI_MODELS] };
+  }
   const target =
     type === "gemini"
       ? { url: `${geminiRoot(base)}/v1beta/models?pageSize=1000`, headers: geminiHeaders(base, key) }
@@ -1522,6 +1535,13 @@ async function inlineMedia(endpoint, prompt, media, kind) {
     throw faultKind(new Error(`${label} 拿到的是一段空${kind.noun}`), "config");
   }
   const type = apiType(endpoint);
+  // NovelAI 只会画图
+  if (type === "novelai") {
+    throw faultKind(
+      new Error(`${label} 选的是 NovelAI 的模型，NovelAI 只能画图，换一个 Gemini 或自定义类型的服务商源`),
+      "config"
+    );
+  }
   // Claude 压根不收音频和视频，打过去只会白花一次钱再 400
   if (type === "anthropic") {
     throw faultKind(
@@ -1736,9 +1756,12 @@ export async function embedText(endpoint, text, opts = {}) {
   if (!input) throw new Error(`${label} 收到空文本`);
 
   const type = apiType(endpoint);
-  if (type === "anthropic") {
+  if (type === "anthropic" || type === "novelai") {
     throw faultKind(
-      new Error(`${label} 选的是 Claude 的模型，Claude 没有向量模型，换一个别的服务商源`),
+      new Error(
+        `${label} 选的是 ${type === "novelai" ? "NovelAI" : "Claude"} 的模型，` +
+          `它没有向量模型，换一个别的服务商源`
+      ),
       "config"
     );
   }

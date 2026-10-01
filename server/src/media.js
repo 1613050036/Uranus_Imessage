@@ -35,6 +35,17 @@ import { ffmpegPath, runFfmpeg } from "./ffmpeg.js";
 import { logDebug, logInfo, logWarn } from "./logs.js";
 import { netCodes, whyNetwork } from "./net.js";
 import { GEMINI_SAFETY_OFF, apiType, geminiHeaders, geminiModelUrl } from "./apitype.js";
+import {
+  NOVELAI_TRANSLATE_PROMPT,
+  cleanTranslation,
+  imageDims,
+  needsTranslation,
+  novelaiBody,
+  novelaiRoot,
+  novelaiSize,
+  novelaiSizeLike,
+  unzipFirstImage,
+} from "./novelai.js";
 import { xmlBlockRanges } from "./websearch.js";
 
 /** 合成一条语音最多等多久。对方在 iMessage 那头看着打字指示器干等。 */
@@ -2111,6 +2122,131 @@ async function geminiImage({ base, key, model, prompt, negative, refFile, ratio 
 }
 
 /**
+ * 把中文画面描述翻成 NovelAI 认的英文 tag。
+ *
+ * 借的是 config.js:resolveImageEndpoint 带出来的 `translator`（第一个能聊天的模型）。
+ * 已经是英文的不翻（用户在提示词里让角色直接写 tag 的情况）；翻失败、没有可借的
+ * 模型就原样发 —— 画歪了也比一张图都不发强，日志里说清楚为什么歪。
+ */
+async function translateForNovelai(desc, translator, scope) {
+  if (!needsTranslation(desc)) return desc;
+  if (!translator) {
+    logWarn(
+      scope,
+      "画面描述是中文，但没有能借来翻译的聊天模型，原样发给 NovelAI（它看不懂中文，画出来多半对不上）"
+    );
+    return desc;
+  }
+  try {
+    const { chatCompletion } = await import("./llm.js");
+    const out = await chatCompletion(
+      translator,
+      [
+        { role: "system", content: NOVELAI_TRANSLATE_PROMPT },
+        { role: "user", content: desc },
+      ],
+      { label: `NovelAI 提示词翻译（${translator.label}）`, maxTokens: 400, retries: 1 }
+    );
+    const tags = cleanTranslation(out);
+    if (!tags || needsTranslation(tags)) {
+      logWarn(scope, "翻译模型没给出英文 tag，原样发给 NovelAI", clipBody(out));
+      return desc;
+    }
+    logDebug(scope, `画面描述翻成 tag：${tags}`);
+    return tags;
+  } catch (e) {
+    logWarn(scope, "画面描述翻成英文失败，原样发给 NovelAI", String(e?.message ?? e));
+    return desc;
+  }
+}
+
+/**
+ * NovelAI 出图。请求体在 novelai.js 里拼，这里管发、重试和报错。
+ *
+ * 图生图：参考图照原样发过去（小手机那边没有 ffmpeg 可以缩），输出尺寸照它的
+ * 长宽比挑（不然参考图会被拉变形）。用户选了比例的话听用户的。
+ * 带参考图的那一张 Opus 也要扣 Anlas，这是 NovelAI 的规矩。
+ *
+ * @returns {Promise<{buffer: Buffer}>}
+ */
+async function novelaiImage({ base, key, model, prompt, negative, refFile, ratio }, scope) {
+  if (!key) throw new Error("NovelAI 没填密钥（网页 → 设置 → Account → Get Persistent API Token，pst- 开头那串）");
+
+  let image;
+  let [width, height] = novelaiSize(ratio?.key);
+  if (refFile) {
+    const bytes = await fs.promises.readFile(refFile);
+    image = bytes.toString("base64");
+    const dims = imageDims(bytes);
+    if (!ratio && dims) [width, height] = novelaiSizeLike(dims.width, dims.height);
+  }
+
+  const body = novelaiBody({ model, prompt, negative, width, height, image });
+  const url = `${novelaiRoot(base)}/ai/generate-image`;
+
+  let bytes;
+  let retries = 0;
+  for (;;) {
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        signal: AbortSignal.timeout(IMAGE_TIMEOUT),
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      if (retries < IMAGE_RETRY_DELAYS.length && worthImageRetry(e)) {
+        const delay = IMAGE_RETRY_DELAYS[retries];
+        retries += 1;
+        logWarn(scope, `出图没连上（${whyFetch(e, IMAGE_TIMEOUT)}），${delay}ms 后重试第 ${retries} 次`);
+        await wait(delay);
+        continue;
+      }
+      throw new Error(`生图请求失败：${whyFetch(e, IMAGE_TIMEOUT)}`);
+    }
+
+    bytes = Buffer.from(await res.arrayBuffer());
+    if (res.ok) break;
+
+    const raw = bytes.toString("utf8");
+    // 429 = 同一个号上一张还没画完（NovelAI 一个号同时只画一张），等一下再来
+    if (retries < IMAGE_RETRY_DELAYS.length && transientImageFailure(res.status, raw)) {
+      const delay = IMAGE_RETRY_DELAYS[retries];
+      retries += 1;
+      logWarn(scope, `NovelAI 返回 ${res.status}，${delay}ms 后重试第 ${retries} 次`, clipBody(raw));
+      await wait(delay);
+      continue;
+    }
+    if (res.status === 401) {
+      throw new Error(
+        `NovelAI 说密钥不对（401）。要填的是 Persistent API Token（pst- 开头），不是登录密码：${clipBody(raw)}`
+      );
+    }
+    if (res.status === 402) {
+      throw new Error(
+        `NovelAI 说要付费（402）：没有订阅，或者 Anlas 不够。` +
+          `Opus 免费出图只限不带参考图、不超过 1024×1024 的那种：${clipBody(raw)}`
+      );
+    }
+    throw new Error(`NovelAI 返回 ${res.status}：${clipBody(raw)}`);
+  }
+
+  // 官方回 zip；有的中转站直接回图片，或者回 JSON 里装 base64 —— 三种都认
+  const zipped = await unzipFirstImage(bytes);
+  if (zipped?.length) return { buffer: zipped, width, height };
+  if (sniffImageType(bytes)) return { buffer: bytes, width, height };
+  const raw = bytes.toString("utf8");
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(`NovelAI 回的东西既不是 zip 也不是图片：${clipBody(raw)}`);
+  }
+  return { buffer: await parseImageResponse(data, raw, scope), width, height };
+}
+
+/**
  * 出一张图。
  *
  * 两条路：
@@ -2165,6 +2301,23 @@ export async function generateImage(endpoint, req, scope = "生图") {
   );
   // 用户没选比例时是 null，下面两条路都据此整个跳过，一个字段都不加
   const ratio = endpoint?.ratio ?? null;
+
+  // NovelAI 走它自己的接口；中文描述先翻成英文 tag，正面提示词照样拼在前面
+  if (type === "novelai") {
+    const tags = await translateForNovelai(desc, endpoint?.translator, scope);
+    const { buffer, width, height } = await novelaiImage(
+      { base, key, model, prompt: positive ? `${positive}, ${tags}` : tags, negative, refFile, ratio },
+      scope
+    );
+    const ms = Date.now() - startedAt;
+    const { mimeType, ext } = sniffImage(buffer);
+    logInfo(
+      scope,
+      `${endpoint?.label ?? model} 出图成功，${Math.round(buffer.length / 1024)}KB ${ext}，` +
+        `${width}×${height}，耗时 ${ms}ms${refFile ? `（参考图 ${path.basename(refFile)}）` : ""}`
+    );
+    return { buffer, mimeType, ext, ms };
+  }
 
   // Gemini 类型走原生接口，请求和响应都是另一个样子，见 geminiImage
   if (type === "gemini") {

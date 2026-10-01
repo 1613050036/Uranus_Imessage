@@ -116,6 +116,8 @@ export function userBlockReason(config, user) {
  * 老版本升上来的、没有 type 字段的一律按「自定义」处理 —— 就是以前那条
  * OpenAI 兼容的路，行为不变。OpenAI 和自定义发出去的请求一模一样，
  * 区别只在新建时预填了官方地址。
+ *
+ * `imageOnly` 的（NovelAI）只能画图：新加的模型默认归「生图」，首次设置向导里不列。
  */
 export const PROVIDER_TYPES = [
   {
@@ -153,6 +155,16 @@ export const PROVIDER_TYPES = [
     urlHint: "官方地址已经填好；走反代就换成反代的域名",
     placeholder: "https://api.anthropic.com",
     keyPlaceholder: "sk-ant-…",
+  },
+  {
+    id: "novelai",
+    label: "NovelAI",
+    desc: "NovelAI 官方生图（二次元画风）。只能画图，中文画面描述会先借聊天模型翻成英文 tag",
+    url: "https://image.novelai.net",
+    urlHint: "官方地址已经填好；走中转站就换成中转站的根地址",
+    placeholder: "https://image.novelai.net",
+    keyPlaceholder: "pst-…（NovelAI 网页 → 设置 → Account → Get Persistent API Token）",
+    imageOnly: true,
   },
 ];
 

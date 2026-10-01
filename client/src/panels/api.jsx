@@ -40,10 +40,10 @@ import {
 /**
  * API 类型的一排按钮。换类型时地址只在「没动过」的情况下跟着换（见 labels.js:urlForType）。
  */
-export function ProviderTypeButtons({ value, onChange }) {
+export function ProviderTypeButtons({ value, onChange, chatOnly = false }) {
   return (
     <div className="flex flex-wrap gap-2">
-      {PROVIDER_TYPES.map((t) => (
+      {PROVIDER_TYPES.filter((t) => !chatOnly || !t.imageOnly || t.id === value).map((t) => (
         <Button
           key={t.id}
           variant={value === t.id ? "primary" : "outline"}
@@ -318,6 +318,8 @@ export function ModelRow({ provider, entry, defaultPrompt, defaultAudio, default
 
   const cats = entry.categories ?? [];
   const patch = (p) => updateModel(provider.id, entry.id, p);
+  // NovelAI 只能画图：分类只给「生图」一个，「测试连接」（发一句聊天）也不给
+  const nai = providerTypeOf(provider).id === "novelai";
 
   async function runTest() {
     setTestState("loading");
@@ -646,7 +648,7 @@ export function ModelRow({ provider, entry, defaultPrompt, defaultAudio, default
 
           <Field label="分类" hint="决定它出现在角色的哪个下拉里，可多选">
             <div className="flex flex-wrap gap-2">
-              {MODEL_CATEGORIES.map((c) => {
+              {MODEL_CATEGORIES.filter((c) => !nai || c === "image").map((c) => {
                 const on = cats.includes(c);
                 return (
                   <button
@@ -766,18 +768,28 @@ export function ModelRow({ provider, entry, defaultPrompt, defaultAudio, default
             <>
               <Field
                 label="生图正面提示词"
-                hint="拼在画面描述前面，通常放风格词。留空就只发模型自己写的那段"
+                hint={
+                  nai
+                    ? "拼在画面描述前面，写英文 tag（画师、画风之类）。质量词会自动补，不用写"
+                    : "拼在画面描述前面，通常放风格词。留空就只发模型自己写的那段"
+                }
               >
                 <textarea
                   className={`${inputCls} min-h-[70px] resize-y leading-relaxed`}
                   value={entry.imagePrompt ?? ""}
                   onChange={(e) => patch({ imagePrompt: e.target.value })}
-                  placeholder="例如：masterpiece, best quality, 写实风格…"
+                  placeholder={
+                    nai ? "例如：artist:xxx, watercolor, soft lighting" : "例如：masterpiece, best quality, 写实风格…"
+                  }
                 />
               </Field>
               <Field
                 label="生图负面提示词"
-                hint="走 negative_prompt 字段。中转站普遍认，不认的会忽略掉"
+                hint={
+                  nai
+                    ? "留空就用 NovelAI 网页端默认的那套负面词"
+                    : "走 negative_prompt 字段。中转站普遍认，不认的会忽略掉"
+                }
               >
                 <textarea
                   className={`${inputCls} min-h-[70px] resize-y leading-relaxed`}
@@ -788,7 +800,11 @@ export function ModelRow({ provider, entry, defaultPrompt, defaultAudio, default
               </Field>
               <Field
                 label="出图比例"
-                hint="size 和 aspect_ratio 两个字段一起发（各家认的不是同一个）。默认「不指定」就一个字都不传，和以前一样让模型用自己的默认尺寸"
+                hint={
+                  nai
+                    ? "每一档都卡在 1024×1024 像素以内（Opus 免费出图的上限）。「不指定」是网页端默认的竖图 832×1216；带参考图时照参考图的比例来"
+                    : "size 和 aspect_ratio 两个字段一起发（各家认的不是同一个）。默认「不指定」就一个字都不传，和以前一样让模型用自己的默认尺寸"
+                }
               >
                 <select
                   className={inputCls}
@@ -803,7 +819,9 @@ export function ModelRow({ provider, entry, defaultPrompt, defaultAudio, default
                   ))}
                 </select>
                 <p className="text-meta leading-relaxed text-ink-faint">
-                  选了之后要是这个模型报「不支持这个尺寸」，退回「不指定」就行。
+                  {nai
+                    ? "NovelAI 看不懂中文：角色写的中文画面描述会先借第一个开着的聊天模型翻成英文 tag 再发。带参考图（图生图）的那张 Opus 也要扣 Anlas。"
+                    : "选了之后要是这个模型报「不支持这个尺寸」，退回「不指定」就行。"}
                 </p>
               </Field>
               {imageData && (
@@ -818,7 +836,7 @@ export function ModelRow({ provider, entry, defaultPrompt, defaultAudio, default
 
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-meta leading-relaxed text-ink-faint">
-              测试会真发一次请求，不用先保存。
+              {nai ? "" : "测试会真发一次请求，不用先保存。"}
               {cats.includes("audio") &&
                 "听音没有「空跑」的按钮 —— 识图能拿一张内置纯色图凑合，声音没有等价物，得自己传一段。"}
               {cats.includes("video") &&
@@ -907,14 +925,16 @@ export function ModelRow({ provider, entry, defaultPrompt, defaultAudio, default
                   <Brain size={14} /> 测试向量
                 </Button>
               )}
-              <Button variant="outline" onClick={runTest} disabled={testState === "loading"}>
-                {testState === "loading" ? (
-                  <RefreshCw size={14} className="animate-spin" />
-                ) : (
-                  <Zap size={14} />
-                )}
-                {testState === "loading" ? "测试中…" : "测试连接"}
-              </Button>
+              {!nai && (
+                <Button variant="outline" onClick={runTest} disabled={testState === "loading"}>
+                  {testState === "loading" ? (
+                    <RefreshCw size={14} className="animate-spin" />
+                  ) : (
+                    <Zap size={14} />
+                  )}
+                  {testState === "loading" ? "测试中…" : "测试连接"}
+                </Button>
+              )}
             </div>
           </div>
 

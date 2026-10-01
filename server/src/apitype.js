@@ -1,7 +1,7 @@
 /**
  * 服务商源的「API 类型」：同一份 OpenAI 形状的请求，落到各家原生接口上长什么样。
  *
- * 四种类型（config.js:PROVIDER_TYPES）：
+ * 五种类型（config.js:PROVIDER_TYPES）：
  *
  *  - `custom`    自定义。OpenAI 兼容的 `/chat/completions`，中转站、自建反代都是这种。
  *                老版本升上来的、没选过类型的一律是它 —— 行为和以前一个字都不差。
@@ -10,6 +10,8 @@
  *  - `gemini`    Google 官方原生接口：`/v1beta/models/{model}:generateContent`，
  *                `x-goog-api-key` 鉴权，安全过滤全关。
  *  - `anthropic` Claude 官方原生接口：`/v1/messages`，`x-api-key` 鉴权。
+ *  - `novelai`   NovelAI 生图：`/ai/generate-image`，只能画图，聊天那条路不走它
+ *                （请求在 media.js:novelaiImage 里拼，这个文件只认个名字）。
  *
  * ── 为什么在「发出去那一刻」才翻译 ──
  *
@@ -38,7 +40,7 @@ function stripSuffix(url, suffixes) {
 /** 端点上的类型。缺的、不认识的一律当自定义 —— 和 config.js 的规矩一致。 */
 export function apiType(endpoint) {
   const t = endpoint?.type;
-  return t === "openai" || t === "gemini" || t === "anthropic" ? t : "custom";
+  return t === "openai" || t === "gemini" || t === "anthropic" || t === "novelai" ? t : "custom";
 }
 
 /** 这个类型打的是不是原生接口（要翻译请求体的那两种）。 */
@@ -52,6 +54,7 @@ export const API_TYPE_NAMES = {
   openai: "OpenAI",
   gemini: "Google Gemini",
   anthropic: "Anthropic Claude",
+  novelai: "NovelAI",
 };
 
 /* ================= Gemini ================= */
