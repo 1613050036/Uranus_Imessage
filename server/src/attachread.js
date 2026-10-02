@@ -224,6 +224,7 @@ async function fetchOnce(
   const chunks = [];
   let got = 0;
   let firstMs = 0;
+  let firstLen = 0;
   let lastReport = t0;
 
   try {
@@ -249,18 +250,31 @@ async function fetchOnce(
       if (r.done) break;
 
       const piece = Buffer.from(r.value);
-      if (!got) firstMs = Date.now() - t0;
+      if (!got) {
+        firstMs = Date.now() - t0;
+        firstLen = piece.length;
+      }
       chunks.push(piece);
       got += piece.length;
 
       const now = Date.now();
       if (loud && now - lastReport >= PROGRESS_MS) {
         lastReport = now;
-        const rate = got / 1024 / Math.max(0.001, (now - t0 - firstMs) / 1000);
+        /*
+         * 速度只算第一块之后的。第一块往往等了一分多钟才到，一到就触发这行
+         * 报告，这时分母（从第一块起算的时间）≈0 —— 实机日志里那句
+         * 「0.3/2.1MB，约 256000KB/s」就是 0.3MB 除以 0.001s，把「憋了一分钟
+         * 才吐一块」报成了「飞快」。
+         */
+        const secs = (now - t0 - firstMs) / 1000;
+        const rate =
+          got > firstLen && secs > 0
+            ? `约 ${((got - firstLen) / 1024 / secs).toFixed(0)}KB/s`
+            : "刚到第一块";
         logInfo(
           scope,
           `${what}还在下：${mb(got)}${claimed ? `/${mb(claimed)}` : ""}MB，` +
-            `约 ${rate.toFixed(0)}KB/s（第一个字节等了 ${(firstMs / 1000).toFixed(1)}s）`
+            `${rate}（第一个字节等了 ${(firstMs / 1000).toFixed(1)}s）`
         );
       }
     }
