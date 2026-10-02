@@ -108,7 +108,7 @@ import {
 } from "./promptmode.js";
 import { applyAndLog } from "./regex.js";
 import { requestRestart } from "./restart.js";
-import { appendTurn, readSession, recentMessages, sessionIdFor } from "./sessions.js";
+import { appendTurn, followLineChange, readSession, recentMessages, sessionIdFor } from "./sessions.js";
 import { hasFix, hasMoved, locationHint, watchFriendLocations } from "./friendloc.js";
 import {
   DEVICE_NAMES,
@@ -7933,6 +7933,16 @@ export async function syncBridges(getConfig) {
         linePhone: project.linePhone ?? "",
       },
     });
+  }
+
+  /*
+   * 换了号的角色先把存档搬到新号名下，再起连接：会话 ID 是按线路号算的，
+   * 不搬的话新号上第一条消息就会照着新 ID 开一份空存档。放在这里是因为
+   * 改号的几条路（重新登记、手动填号、换凭据）最后都会走到 syncBridges。
+   */
+  const lines = [...want.values()].map(({ meta }) => ({ id: meta.roleId, name: meta.roleName, line: meta.linePhone }));
+  for (const { from, to } of followLineChange(lines, (msg) => logWarn("配置", msg))) {
+    logInfo("配置", `线路号换了，会话存档 ${from} 已跟着改名为 ${to}`);
   }
 
   const result = { started: [], stopped: [], restarted: [], kept: [] };

@@ -320,6 +320,61 @@ export function migrateSessionIds(lineByRoleId, onLog = () => {}) {
 }
 
 /**
+ * 换号跟着走：角色的线路号变了，把它在旧号下的存档改名到新号下。
+ *
+ * 会话 ID 的尾巴是线路号（见 sessionIdFor），所以换一条线路 —— 给项目换
+ * Photon 凭据重新登记、手动改号码、或者刚登记上号码（之前退的是 peerHash）
+ * —— 算出来的都是一份空存档，角色等于失忆。这一步在每次 syncBridges 开头跑，
+ * 不管号码是从哪条路改的都能接上。
+ *
+ * 闸和 migrateSessionIds 一个思路，宁可不搬也不搬错：
+ *  1. 新 ID 已经有文件了就不动（已经在新号上聊过，或者已经搬过）；
+ *  2. 只认**同一个角色、同一个名字**的聊天存档：roleId 和 roleName 都对得上，
+ *     而且 ID 是「同样的头 + 一串数字（旧线路号）或这个人的 peerHash」。
+ *     角色改名照旧等于开新存档，这里不把改名前的拽过来；
+ *  3. 符合条件的有好几份（换过不止一次号）只搬最近更新的那份，其余留着。
+ *
+ * @param {Array<{id: string, name: string, line: string}>} roles 角色和它现在绑的线路号
+ * @param {(msg: string) => void} [onLog]
+ * @returns {Array<{from: string, to: string}>}
+ */
+export function followLineChange(roles, onLog = () => {}) {
+  if (!fs.existsSync(SESSIONS_DIR)) return [];
+  const all = listSessions(); // 已经按更新时间倒序
+  const moved = [];
+
+  for (const role of roles ?? []) {
+    const tail = addrTail(role?.line);
+    if (!role?.id || !tail) continue;
+    const target = sessionIdFor(role.name, role.id, role.line);
+    const to = fileFor(target);
+    if (!to || fs.existsSync(to)) continue;
+
+    const head = target.slice(0, target.length - tail.length);
+    const hit = all.find(
+      (s) =>
+        s.kind === "chat" &&
+        s.roleId === role.id &&
+        s.roleName === role.name &&
+        s.id !== target &&
+        s.id.startsWith(head) &&
+        (/^\d+$/.test(s.id.slice(head.length)) || s.id.slice(head.length) === peerHash(s.peer))
+    );
+    if (!hit) continue;
+
+    try {
+      const session = readSession(hit.id);
+      fs.writeFileSync(to, JSON.stringify({ ...session, id: target }, null, 2), "utf-8");
+      fs.unlinkSync(fileFor(hit.id));
+      moved.push({ from: hit.id, to: target });
+    } catch (e) {
+      onLog(`会话存档 ${hit.id} 搬成 ${target} 失败（原文件没动）：${String(e?.message ?? e)}`);
+    }
+  }
+  return moved;
+}
+
+/**
  * 一次性迁移：把老版本角色里手写的预设对话另存一份。
  *
  * 预设编辑器撤掉了，但用户写过的东西不能凭空蒸发。这时候还不知道对方号码、
