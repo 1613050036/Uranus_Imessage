@@ -60,6 +60,13 @@ const TTS_TIMEOUT = 30000;
 const TTS_RETRIES = 1;
 
 /**
+ * 语音条前面垫多少毫秒静音。TTS 第 0 毫秒就开口，iPhone 点开语音条要先切音频
+ * 通道（听筒 / 扬声器、蓝牙耳机唤醒），开头那几百毫秒播不出来 —— 听着就是
+ * 「吞了前几个字」。m4a（ffmpeg adelay）和 caf（垫 Opus 静音包）两条路都垫。
+ */
+const VOICE_LEAD_MS = 600;
+
+/**
  * 出一张图最多等多久。
  *
  * 原来是 90s，照「30s 是常态」定的。但 gpt-image 系列走中转站实测要 60~90 多秒
@@ -1060,6 +1067,8 @@ async function toFaststartM4a(buffer, ext, scope) {
         "-y",
         "-i",
         inPath,
+        "-af",
+        `adelay=${VOICE_LEAD_MS}:all=1`,
         "-f",
         "ipod",
         "-c:a",
@@ -1724,7 +1733,7 @@ export async function synthesizeVoice(
   const ms = Date.now() - startedAt;
 
   if (caf) {
-    const packed = oggOpusToCaf(out.buffer);
+    const packed = oggOpusToCaf(out.buffer, { padMs: VOICE_LEAD_MS });
     if (!packed) {
       const head = out.buffer.subarray(0, 4).toString("latin1");
       throw new Error(`${source.name} 返回的不是 Ogg Opus（文件头 ${JSON.stringify(head)}），装不成语音条`);

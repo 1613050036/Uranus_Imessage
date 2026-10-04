@@ -281,14 +281,27 @@ function cafPcmToWav(caf) {
  * 包长表（pakt）放在 data **前面**：和 m4a 的 faststart 一个道理，
  * 苹果那头读文件头就能拿到时长。
  *
+ * `padMs`：前面垫多少毫秒静音。TTS 出来的音频第 0 毫秒就开口，iPhone 点开语音条
+ * 要先切音频通道（听筒 / 扬声器、蓝牙耳机唤醒），开头那几百毫秒会被吃掉 ——
+ * 听起来就是「吞了前几个字」。iPhone 自己录的语音条按下到开口天然有段空白，没这问题。
+ * 静音包是现成的 20ms CELT 静音帧（三个字节），不用编码器。
+ *
  * @param {Uint8Array} buf 一个完整的 Ogg Opus 文件
+ * @param {{padMs?: number}} [opts]
  * @returns {{buffer: Buffer, mimeType: string, duration: number} | null}
  *   不是 Ogg Opus / 文件坏了 / 一个音频包都没有 → null
  */
-export function oggOpusToCaf(buf) {
+export function oggOpusToCaf(buf, { padMs = 0 } = {}) {
   try {
     const ogg = readOggOpus(buf);
     if (!ogg || !ogg.packets.length) return null;
+    const pad = Math.max(0, Math.round(padMs / 20));
+    if (pad) {
+      // TOC 0xF8 / 0xFC = CELT 全频带 20ms 单 / 双声道，后两字节是 libopus 的静音帧
+      const silence = Buffer.from([ogg.channels === 2 ? 0xfc : 0xf8, 0xff, 0xfe]);
+      ogg.packets.unshift(...Array(pad).fill(silence));
+      if (ogg.lastGranule > 0) ogg.lastGranule += pad * 960;
+    }
     return buildOpusCaf(ogg);
   } catch {
     return null;
