@@ -41,7 +41,11 @@ import {
   readMemories,
   readRecentDiaries,
 } from "./memorystore.js";
+import { splitBubbles } from "./delay.js";
+import { resolvePreset } from "./preset.js";
+import { applyRules } from "./regex.js";
 import { listSessions, recentMessages } from "./sessions.js";
+import { stripSearchTags, stripXmlBlocks } from "./websearch.js";
 import { activate, worldBooksFor } from "./worldinfo.js";
 
 const PHONE_DIR = path.join(DATA_DIR, "phone");
@@ -99,13 +103,39 @@ export const BUILTIN_APPS = [
     spec: "角色**今天**的活动轨迹，按时间先后排。title=「从哪儿 → 到哪儿」；value=时间段（如 08:10–08:45）；detail=交通方式和在那儿做了什么。",
   },
   {
+    // id 还叫 favorites（老数据接得上），界面上是「文件」App，存的是最私密的那些
     id: "favorites",
-    name: "收藏夹",
+    name: "文件",
     spec:
-      "收藏夹里最私密的东西：角色的碎碎念、没发出去的话、对 {{user}} 的心事和幻想（可以很露骨，包括性幻想和春梦，按人设来）、收藏的图文。" +
-      "title=标题；value=一个标签（如 #碎碎念 #梦 #没发出去的）；detail=正文（可以长一些）；time=时间。",
+      "「文件」App 里藏着的私密文件：角色的碎碎念、没发出去的话、对 {{user}} 的心事和幻想（可以很露骨，包括性幻想和春梦，按人设来）、偷偷存的截图说明、录音备忘。" +
+      "title=文件名（带扩展名，如「关于你.txt」「那天晚上.m4a」「截图_0412.png」）；value=所在文件夹（如 私密、备忘、相册导出）；detail=文件内容或这个文件是什么（文本文件就写正文，可以长一些）；time=修改时间。",
+  },
+  {
+    id: "video",
+    name: "视频",
+    spec:
+      "短视频 App 的观看历史。title=视频文案 / 标题；value=作者（如 @某某）；detail=视频讲了什么、角色为什么看、看完的反应（一两句）；time=观看时间。" +
+      "要贴合人设，可以有点上头或者不想被人看到的内容。",
+  },
+  {
+    id: "incognito",
+    name: "无痕浏览",
+    spec:
+      "Safari 无痕模式里搜过、看过、以为不会留下记录的东西 —— 见不得人的那种：和 {{user}} 有关的性幻想、姿势和玩法、羞于启齿的疑问、偷偷查的东西（可以很露骨，按人设来）。" +
+      "title=搜索词或网页标题；value=「搜索」或网站名；detail=当时在想什么（一句话）；time=时间。",
   },
 ];
+
+/**
+ * 购物 / 外卖 / 视频三个 App 的样式（手机「设置」里选，所有角色共用）。选哪个，桌面上的名字、
+ * App 里的界面和告诉模型的平台就跟着换。
+ */
+export const SKINS = {
+  shop: { taobao: "淘宝", amazon: "Amazon" },
+  delivery: { meituan: "美团", doordash: "DoorDash" },
+  video: { tiktok: "TikTok", douyin: "抖音", youtube: "YouTube" },
+};
+const DEFAULT_SKINS = { shop: "taobao", delivery: "meituan", video: "tiktok" };
 
 const LAYOUT_SPECS = {
   generic: "title=标题；detail=内容；value=可选的数值或状态。",
@@ -165,6 +195,10 @@ export function normalizePhoneSettings(input) {
     contextCount: clamp(input?.contextCount, 20, 0, 100),
     batchApps: [...new Set(batch)],
     customApps,
+    // 购物 / 外卖 / 视频用哪套样式（见 SKINS）
+    skins: Object.fromEntries(
+      Object.entries(DEFAULT_SKINS).map(([k, def]) => [k, SKINS[k][input?.skins?.[k]] ? input.skins[k] : def])
+    ),
   };
 }
 
@@ -212,6 +246,15 @@ function saveState(roleId, state) {
 
 /* ================= 拼请求 ================= */
 
+/** 内置 App 加上样式：购物 / 外卖 / 视频的名字换成选的那个平台，告诉模型的说明里也点明平台。 */
+function builtinApps(config) {
+  const skins = config.phone?.skins ?? DEFAULT_SKINS;
+  return BUILTIN_APPS.map((a) => {
+    const label = SKINS[a.id]?.[skins[a.id]];
+    return label ? { ...a, name: label, spec: `这是「${label}」。${a.spec}` } : a;
+  });
+}
+
 function appsOf(config) {
   const custom = (config.phone?.customApps ?? []).map((a) => ({
     id: a.id,
@@ -219,7 +262,7 @@ function appsOf(config) {
     custom: true,
     spec: `自定义 App「${a.name}」。这个 App 是干什么的：${a.prompt || "（没写，按名字猜）"}。${LAYOUT_SPECS[a.layout] ?? LAYOUT_SPECS.generic}`,
   }));
-  return [...BUILTIN_APPS, ...custom];
+  return [...builtinApps(config), ...custom];
 }
 
 function nowText() {
@@ -611,10 +654,26 @@ function userThread(config, role) {
     i -= 1;
     if (msgs[i].role === "user" && ++seen >= USER_ROUNDS) break;
   }
-  return msgs
-    .slice(seen ? i : msgs.length)
-    .map((m) => ({ from: m.role === "user" ? "user" : "me", text: stripEnvPrefix(m.content).trim() }))
-    .filter((m) => m.text);
+  /*
+   * 角色那边的回复要和对方手机上看到的一样：先跑预设里「发给对方」那条正则（思维链之类
+   * 在这儿被删掉），再剥掉还剩的 XML 块和搜索标记，最后按气泡分隔符拆成一条条气泡 ——
+   * 不然一条回复里的分隔符（默认是 $）会原样显示出来。
+   */
+  const rules = resolvePreset(config, role).regex;
+  const vars = { char: role?.name ?? "", user: resolveUser(config, role)?.name ?? "" };
+  const out = [];
+  for (const m of msgs.slice(seen ? i : msgs.length)) {
+    const raw = stripEnvPrefix(m.content);
+    if (m.role === "user") {
+      for (const line of raw.split(/\n+/)) if (line.trim()) out.push({ from: "user", text: line.trim() });
+      continue;
+    }
+    const shown = stripSearchTags(
+      stripXmlBlocks(applyRules(raw, rules, { target: "aiOutput", field: "toUser", vars }).text)
+    );
+    for (const b of splitBubbles(shown, config.chat)) out.push({ from: "me", text: b.text });
+  }
+  return out;
 }
 
 function publicState(config, roleId) {
@@ -631,8 +690,45 @@ function publicState(config, roleId) {
     lastAt: s.last?.at ?? 0,
     books: worldBooksFor(config, role).map((b) => ({ id: b.id, name: b.name, global: b.global })),
     jobs: [...jobs.values()].filter((j) => j.roleId === roleId).reverse(),
-    builtin: BUILTIN_APPS.map(({ id, name }) => ({ id, name })),
+    builtin: builtinApps(config).map(({ id, name }) => ({ id, name })),
+    // 生成的聊天也按这个拆气泡（模型写的 detail 里可能也带分隔符）
+    separator: config.chat?.separator ?? "$",
+    skins: config.phone?.skins ?? DEFAULT_SKINS,
+    skinOptions: SKINS,
+    // 这个角色的自定义壁纸 + 全局的自定义图标（data URL）
+    wallpaperImage: loadAssets().wallpapers[roleId] ?? "",
+    icons: loadAssets().icons,
   };
+}
+
+/* ================= 自定义壁纸 / 图标 ================= */
+
+/*
+ * 存成 data URL 放在一个 JSON 里，跟着 state 一起回给前端：小手机的控制台和后端不同源，
+ * <img src> 带不上鉴权头，单开一个取图接口在那边用不了。图片前端已经压过
+ * （壁纸 ≤1290px 的 JPEG，图标 256px），所以不会太大。
+ */
+const ASSETS_PATH = path.join(PHONE_DIR, "_assets.json");
+const MAX_ASSET = 3 * 1024 * 1024;
+
+function loadAssets() {
+  const raw = readJson(ASSETS_PATH, null);
+  return {
+    wallpapers: raw?.wallpapers && typeof raw.wallpapers === "object" ? raw.wallpapers : {},
+    icons: raw?.icons && typeof raw.icons === "object" ? raw.icons : {},
+  };
+}
+
+function setAsset(kind, key, dataUrl) {
+  const a = loadAssets();
+  const bucket = kind === "icon" ? a.icons : a.wallpapers;
+  if (!dataUrl) delete bucket[key];
+  else {
+    if (!/^data:image\/(png|jpeg|webp|gif);base64,/.test(dataUrl)) throw new Error("只收 PNG / JPEG / WebP / GIF 图片");
+    if (dataUrl.length > MAX_ASSET) throw new Error("图片太大了（压完还超过 3MB）");
+    bucket[key] = dataUrl;
+  }
+  writeJson(ASSETS_PATH, a);
 }
 
 export function mountPhone(app, loadConfig) {
@@ -647,6 +743,18 @@ export function mountPhone(app, loadConfig) {
   };
 
   app.get("/api/phone/:roleId", wrap(() => null));
+
+  // 壁纸是这个角色的；图标所有角色共用。dataUrl 传空 = 恢复默认
+  app.post(
+    "/api/phone/:roleId/assets",
+    wrap((req, config) => {
+      roleOr404(config, req.params.roleId);
+      const kind = req.body?.kind === "icon" ? "icon" : "wallpaper";
+      const key = kind === "icon" ? String(req.body?.appId ?? "") : req.params.roleId;
+      if (kind === "icon" && !appsOf(config).some((a) => a.id === key)) throw new Error("没有这个 App");
+      setAsset(kind, key, String(req.body?.dataUrl ?? ""));
+    })
+  );
 
   // body: { apps: [...ids], bookIds: [...] }。apps 不传 = 一键生成那一组
   app.post(
