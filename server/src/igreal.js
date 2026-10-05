@@ -197,7 +197,7 @@ export async function syncOut(config, roleName, item, opts = {}) {
     let published = null;
     let lastErr = null;
     for (let attempt = 1; attempt <= UPLOAD_TRIES; attempt += 1) {
-      const up = await uploadToHost(jpeg.buffer, data.settings.imageHost);
+      const up = await uploadToHost(jpeg.buffer, data.settings.imageHost, jpeg.raw ?? null);
       uploaded.push(up);
       try {
         published = await publishMedia(gate.acc, {

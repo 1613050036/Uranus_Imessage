@@ -43,6 +43,7 @@ import {
 } from "lucide-react";
 
 import { roleLabel } from "../labels.js";
+import { WORKER } from "../edition.js";
 import { useSection } from "../section.jsx";
 import { useConfig } from "../store.jsx";
 import {
@@ -74,10 +75,13 @@ import { HighlightEditor, PostEditor, ProfileEditor } from "./igeditors.jsx";
  * url 是空串 = 端口被关了（URANUS_IG_PORT=off），卡片要照实说。
  */
 function useIgPage() {
-  const [state, setState] = useState({ url: "", loading: true });
+  // 小手机：IG 页和控制台是同一个站点下的另一个页面（Worker 开不了第二个端口）
+  const [state, setState] = useState(() =>
+    WORKER ? { url: `${window.location.origin}/instagram`, loading: false } : { url: "", loading: true }
+  );
 
   useEffect(() => {
-    if (import.meta.env.DEV) return undefined;
+    if (import.meta.env.DEV || WORKER) return undefined;
     // StrictMode 下这个 effect 会跑两遍，alive 必须在函数体里重新置 true
     let alive = true;
     fetch("/api/health")
@@ -121,7 +125,9 @@ function IgPageCard() {
         <p className="text-ui text-ink-soft">
           开在 <span className="font-mono text-ink">{url}</span>
           <span className="mt-1 block text-meta text-ink-faint">
-            和控制台是同一个后端、同一份数据，只是换了个端口和一整套界面。
+            {WORKER
+              ? "和控制台是同一个后端、同一份数据，只是换了一整套界面。手机上可以「添加到主屏幕」，当成一个单独的 App 用。"
+              : "和控制台是同一个后端、同一份数据，只是换了个端口和一整套界面。"}
           </span>
         </p>
       ) : (

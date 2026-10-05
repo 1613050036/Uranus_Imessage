@@ -137,6 +137,17 @@ export function cropFor(w, h, minRatio = MIN_RATIO, maxRatio = MAX_RATIO) {
  * @throws {Error} 中文原因
  */
 export async function toIgJpeg(file, opts = {}) {
+  /*
+   * 小手机（Cloudflare Worker）上没有 ffmpeg。那边把原图原样交出去，标上 raw：
+   * uploadToHost 照传原图，再用 Cloudinary 的转换地址让它出 JPEG、裁比例、限宽
+   * （见 cloudinaryJpegUrl）。效果和这边 ffmpeg 那条命令一样，只是活儿换 Cloudinary 干。
+   */
+  if (process.env.URANUS_WORKER === "1") {
+    const buffer = await fs.promises.readFile(file);
+    const ext = path.extname(file).slice(1).toLowerCase();
+    const mime = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif" }[ext] || "image/png";
+    return { buffer, width: 0, height: 0, cropped: false, raw: { mime, isStory: Boolean(opts.isStory) } };
+  }
   const bin = await ffmpegPath();
   if (!bin) {
     throw new Error("找不到 ffmpeg（ffmpeg-static 没装成、PATH 上也没有），没法把图片转成 Meta 要的 JPEG");
@@ -238,6 +249,26 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * 让 Cloudinary 现场出一张 Meta 肯收的 JPEG 的地址（小手机那条路，见 toIgJpeg）。
+ *
+ * 规则和 ffmpeg 那条命令一样：比例超出 4:5~1.91:1 就居中裁（快拍不裁）、宽度
+ * 超过 1440 缩到 1440、不足 320 放大到 320、编码成 JPEG。原图的宽高从上传接口的
+ * 返回里拿，不用自己解码。转换是 Cloudinary 第一次被请求时现做的，Meta 来取
+ * 的就是那一张。
+ */
+export function cloudinaryJpegUrl(cloud, publicId, width, height, isStory) {
+  const steps = [];
+  const crop = isStory ? null : cropFor(width, height);
+  if (crop) steps.push(`c_crop,w_${crop.w},h_${crop.h},x_${crop.x},y_${crop.y}`);
+  const w = crop ? crop.w : width;
+  if (w > MAX_WIDTH) steps.push(`c_scale,w_${MAX_WIDTH}`);
+  else if (w > 0 && w < MIN_WIDTH) steps.push(`c_scale,w_${MIN_WIDTH}`);
+  steps.push("f_jpg,q_90");
+  const id = String(publicId).split("/").map(encodeURIComponent).join("/");
+  return `https://res.cloudinary.com/${encodeURIComponent(cloud)}/image/upload/${steps.join("/")}/${id}.jpg`;
+}
+
 /** 图床配好了没有（三项都得有）。 */
 export function hostReady(imageHost) {
   return Boolean(
@@ -255,12 +286,14 @@ export function hostReady(imageHost) {
  * 路径前缀固定 `uranus-ig/`，方便用户在 Cloudinary 后台一眼认出来、
  * 也方便万一漏删了批量清理。
  *
- * @param {Buffer} buffer JPEG 字节
+ * @param {Buffer} buffer JPEG 字节；小手机上是原图（见 raw）
  * @param {object} imageHost accounts.json 里那份 imageHost
+ * @param {{mime: string, isStory: boolean}} [rawImage] toIgJpeg 在小手机上交回来的标记：
+ *        传的是原图，返回的地址换成 Cloudinary 现场转 JPEG 的那个
  * @returns {Promise<{url: string, publicId: string}>}
  * @throws {Error} 中文原因
  */
-export async function uploadToHost(buffer, imageHost) {
+export async function uploadToHost(buffer, imageHost, rawImage = null) {
   if (!hostReady(imageHost)) {
     throw new Error("图床还没配 —— Instagram 那一页填上 Cloudinary 的 cloud name / API key / secret");
   }
@@ -273,7 +306,7 @@ export async function uploadToHost(buffer, imageHost) {
   const signature = signParams({ public_id: publicId, timestamp }, apiSecret);
 
   const form = new FormData();
-  form.append("file", new Blob([buffer], { type: "image/jpeg" }), "post.jpg");
+  form.append("file", new Blob([buffer], { type: rawImage?.mime || "image/jpeg" }), rawImage ? "post" : "post.jpg");
   form.append("api_key", apiKey);
   form.append("timestamp", String(timestamp));
   form.append("public_id", publicId);
@@ -320,8 +353,14 @@ export async function uploadToHost(buffer, imageHost) {
   const secureUrl = String(data.secure_url ?? "").trim();
   if (!secureUrl) throw new Error("图床没返回 secure_url");
 
+  const pid = String(data.public_id ?? publicId);
+  if (rawImage) {
+    const url = cloudinaryJpegUrl(cloud, pid, Number(data.width) || 0, Number(data.height) || 0, rawImage.isStory);
+    logInfo(SCOPE, `原图已传到图床（${Math.round(buffer.length / 1024)}KB，${data.width}×${data.height}），让 Cloudinary 转成 JPEG：${maskToken(url)}`);
+    return { url, publicId: pid };
+  }
   logInfo(SCOPE, `图片已传到图床（${Math.round(buffer.length / 1024)}KB）：${maskToken(secureUrl)}`);
-  return { url: secureUrl, publicId: String(data.public_id ?? publicId) };
+  return { url: secureUrl, publicId: pid };
 }
 
 /**

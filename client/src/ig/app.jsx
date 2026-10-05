@@ -42,6 +42,7 @@ import Profile from "./Profile.jsx";
 import Story from "./Story.jsx";
 import { Avatar, Empty, Modal, RingAvatar, Sheet, timeAgo } from "./parts.jsx";
 import { PostEditor } from "./editors.jsx";
+import { WORKER } from "../edition.js";
 import { igApi, useActivity, useFeed, useIgSettings, useProfile } from "./useIg.js";
 
 /** 手机版的分界。768px 以下当手机。 */
@@ -86,6 +87,7 @@ function useConsoleUrl() {
   const [port, setPort] = useState("");
 
   useEffect(() => {
+    if (WORKER) return undefined;
     let alive = true;
     // 直接 fetch 而不是用 store.jsx 那个 api()：只为一句 health 把整个控制台的
     // store 拖进这个包不值当
@@ -102,6 +104,8 @@ function useConsoleUrl() {
     };
   }, []);
 
+  // 小手机：控制台就是同一个站点的首页
+  if (WORKER) return `${window.location.origin}/`;
   return `${window.location.protocol}//${window.location.hostname}:${port || "8787"}`;
 }
 
