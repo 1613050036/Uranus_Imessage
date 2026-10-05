@@ -12,8 +12,10 @@ import {
   Settings2,
   SlidersHorizontal,
   Smartphone,
+  SmartphoneNfc,
   Smile,
   Terminal,
+  Theater,
   UserRound,
   Users,
 } from "lucide-react";
@@ -230,6 +232,31 @@ export const NAV = [
           meta: `${on}/3`,
         };
       }),
+  },
+  {
+    id: "phone",
+    label: "查手机",
+    icon: SmartphoneNfc,
+    itemIcon: Users,
+    group: "角色",
+    /*
+     * 翻角色自己的手机（server/src/phonecheck.js）。按角色列，内容在 data/phone/，
+     * 设置（模型、一键生成哪几个、自定义 App）在 config.phone。
+     */
+    desc: "翻翻角色自己的手机：通讯录、信息、通话、购物、外卖、浏览器、钱包、今天的活动轨迹、收藏夹，还能自己加 App。内容是模型按人设虚构的，和「查岗」不是一回事。",
+    empty: "还没有角色。",
+    items: (c) => (c.roles ?? []).map((r) => ({ id: r.id, label: roleLabel(r) })),
+  },
+  {
+    id: "theater",
+    label: "小剧场",
+    icon: Theater,
+    /*
+     * 主线之外的番外，生成成一份 HTML 页面（server/src/theater.js）。
+     * 模板和成品都在面板里，没有条目列表；260px 那栏列四节的锚点。
+     */
+    desc: "主线之外的番外和脑洞：选一个角色和模板，让模型写成一份可以直接打开的 HTML 页面。可以带上这个角色关联的世界书。",
+    anchors: ["生成", "成品", "模板", "设置"],
   },
   {
     id: "instagram",

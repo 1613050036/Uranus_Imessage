@@ -25,7 +25,7 @@
  * 它跟着消息进存档，见 env.js 的文件头。
  */
 
-import { applyVars, resolveEndpoint } from "./config.js";
+import { applyVars, resolveEndpoint, resolveUser } from "./config.js";
 import { listEmojiTags } from "./emoji.js";
 import { stripEnvPrefix } from "./env.js";
 import { embedText } from "./llm.js";
@@ -37,9 +37,11 @@ import {
   filterRecent,
   formatMemoryLines,
   formatRecentLines,
+  ignoredWords,
   rankCandidates,
   selectForInjection,
   semanticScore,
+  stripIgnoredWords,
   truncate,
 } from "./memory.js";
 import {
@@ -487,7 +489,17 @@ async function recallMemories(all, recent, role, config, sent, now) {
   const ref = cfg.embedModel;
   if (!ref?.provider || !ref?.modelId) return [];
 
-  const query = truncate(buildQuery(sent, cfg.queryRounds ?? 3), cfg.maxInputChars ?? 4000);
+  /*
+   * 关键词过滤：名字这类每条记忆都有的词先从查询里剔掉，再拿去算向量和关键词分
+   * （理由见 memory.js:ignoredWords）。剔完什么都不剩 = 这几轮只是在叫名字，
+   * 没有可检索的内容，整路跳过。
+   */
+  const names = cfg.ignoreNames === false ? [] : [role?.name, resolveUser(config, role)?.name];
+  const ignore = ignoredWords(cfg.ignoreWords, names);
+  const query = truncate(
+    stripIgnoredWords(buildQuery(sent, cfg.queryRounds ?? 3), ignore),
+    cfg.maxInputChars ?? 4000
+  );
   if (!query) return [];
 
   const withVec = all.filter((m) => Array.isArray(m.embedding) && m.embedding.length);

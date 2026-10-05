@@ -89,6 +89,49 @@ export function extractKeywords(text) {
 }
 
 /**
+ * 检索前从查询里剔掉的词：几乎每条记忆都会出现的名字之类。
+ *
+ * 用户报的问题：记忆里到处都是 Dante、niki、Charlie，查询里也是 ——
+ * 关键词那 0.3 分人人都能拿到，向量也被名字拉得彼此相近，于是门槛形同虚设，
+ * 一堆不相干的记忆被一起捞回来。从**查询**这一侧剔掉就够了：记忆那侧的名字
+ * 对所有记忆是一样的，不再影响谁比谁更像这次的话题。
+ *
+ * `extra` 是用户在「记忆库 → 设置」里填的词；`names` 是自动带上的角色名 /
+ * 用户名（开关在同一处）。两边去空、去重。
+ */
+export function ignoredWords(extra, names = []) {
+  const all = [...(Array.isArray(extra) ? extra : []), ...(Array.isArray(names) ? names : [])];
+  const seen = new Set();
+  const out = [];
+  for (const w of all) {
+    const t = String(w ?? "").trim();
+    if (!t || seen.has(t.toLowerCase())) continue;
+    seen.add(t.toLowerCase());
+    out.push(t);
+  }
+  // 长的先剔：「Charlie Chen」整个剔掉，别先被「Charlie」切成半截
+  return out.sort((a, b) => b.length - a.length);
+}
+
+/**
+ * 从一段文本里剔掉这些词，不分大小写。
+ *
+ * 英文词按整词剔（niki 不该把 nikita 剔成 ta），中文直接按子串。
+ * 剔掉的位置换成空格，免得两边的字粘成一个新的 2-gram。
+ */
+export function stripIgnoredWords(text, words) {
+  let out = String(text ?? "");
+  for (const w of Array.isArray(words) ? words : []) {
+    const esc = w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = /^[a-z0-9_-]+$/i.test(w)
+      ? new RegExp(`(?<![a-z0-9])${esc}(?![a-z0-9])`, "gi")
+      : new RegExp(esc, "gi");
+    out = out.replace(re, " ");
+  }
+  return out.replace(/[ \t]{2,}/g, " ").trim();
+}
+
+/**
  * 余弦距离 → 0–1 的语义分。
  *
  * 距离是 `1 − 余弦相似度`（Chroma 的 cosine space 就是这么定义的，

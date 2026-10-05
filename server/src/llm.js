@@ -875,6 +875,36 @@ async function readSse(res, onPayload) {
  *        流式，每收到一小块正文调一次
  */
 export async function chatCompletion(endpoint, messages, opts = {}) {
+  return (await chatRaw(endpoint, messages, opts)).content;
+}
+
+/**
+ * 上游不收原生 function calling。
+ *
+ * 只认「点名说 tools / function call 不行」的 400/422 —— 和 rejectedParamField
+ * 一个路子，认上游的抱怨，不维护「哪家中转站不支持」的黑名单。
+ */
+function rejectsTools(status, text) {
+  if (status !== 400 && status !== 422) return false;
+  const s = String(text ?? "");
+  return (
+    /\btools?\b|tool_choice|function[_ ]?call|functionDeclarations/i.test(s) &&
+    /unsupported|not support|unrecognized|unknown|invalid|not allowed|extra (fields|inputs)/i.test(s)
+  );
+}
+
+/**
+ * chatCompletion 的完整版：多带回模型要调的工具（原生 function calling，见 mcp.js）。
+ *
+ * 额外的 opts：
+ *  - `tools`：OpenAI 形状的工具清单。带了就不走流式 —— tool_calls 在流里是
+ *    一截一截拼的，而用到工具的那条路（imessage.js）本来就不收流
+ *  - `toolChoice`："auto" / "none"，各家原生的写法在 apitype.js 里翻
+ *
+ * @returns {Promise<{content:string, toolCalls:object[], toolsDropped:boolean}>}
+ *          toolsDropped = 上游不收 tools，这轮是脱掉工具重打才拿到的回复
+ */
+async function chatRaw(endpoint, messages, opts = {}) {
   const label = opts.label ?? "API";
   const base = trimBase(endpoint?.url);
   const key = endpoint?.key ?? "";
@@ -922,6 +952,13 @@ export async function chatCompletion(endpoint, messages, opts = {}) {
   const maxTokens = opts.maxTokens ?? p.maxTokens;
   if (maxTokens > 0) body.max_tokens = maxTokens;
 
+  // 原生 function calling 的工具清单（mcp.js:openAiTools）。翻成各家原生写法在 apitype.js
+  if (Array.isArray(opts.tools) && opts.tools.length) {
+    body.tools = opts.tools;
+    if (opts.toolChoice) body.tool_choice = opts.toolChoice;
+  }
+  let toolsDropped = false;
+
   /*
    * 流式。**由调用方给不给 onDelta 决定** —— 有人接着增量才值得按流式发，
    * 没人接的话开了流只是把一整段拆成几百个包再拼回来，白费劲。
@@ -930,7 +967,7 @@ export async function chatCompletion(endpoint, messages, opts = {}) {
    * 不是 SSE，requestStream 会当整段收下（见那边的注释）。判 auto / on / off
    * 是上层的事（offline.js 读 config.stream.mode 决定要不要传 onDelta）。
    */
-  let streaming = typeof opts.onDelta === "function";
+  let streaming = typeof opts.onDelta === "function" && !body.tools;
   if (streaming) {
     body.stream = true;
     // 有的中转站要这个才在最后一帧给 usage；不认的会忽略掉，发了不亏
@@ -1136,6 +1173,30 @@ export async function chatCompletion(endpoint, messages, opts = {}) {
       }
     }
 
+    /*
+     * 上游不收原生 function calling：脱掉工具重打，这轮就当没有工具。
+     *
+     * 只在对话里还没有工具往返时脱 —— 已经有 tool 消息的请求不带 tools 定义，
+     * Claude 那边直接 400，脱了也是白脱。实际上走得到第二趟就说明上游收 tools，
+     * 这个条件只是兜底。
+     */
+    if (
+      body.tools &&
+      rejectsTools(result.status, result.text) &&
+      !body.messages.some((m) => m.role === "tool" || m.tool_calls)
+    ) {
+      delete body.tools;
+      delete body.tool_choice;
+      toolsDropped = true;
+      logWarn(
+        label,
+        `${model} 不收原生 function calling，这轮去掉工具重打一次。` +
+          "要用 MCP 工具的话，去角色 → MCP 工具把调用方式换成「文本标记」",
+        why
+      );
+      continue;
+    }
+
     // 摘要那句会被截断（要发成短信），全文只在日志里 —— 这是最后一次机会
     logUpstreamFailure(label, result.status, result.text, body);
     const contentBlocked = isContentBlocked(result.status, result.text);
@@ -1157,7 +1218,12 @@ export async function chatCompletion(endpoint, messages, opts = {}) {
 
   const ms = Date.now() - startedAt;
 
-  const content = result.data?.choices?.[0]?.message?.content;
+  const message = result.data?.choices?.[0]?.message;
+  const toolCalls = Array.isArray(message?.tool_calls)
+    ? message.tool_calls.filter((tc) => tc?.function?.name)
+    : [];
+  // 只要调工具、不说话的那种回复，content 是 null
+  const content = message?.content == null && toolCalls.length ? "" : message?.content;
   if (typeof content !== "string") {
     throw new Error(
       `${label} 返回格式看不懂（缺 choices[0].message.content）：${result.text.slice(0, 300)}`
@@ -1201,7 +1267,7 @@ export async function chatCompletion(endpoint, messages, opts = {}) {
     usage ? `token 用量：${JSON.stringify(usage)}` : undefined
   );
 
-  return content;
+  return { content, toolCalls, toolsDropped };
 }
 
 /** 解析出来的 endpoint 够不够打一次请求。 */
@@ -1222,7 +1288,9 @@ function endpointUsable(ep) {
  *          onRestart?:()=>void}} [opts] signal 是用户按停。按停**不换线** ——
  *        那不是主 API 坏了。onDelta 有就走流式；onRestart 在**换到副 API 之前**
  *        调一次，让调用方把已经显示出来的半截清掉（见下面那段注释）
- * @returns {Promise<{content: string, usedFallback: boolean}>}
+ *        opts 里还可以带 tools / toolChoice（原生 function calling，见 chatRaw），主副都带
+ * @returns {Promise<{content: string, usedFallback: boolean, toolCalls: object[],
+ *          toolsDropped: boolean}>}
  * @throws {Error} 两条线都失败时抛出，消息里带上两边的原因
  */
 export async function chatWithFallback(primary, fallback, messages, params = {}, opts = {}) {
@@ -1230,14 +1298,16 @@ export async function chatWithFallback(primary, fallback, messages, params = {},
   const fallbackLabel = fallback?.label ? `副 API（${fallback.label}）` : "副 API";
 
   try {
-    const content = await chatCompletion(primary ?? {}, messages, {
+    const out = await chatRaw(primary ?? {}, messages, {
       label: primaryLabel,
       params,
       timeout: CHAT_TIMEOUT,
       signal: opts.signal,
       onDelta: opts.onDelta,
+      tools: opts.tools,
+      toolChoice: opts.toolChoice,
     });
-    return { content, usedFallback: false };
+    return { ...out, usedFallback: false };
   } catch (primaryError) {
     // 用户按停的：原样抛出去，不换线、不写「主 API 失败」那条日志
     if (primaryError?.aborted || opts.signal?.aborted) throw primaryError;
@@ -1286,15 +1356,17 @@ export async function chatWithFallback(primary, fallback, messages, params = {},
     }
 
     try {
-      const content = await chatCompletion(fallback, messages, {
+      const out = await chatRaw(fallback, messages, {
         label: fallbackLabel,
         params,
         timeout: CHAT_TIMEOUT,
         signal: opts.signal,
         onDelta: opts.onDelta,
+        tools: opts.tools,
+        toolChoice: opts.toolChoice,
       });
       logInfo("LLM", "副 API 顶上了，这轮由它回复");
-      return { content, usedFallback: true };
+      return { ...out, usedFallback: true };
     } catch (fallbackError) {
       // 副 API 打到一半被按停：同样原样抛，别报成「主副都失败」
       if (fallbackError?.aborted || opts.signal?.aborted) throw fallbackError;

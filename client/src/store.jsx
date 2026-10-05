@@ -1211,6 +1211,16 @@ export function ConfigProvider({ children }) {
     [updateConfig]
   );
   /**
+   * MCP 服务器列表。同样**全局一份**、所有角色共用，理由同上（地址和请求头里
+   * 有 token）。角色那边只勾用哪几台（role.mcp.servers）。
+   *
+   * 传一个函数：拿到当前列表，返回新列表。
+   */
+  const updateMcpServers = useCallback(
+    (fn) => updateConfig((c) => ({ ...c, mcpServers: fn(c.mcpServers ?? []) })),
+    [updateConfig]
+  );
+  /**
    * 手机查岗的邮件触发凭据（SMTP 账号 + 收件 iCloud 邮箱 + 校验密钥）。
    * 同样**全局一份**，理由同上 —— 而且它描述的是「用户那部 iPhone」，
    * 本来就不属于哪个角色；角色那边只有 role.spy 里的开关和模板。
@@ -2170,6 +2180,7 @@ export function ConfigProvider({ children }) {
         updatePrivacy,
         updateWeatherApi,
         updateSearchApi,
+        updateMcpServers,
         updateSpyApi,
         updateTtsApi,
         updateStream,

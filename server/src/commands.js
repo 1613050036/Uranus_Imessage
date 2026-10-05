@@ -60,6 +60,7 @@ const COMMANDS = new Set([
   "offlineoff",
   "sumsmall",
   "sumbig",
+  "checkphone",
 ]);
 
 /**
@@ -98,6 +99,7 @@ const COMMAND_ALIASES = {
   关闭线下: "offlineoff",
   小总结: "sumsmall",
   大总结: "sumbig",
+  查手机: "checkphone",
 };
 
 /**
@@ -389,6 +391,7 @@ function buildHelp(trigger) {
     "/关闭线下  结束这段剧情：补一次大总结，把总结写进待总结，回归线上功能",
     `${padCmd(t)}开关防相亲：开着时所有系统发言（指令确认、报错、总结）都不发出来`,
     `           也可以不带 /，直接发「${bare}」；这个词在网页端「发送」里能改`,
+    "/查手机    偷看一眼角色的手机（按「查手机 → 设置」里勾的那几个 App 生成，要在角色上打开）",
     "/help      看这张表",
     "",
     "只有上面这几条会被当指令。其余 `/` 开头的消息（网址、路径…）照常发给 AI。",
@@ -609,6 +612,17 @@ function cmdMemory({ role }) {
   }
   // text 留空 —— 总结要打一次模型，几十秒，结果由调用方发回来
   return { memory: { kind: "memory" }, log: "快捷指令：手动总结记忆" };
+}
+
+/**
+ * `/查手机` —— 和 /diary 同一个路子：这里只检查开关，真正的生成在 imessage.js
+ * （phonecheck.js 要打模型，几十秒，得放在「正在输入」里等）。
+ */
+function cmdCheckPhone({ role }) {
+  if (!role?.phone?.command) {
+    return { text: "⚠️ 这个角色没开 /查手机。去浏览器的「查手机」里，在这个角色的设置里打开。" };
+  }
+  return { phone: true, log: "快捷指令：查手机" };
 }
 
 function cmdDiary({ role }) {
@@ -872,6 +886,8 @@ export function tryCommand(text, ctx) {
       return cmdSummary("small");
     case "sumbig":
       return cmdSummary("big");
+    case "checkphone":
+      return cmdCheckPhone(args);
     default:
       return { text: buildHelp(config.privacy?.trigger) };
   }

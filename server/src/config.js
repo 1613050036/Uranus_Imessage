@@ -36,6 +36,10 @@ import { DEFAULT_BG, normalizeColor, normalizeLogoStyle } from "./transferlogo.j
 // 三个额度的上下限只在 websearch.js 定义一处，这里跟着它收口
 import { LIMITS as SEARCH_LIMITS } from "./websearch.js";
 import { normalizeWorldBooks } from "./worldinfo.js";
+// MCP 的两块（全局服务器列表、角色上的开关和额度）在 mcp.js 里一处定义
+import { normalizeMcpServers, normalizeRoleMcp } from "./mcp.js";
+// 查手机的全局设置和角色开关，范围在 phonecheck.js 一处定义
+import { normalizePhoneSettings, normalizeRolePhone } from "./phonecheck.js";
 
 /** 识别图片的默认提示词。用户可以在前端改，改坏了能一键还原成这句。 */
 export const DEFAULT_VISION_PROMPT =
@@ -570,6 +574,9 @@ export const DEFAULT_CONFIG = {
       // 联网搜索，默认关。密钥是全局的（searchApi），这里只有开关和三个额度。
       // 2 次 × 2 条 × 800 字：三个乘起来就是每轮最多灌多少字，见 websearch.js
       webSearch: { enabled: false, maxQueries: 2, maxResults: 2, maxChars: 800 },
+      // MCP 工具，默认关。服务器是全局的（mcpServers），这里勾用哪几台 + 调用方式 + 额度，
+      // 见 mcp.js:normalizeRoleMcp
+      mcp: normalizeRoleMcp({}),
       // 查岗，两条腿各一个开关、默认都关（它会把用户屏幕上的东西打给视觉模型，
       // 见 normalizeSpy）。电脑那头默认指向本地截图程序的 127.0.0.1:6878；
       // 手机那头没有地址 —— 走触发邮件，凭据在全局的 spyApi 里。
@@ -677,6 +684,16 @@ export const DEFAULT_CONFIG = {
   // 参考图图库：图生图用。图片文件放在 data/images/，这里只存名称和描述。
   // 名称 = 文件名（不带后缀），也是模型写在 [ ] 里的那个词
   referenceImages: [],
+  /*
+   * MCP 服务器，全局一份、所有角色共用（只写 data.config.json）。
+   * 地址、请求头里的 token、stdio 的环境变量都可能是密钥，所以整块按密钥处理，
+   * 和 searchApi 一个待遇。哪个角色用哪几台在角色的 mcp.servers 上勾。
+   */
+  mcpServers: [],
+  // 小剧场的设置（模型、提示词、超时），见 normalizeTheater / theater.js
+  theater: {},
+  // 查手机的设置（模型、一键生成哪几个 App、自定义 App），见 phonecheck.js
+  phone: {},
   // 表情包图库整个不进 config —— 标签就是 data/images/emojis/ 下的子文件夹，
   // 硬盘上有什么就注入什么，只被角色的黑名单减一遍（见 normalizeStickerSend）
   // 记忆库的**设置**，全局一份、所有角色共用（角色那边只有三个开关）。
@@ -691,6 +708,11 @@ export const DEFAULT_CONFIG = {
       threshold: 0.35,
       // 检索时拿最近几轮上下文当查询词。1 = 只用对方最后那句话（老行为）
       queryRounds: 3,
+      // 检索前从查询里剔掉的词（见 memory.js:ignoredWords）。ignoreNames 开着时
+      // 角色名和用户名自动算进去 —— 它们几乎出现在每一条记忆里，留着只会把
+      // 不相干的记忆一起捞回来
+      ignoreWords: [],
+      ignoreNames: true,
       decay: 0.01,
       // 默认**关**：入选门槛（threshold）已经在把不相关的记忆挡在外面了，
       // 再按天数扣分只会让「久远但要紧」的事排到「昨天随口一句」后面
@@ -1097,6 +1119,31 @@ function normalizeModelRef(input, fallbackRef) {
   return { provider: str(src.provider), modelId: str(src.modelId) };
 }
 
+/**
+ * 小剧场的设置（见 theater.js）。模板和成品不在这里 —— 那些在 data/theater/。
+ *
+ * 超时的范围和 theater.js 的 TIMEOUT_LIMITS 一样（30–1800 秒，默认 180）。
+ * 不从那边 import：theater.js 反过来要 import 这个文件，模块顶层互相读常量会撞上
+ * 「还没初始化」。
+ */
+function normalizeTheater(input) {
+  return {
+    // 用哪个模型生成。空 = 还没选，生成时报错让用户去选
+    model: normalizeModelRef(input?.model),
+    timeout: clampInt(input?.timeout, 180, 30, 1800),
+    // 空 = 用 theater.js 里插件原版那段
+    systemPrompt: str(input?.systemPrompt),
+    stylePrompt: str(input?.stylePrompt),
+    // 空回 / HTML 没闭合时补救（最多三次）。缺字段算开，和插件默认一致
+    continueOnEmpty: input?.continueOnEmpty !== false,
+    // 未收藏的成品最多留几个
+    retention: clampInt(input?.retention, 30, 1, 1000),
+    // 生成时带上这个角色最近的聊天记录。默认关，和插件一致
+    injectContext: Boolean(input?.injectContext),
+    contextCount: clampInt(input?.contextCount, 20, 1, 100),
+  };
+}
+
 function normalizeRole(input, id, legacy) {
   const maxContext = clampInt(input?.maxContext, 20, 1, 100);
   const chat = normalizeModelRef(input?.chatModel, legacy?.chatRef);
@@ -1185,6 +1232,11 @@ function normalizeRole(input, id, legacy) {
     // 默认关 —— 开着就意味着每轮都往提示词里多一段说明，还可能触发外部请求。
     // 密钥是全局的（config.searchApi），角色这边只有开关和额度
     webSearch: normalizeWebSearch(input?.webSearch),
+    // MCP 工具：开关 + 勾哪几台服务器 + 调用方式（文本标记 / 原生）+ 额度，见 mcp.js。
+    // 默认关，理由同 webSearch。服务器本身是全局的（config.mcpServers）
+    mcp: normalizeRoleMcp(input?.mcp),
+    // 查手机：同步到私聊 / 日记待总结 / 允许 /查手机 指令，全默认关（见 phonecheck.js）
+    phone: normalizeRolePhone(input?.phone),
     // 查岗：看用户此刻的电脑 / 手机屏幕。识图走这个角色自己的识图模型，
     // 这里只有开关、两个截图服务地址和回退文案，见 spy.js
     spy: normalizeSpy(input?.spy),
@@ -2704,6 +2756,12 @@ function normalizeMemories(input) {
        * 那个老行为是个 bug 不是偏好。
        */
       queryRounds: clampInt(memory.queryRounds, 3, 1, 20),
+      // 检索时忽略的词。去空去重，最多 200 个
+      ignoreWords: Array.isArray(memory.ignoreWords)
+        ? [...new Set(memory.ignoreWords.map((w) => str(w).trim()).filter(Boolean))].slice(0, 200)
+        : [],
+      // 缺字段算**开** —— 和 DEFAULT_CONFIG 一致，老配置升上来就有这层过滤
+      ignoreNames: memory.ignoreNames !== false,
       // 每老一天扣多少分。只改排序，不改入选资格
       decay: clampNum(memory.decay, 0.01, 0, 1),
       // 缺字段算**关**，和 DEFAULT_CONFIG 那边保持一致
@@ -3000,7 +3058,10 @@ export function normalizeConfig(input) {
   base.spyApi = normalizeSpyApi(input.spyApi);
   base.ttsApi = normalizeTtsApi(input.ttsApi);
   base.referenceImages = normalizeReferenceImages(input.referenceImages);
+  base.mcpServers = normalizeMcpServers(input.mcpServers);
   base.memories = normalizeMemories(input.memories);
+  base.theater = normalizeTheater(input.theater);
+  base.phone = normalizePhoneSettings(input.phone);
 
   /*
    * 预设。没有 presets 字段 = 老配置，按角色原有的温度分组迁出来
@@ -3134,6 +3195,8 @@ function mergeSecrets(main, data) {
     merged.ttsApi = data.ttsKeys;
   }
   // 查岗手机那条腿同理（SMTP 密码 + 收图口子的校验密钥）
+  // MCP 服务器列表整块只住密钥文件里（地址、token、环境变量）
+  if (Array.isArray(data.mcpKeys)) merged.mcpServers = data.mcpKeys;
   if (data.spyKeys && typeof data.spyKeys === "object") {
     merged.spyApi = data.spyKeys;
   }
@@ -3207,6 +3270,7 @@ function writeToDisk(normalized) {
     weatherKeys: normalized.weatherApi,
     searchKeys: normalized.searchApi,
     spyKeys: normalized.spyApi,
+    mcpKeys: normalized.mcpServers,
     ttsKeys: normalized.ttsApi,
     cloudKeys: normalized.cloudBackup,
   });
@@ -3225,6 +3289,8 @@ function writeToDisk(normalized) {
     searchApi: {},
     // 查岗手机那条腿（SMTP 密码 + 收图密钥）同理
     spyApi: {},
+    // MCP 服务器列表同理
+    mcpServers: [],
     // TTS 同理
     ttsApi: {},
     // 云备份整块同理

@@ -233,6 +233,15 @@ export const TRANSFER_LOGO_DIR = path.join(DATA_DIR, "transfer-logos");
 export const POLLS_DIR = path.join(DATA_DIR, "polls");
 
 /**
+ * 小剧场（theater.js）：模板、成品索引在 state.json，每个成品的 HTML 单独一个文件。
+ *
+ * **不进 config.json**，理由同上：生成一次就要写一次，`PUT /api/config` 会顺带
+ * 对齐所有桥接。只有设置（用哪个模型、提示词、超时）进 config.theater。
+ */
+export const THEATER_DIR = path.join(DATA_DIR, "theater");
+export const THEATER_HTML_DIR = path.join(THEATER_DIR, "html");
+
+/**
  * 记忆库。三样东西各一个子文件夹，都按角色分文件。
  *
  * 子文件夹用中文名，是为了让用户翻 data/ 的时候一眼知道哪个是哪个 ——

@@ -3,7 +3,12 @@ import { applyVars, resolveUser, roleLabel } from "../labels.js";
 import { useSection } from "../section.jsx";
 import { ROLE_LABELS, api, useConfig } from "../store.jsx";
 import { Button, Card, CodeBlock, Field, Fold, RoleBadge, fmtStamp, inputCls } from "../ui.jsx";
-import { Check, Pencil, RefreshCw, Trash2, Undo2 } from "lucide-react";
+import { Check, ChevronUp, Pencil, RefreshCw, Trash2, Undo2 } from "lucide-react";
+
+/** 折叠旧记录时默认至少摊开几条（比上下文限制少时按上下文限制来）。 */
+const FOLD_KEEP = 20;
+/** 「再展开」一次多露出几条。 */
+const FOLD_STEP = 50;
 
 /**
  * 对话记录浏览器。
@@ -127,6 +132,18 @@ export function ContextPanel({ onGoto }) {
   const detailLimit = roleOfDetail?.maxContext ?? 20;
 
   /*
+   * 折叠旧记录。聊得多了整份存档几百上千条，最新的那几条压在最底下，
+   * 得一路往下滑才看得到（用户报的）。所以默认只摊开最后一段 —— 至少把
+   * 「下一轮会发给模型的那批」完整露出来，再往前的收成一行，按需一次展开一截。
+   *
+   * `openOld` 是在默认那段之外**额外**摊开了几条。换会话归零。
+   */
+  const [openOld, setOpenOld] = useState(0);
+  const total = detail?.messages?.length ?? 0;
+  const defaultShown = Math.max(detailLimit, FOLD_KEEP);
+  const hiddenCount = Math.max(0, total - defaultShown - openOld);
+
+  /*
    * 存档里存的是字面 `{{user}}` / `{{char}}`（角色改名后旧存档不失效，见
    * README「环境感知」那节），真名替换在服务端拼提示词那一刻才做。但这个
    * 面板是给人看的 —— 显示 `{{user}}发送当地时间` 只会让人以为变量没生效。
@@ -169,6 +186,7 @@ export function ContextPanel({ onGoto }) {
       setDetail(null);
       setDetailError("");
       setEditKey("");
+      setOpenOld(0);
     }
     if (!itemId) return undefined;
     (async () => {
@@ -352,8 +370,38 @@ export function ContextPanel({ onGoto }) {
                 <p className="text-body text-ink-soft">这个会话是空的。</p>
               )}
 
+              {(hiddenCount > 0 || openOld > 0) && (
+                <div className="mb-2 flex flex-wrap items-center gap-2 border-b border-line pb-3">
+                  <span className="text-meta text-ink-faint">
+                    {hiddenCount > 0
+                      ? `更早的 ${hiddenCount} 条已折叠`
+                      : `旧记录已全部展开（共 ${total} 条）`}
+                  </span>
+                  {hiddenCount > 0 && (
+                    <>
+                      <Button variant="outline" onClick={() => setOpenOld((n) => n + FOLD_STEP)}>
+                        <ChevronUp size={13} /> 再展开 {Math.min(FOLD_STEP, hiddenCount)} 条
+                      </Button>
+                      {hiddenCount > FOLD_STEP && (
+                        <Button variant="ghost" onClick={() => setOpenOld(total)}>
+                          全部展开
+                        </Button>
+                      )}
+                    </>
+                  )}
+                  {openOld > 0 && (
+                    <Button variant="ghost" onClick={() => setOpenOld(0)}>
+                      收起旧记录
+                    </Button>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-1">
                 {(detail.messages ?? []).map((m, i) => {
+                  // 折叠掉的旧记录不画。下标 i 还是整份存档里的真下标 ——
+                  // 编辑、删除都按它找那一条，不能因为折叠就错位
+                  if (i < hiddenCount) return null;
                   // 存档是从旧到新排的，最后 maxContext 条就是真正会发出去的那批。
                   // 旧版预设整份都不会发给模型，所以那种会话一条都不高亮
                   const inWindow =

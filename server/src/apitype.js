@@ -219,7 +219,7 @@ function partsOf(content) {
  * 「所有 system 都提走」这件事刻意和中转站保持一致：预设是照着中转站的行为
  * 调出来的，换成直连之后同一份预设应该得到同一个效果。
  */
-function splitRoles(messages, convert) {
+function splitRoles(messages, convert, tooling = {}) {
   const system = [];
   const turns = [];
   for (const m of Array.isArray(messages) ? messages : []) {
@@ -229,7 +229,18 @@ function splitRoles(messages, convert) {
       continue;
     }
     const role = m?.role === "assistant" ? "assistant" : "user";
-    const blocks = parts.map(convert).filter(Boolean);
+    /*
+     * 原生 function calling 的那两种消息（见 mcp.js）：assistant 带 tool_calls、
+     * role 为 tool 的工具结果。两家原生接口都把工具结果算在 user 名下，
+     * 所以 tool 消息并进 user 那一轮。
+     */
+    const blocks =
+      m?.role === "tool"
+        ? [tooling.result?.(m)].filter(Boolean)
+        : parts.map(convert).filter(Boolean);
+    if (role === "assistant" && Array.isArray(m?.tool_calls) && tooling.call) {
+      blocks.push(...m.tool_calls.map(tooling.call).filter(Boolean));
+    }
     if (!blocks.length) continue;
     const prev = turns.at(-1);
     if (prev?.role === role) prev.blocks.push(...blocks);
@@ -238,13 +249,117 @@ function splitRoles(messages, convert) {
   return { system: system.join("\n\n"), turns };
 }
 
+/** tool_calls 里的 arguments 是 JSON 字符串，两家原生接口要的是对象。 */
+function callArgs(tc) {
+  const raw = tc?.function?.arguments;
+  if (raw && typeof raw === "object") return raw;
+  try {
+    const v = JSON.parse(raw || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 工具结果的正文。content 可能是字符串，也可能是 OpenAI 那种分段数组。 */
+function toolText(m) {
+  return partsOf(m?.content)
+    .map((p) => p.text ?? "")
+    .join("\n");
+}
+
+/**
+ * Gemini 只认 OpenAPI 那个子集的 schema，多一个它不认的键（$schema、
+ * additionalProperties 这些）就 400。MCP 服务器给的是完整的 JSON Schema，
+ * 翻过去之前洗一遍。
+ */
+const GEMINI_SCHEMA_KEYS = new Set([
+  "type",
+  "description",
+  "properties",
+  "required",
+  "items",
+  "enum",
+  "format",
+  "nullable",
+  "anyOf",
+  "minimum",
+  "maximum",
+  "minItems",
+  "maxItems",
+]);
+function geminiSchema(schema) {
+  if (Array.isArray(schema)) return schema.map(geminiSchema);
+  if (!schema || typeof schema !== "object") return schema;
+  const out = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (!GEMINI_SCHEMA_KEYS.has(k)) continue;
+    if (k === "properties") {
+      out.properties = Object.fromEntries(
+        Object.entries(v ?? {}).map(([p, s]) => [p, geminiSchema(s)])
+      );
+    } else if (k === "type" && Array.isArray(v)) {
+      // ["string", "null"] 这种：取第一个非 null 的，null 那半换成 nullable
+      out.type = v.find((t) => t !== "null") ?? "string";
+      if (v.includes("null")) out.nullable = true;
+    } else if (k === "items" || k === "anyOf") {
+      out[k] = geminiSchema(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  if (Array.isArray(out.enum)) out.enum = out.enum.map(String);
+  return out;
+}
+
+/** OpenAI 的 tools → Gemini 的 functionDeclarations。 */
+function geminiTools(tools) {
+  const decls = tools.map((t) => {
+    const params = geminiSchema(t.function?.parameters);
+    // 没有参数的工具不能带一个空 properties 的 object（Gemini 会 400），干脆不带
+    const empty = !params?.properties || !Object.keys(params.properties).length;
+    return {
+      name: t.function?.name,
+      ...(t.function?.description ? { description: t.function.description } : {}),
+      ...(empty ? {} : { parameters: params }),
+    };
+  });
+  return [{ functionDeclarations: decls }];
+}
+
 /** OpenAI body → Gemini `generateContent` 的请求体。 */
 export function toGeminiBody(body) {
-  const { system, turns } = splitRoles(body?.messages, (p) => {
-    if (p.image) return { inline_data: { mime_type: p.image.mime, data: p.image.data } };
-    if (p.imageUrl) return { text: `[图片] ${p.imageUrl}` };
-    return p.text ? { text: p.text } : null;
-  });
+  // 工具结果那头只有 tool_call_id，Gemini 的 functionResponse 要的是函数名
+  const nameOf = new Map();
+  for (const m of Array.isArray(body?.messages) ? body.messages : []) {
+    for (const tc of Array.isArray(m?.tool_calls) ? m.tool_calls : []) {
+      nameOf.set(tc.id, tc.function?.name);
+    }
+  }
+  const { system, turns } = splitRoles(
+    body?.messages,
+    (p) => {
+      if (p.image) return { inline_data: { mime_type: p.image.mime, data: p.image.data } };
+      if (p.imageUrl) return { text: `[图片] ${p.imageUrl}` };
+      return p.text ? { text: p.text } : null;
+    },
+    {
+      call: (tc) => {
+        // Gemini 3 要求把上一次的 thoughtSignature 原样带回去，不带就 400
+        const sig = tc.extra_content?.google?.thought_signature;
+        return {
+          functionCall: { name: tc.function?.name, args: callArgs(tc) },
+          ...(sig ? { thoughtSignature: sig } : {}),
+        };
+      },
+      result: (m) => ({
+        functionResponse: {
+          name: nameOf.get(m.tool_call_id) ?? m.name ?? "tool",
+          response: { result: toolText(m) },
+        },
+      }),
+    }
+  );
 
   let sys = system;
   const contents = turns.map((t) => ({
@@ -263,24 +378,40 @@ export function toGeminiBody(body) {
   if (body?.max_tokens > 0) gen.maxOutputTokens = body.max_tokens;
   // 两个惩罚项不翻：好几个 Gemini 型号收到就 400，而它们对聊天效果几乎没影响
 
+  const hasTools = Array.isArray(body?.tools) && body.tools.length > 0;
   return {
     ...(sys ? { systemInstruction: { parts: [{ text: sys }] } } : {}),
     contents,
     ...(Object.keys(gen).length ? { generationConfig: gen } : {}),
     safetySettings: GEMINI_SAFETY_OFF,
+    ...(hasTools ? { tools: geminiTools(body.tools) } : {}),
+    ...(hasTools && body.tool_choice
+      ? {
+          toolConfig: {
+            functionCallingConfig: { mode: body.tool_choice === "none" ? "NONE" : "AUTO" },
+          },
+        }
+      : {}),
   };
 }
 
 /** OpenAI body → Anthropic `/v1/messages` 的请求体。 */
 export function toAnthropicBody(body, streaming) {
-  const { system, turns } = splitRoles(body?.messages, (p) => {
-    if (p.image) {
-      return { type: "image", source: { type: "base64", media_type: p.image.mime, data: p.image.data } };
+  const { system, turns } = splitRoles(
+    body?.messages,
+    (p) => {
+      if (p.image) {
+        return { type: "image", source: { type: "base64", media_type: p.image.mime, data: p.image.data } };
+      }
+      if (p.imageUrl) return { type: "image", source: { type: "url", url: p.imageUrl } };
+      // 纯空白的文本块上游不收（text content blocks must contain non-whitespace text）
+      return p.text?.trim() ? { type: "text", text: p.text } : null;
+    },
+    {
+      call: (tc) => ({ type: "tool_use", id: tc.id, name: tc.function?.name, input: callArgs(tc) }),
+      result: (m) => ({ type: "tool_result", tool_use_id: m.tool_call_id, content: toolText(m) || "（空）" }),
     }
-    if (p.imageUrl) return { type: "image", source: { type: "url", url: p.imageUrl } };
-    // 纯空白的文本块上游不收（text content blocks must contain non-whitespace text）
-    return p.text?.trim() ? { type: "text", text: p.text } : null;
-  });
+  );
 
   let sys = system;
   const messages = turns.map((t) => ({ role: t.role, content: t.blocks }));
@@ -315,6 +446,14 @@ export function toAnthropicBody(body, streaming) {
     out.temperature = Math.min(1, Math.max(0, body.temperature));
   } else if (typeof body?.top_p === "number" && body.top_p < 1) {
     out.top_p = body.top_p;
+  }
+  if (Array.isArray(body?.tools) && body.tools.length) {
+    out.tools = body.tools.map((t) => ({
+      name: t.function?.name,
+      ...(t.function?.description ? { description: t.function.description } : {}),
+      input_schema: t.function?.parameters ?? { type: "object", properties: {} },
+    }));
+    if (body.tool_choice) out.tool_choice = { type: body.tool_choice === "none" ? "none" : "auto" };
   }
   if (streaming) out.stream = true;
   return out;
@@ -369,15 +508,28 @@ function readGemini(data) {
     .filter((p) => typeof p?.text === "string" && !p.thought)
     .map((p) => p.text)
     .join("");
+  // 原生 function calling：模型要调的函数。thoughtSignature 放进 extra_content ——
+  // 和 Gemini 自己的 OpenAI 兼容接口同一个位置，下一趟原样带回去（toGeminiBody）
+  const toolCalls = (cand?.content?.parts ?? [])
+    .filter((p) => p?.functionCall?.name)
+    .map((p, i) => ({
+      id: p.functionCall.id || `call_${Date.now().toString(36)}_${i}`,
+      type: "function",
+      function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args ?? {}) },
+      ...(p.thoughtSignature
+        ? { extra_content: { google: { thought_signature: p.thoughtSignature } } }
+        : {}),
+    }));
   const finish = cand?.finishReason ?? null;
   const promptBlock = data?.promptFeedback?.blockReason;
   let blocked = null;
   if (promptBlock) blocked = blockedText("Gemini", "blockReason", promptBlock);
-  else if (!text && finish && GEMINI_BLOCK_FINISH.test(finish)) {
+  else if (!text && !toolCalls.length && finish && GEMINI_BLOCK_FINISH.test(finish)) {
     blocked = blockedText("Gemini", "finishReason", finish);
   }
   return {
     text,
+    toolCalls,
     finish,
     usage: data?.usageMetadata ?? null,
     model: data?.modelVersion ?? "",
@@ -392,9 +544,17 @@ function readAnthropic(data) {
     .filter((b) => b?.type === "text" && typeof b.text === "string")
     .map((b) => b.text)
     .join("");
+  const toolCalls = (Array.isArray(data?.content) ? data.content : [])
+    .filter((b) => b?.type === "tool_use" && b.name)
+    .map((b) => ({
+      id: b.id,
+      type: "function",
+      function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+    }));
   const finish = data?.stop_reason ?? null;
   return {
     text,
+    toolCalls,
     finish,
     usage: data?.usage ?? null,
     model: data?.model ?? "",
@@ -437,7 +597,17 @@ export function nativeResult(type, result) {
     status: result.status,
     data: {
       ...(r.model ? { model: r.model } : {}),
-      choices: [{ index: 0, message: { role: "assistant", content: r.text }, finish_reason: r.finish }],
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: r.text,
+            ...(r.toolCalls?.length ? { tool_calls: r.toolCalls } : {}),
+          },
+          finish_reason: r.finish,
+        },
+      ],
       ...(r.usage ? { usage: r.usage } : {}),
     },
     text: result.text,

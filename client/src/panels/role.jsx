@@ -29,6 +29,7 @@ import {
 import { WORKER } from "../edition.js";
 import { offlineMediaUrl, uploadOfflineAvatar } from "../offlinemedia.js";
 import { SaveBar, useSection } from "../section.jsx";
+import { RoleMcpFields } from "./mcp.jsx";
 import { api, useConfig } from "../store.jsx";
 import { Button, Card, Field, Fold, Modal, NumberField, Switch, inputCls } from "../ui.jsx";
 import {
@@ -6189,6 +6190,19 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
           badge={onOff(role.webSearch?.enabled)}
         >
           <RoleSearchFields role={role} onGoto={onGoto} />
+        </Fold>
+
+        {/*
+          MCP 工具。紧挨着联网搜索：同一个形态（先调一趟、拿结果再回话），
+          服务器也和搜索密钥一样是全局的。它不走预设里的子条目 —— 工具清单是
+          连上服务器才知道的，提示词由 mcp.js 现拼，开关就在这一栏里。
+        */}
+        <Fold
+          title="MCP 工具"
+          desc="接上你自己的 MCP 服务器，需要的时候先调工具再回话"
+          badge={onOff(role.mcp?.enabled)}
+        >
+          <RoleMcpFields role={role} onGoto={onGoto} />
         </Fold>
 
         {/*

@@ -11,7 +11,7 @@
  * 注意 `KEYS` 里**没有** `weatherApi`（天气 API 的 Host 和 Key）：`roles` 是
  * 原样拷进备份的，所以天气密钥绝不能存在 `role.env` 里 —— 那会让一份
  * 「不含密钥」的备份漏出密钥。它是全局一份、只走 `secrets` 那条路。
- * `searchApi` / `ttsApi` 同理，都不在 `KEYS` 里。
+ * `searchApi` / `ttsApi` / `mcpServers` 同理，都不在 `KEYS` 里。
  *
  * `referenceImages` 在 `KEYS` 里，但那只是**清单**（名称 + 描述）——
  * 图片文件本身在 `data/images/`，不进备份包。换台机器恢复配置后，
@@ -37,6 +37,8 @@ const KEYS = [
   "worldBooks",
   "referenceImages",
   "memories",
+  "theater",
+  "phone",
 ];
 
 /**
@@ -69,6 +71,10 @@ export function buildBundle(config, { includeSecrets = false } = {}) {
       // 只有设置（模型引用 + 轮数 + 提示词）。记忆条目、备忘录、日记正文
       // 在 data/memories/ 里，不进备份包 —— 那是聊出来的内容不是配置
       memories: config?.memories ?? {},
+      // 小剧场的设置（模型引用、提示词、超时）。模板和成品在 data/theater/，不进这份
+      theater: config?.theater ?? {},
+      // 查手机的设置和自定义 App。翻出来的内容在 data/phone/，不进这份
+      phone: config?.phone ?? {},
     },
   };
 
@@ -84,6 +90,8 @@ export function buildBundle(config, { includeSecrets = false } = {}) {
       // 搜索和 TTS 的凭据同理
       searchKeys: config?.searchApi ?? {},
       ttsKeys: config?.ttsApi ?? {},
+      // MCP 服务器（地址、请求头里的 token、环境变量）同理
+      mcpKeys: config?.mcpServers ?? [],
     };
   } else {
     /*
@@ -156,8 +164,9 @@ export function applyBundle(bundle, current) {
   for (const key of KEYS) {
     const value = bundle.config[key];
     if (value === undefined) continue; // 备份里没这一类 = 不动本地的
-    if (key === "chat") {
-      if (value && typeof value === "object") next.chat = value;
+    // 这两类是对象不是数组
+    if (key === "chat" || key === "theater" || key === "phone") {
+      if (value && typeof value === "object" && !Array.isArray(value)) next[key] = value;
       continue;
     }
     if (Array.isArray(value)) next[key] = value;
@@ -177,6 +186,7 @@ export function applyBundle(bundle, current) {
     if (sk && typeof sk === "object" && !Array.isArray(sk)) next.searchApi = sk;
     const tk = bundle.secrets.ttsKeys;
     if (tk && typeof tk === "object" && !Array.isArray(tk)) next.ttsApi = tk;
+    if (Array.isArray(bundle.secrets.mcpKeys)) next.mcpServers = bundle.secrets.mcpKeys;
   } else {
     // 本地的 key 按 id 盖回导入的服务商上；备份里那些空串占位丢掉
     const local = new Map((current?.providers ?? []).map((p) => [p.id, p.keys]));

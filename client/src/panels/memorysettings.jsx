@@ -173,6 +173,43 @@ function MemorySettings({ onGoto }) {
             />
           </div>
 
+          {/*
+            关键词过滤。名字这类每条记忆都有的词留在查询里，关键词分人人有份、
+            向量也被拉得彼此相近，门槛就挡不住不相干的记忆了（见 memory.js:ignoredWords）。
+            只剔查询这一侧，记忆本身不动。
+          */}
+          <label className="flex items-start justify-between gap-4">
+            <span className="min-w-0">
+              <span className="block text-ui text-ink">忽略角色名和用户名</span>
+              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                检索前把这一轮的角色名、用户人设名从查询里剔掉。它们几乎出现在每一条记忆里，
+                留着的话随便聊一句都能把一堆不相干的记忆一起捞回来。
+              </span>
+            </span>
+            <Switch
+              checked={cfg.ignoreNames !== false}
+              onChange={(v) => patch({ ignoreNames: v })}
+              label="检索时忽略角色名和用户名"
+            />
+          </label>
+
+          <Field
+            label="检索时忽略的词"
+            hint="一行一个，不分大小写。昵称、别名、到处都有的口头禅填这里"
+          >
+            <textarea
+              className={`${inputCls} min-h-[5rem] font-mono text-xs leading-relaxed`}
+              value={(cfg.ignoreWords ?? []).join("\n")}
+              onChange={(e) => patch({ ignoreWords: e.target.value.split("\n") })}
+              placeholder={"Dante\nniki\nCharlie"}
+            />
+          </Field>
+          <p className="-mt-3 text-meta leading-relaxed text-ink-faint">
+            只从<strong className="text-ink-soft">查询</strong>里剔，记忆本身不改，也不用重新算向量。
+            英文按整词剔（填 niki 不会把 nikita 剔成 ta），中文按字面剔。
+            剔完什么都不剩的那一轮（比如只是在叫名字）直接跳过检索，近 N 天那一路照常注入。
+          </p>
+
           <label className="flex items-start justify-between gap-4">
             <span className="min-w-0">
               <span className="block text-ui text-ink">时间衰减</span>

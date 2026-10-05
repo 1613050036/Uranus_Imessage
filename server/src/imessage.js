@@ -123,6 +123,17 @@ import {
 import { renderLogo } from "./transferlogo.js";
 import { findTransfer, putTransfer, readTransfers } from "./transferstore.js";
 import { parseSearchQueries, runSearch, stripSearchTags } from "./websearch.js";
+import {
+  injectToolPrompt,
+  nativeFollowNote,
+  openAiTools,
+  parseToolMarkers,
+  roleToolkit,
+  runToolCalls,
+  stripToolMarkers,
+  textResultsNote,
+} from "./mcp.js";
+import { batchText, injectPhoneNote, phoneNote, runGenerate as runPhoneGenerate } from "./phonecheck.js";
 
 /**
  * iMessage 桥接模块（多号码版）。
@@ -1956,6 +1967,30 @@ async function handleCommand(getConfig, runner, space, spaceId, userText, peer =
    *
    * 成功失败都只发一条消息、都不进历史存档 —— 和别的指令一个待遇。
    */
+  /*
+   * `/查手机`：和 /memory 同一个路子，生成在这儿做、要 await（对方看得到「正在输入」）。
+   * 结果只发一条消息，不进历史存档。
+   */
+  if (result.phone) {
+    try {
+      await respondingWhile(space, async () => {
+        const config = getConfig();
+        let text;
+        try {
+          const batch = await runPhoneGenerate(config, role, config.phone?.batchApps ?? []);
+          text = `📱 偷看了一眼 ${role.name} 的手机：
+${batchText(config, batch)}`;
+        } catch (e) {
+          text = `⚠️ 没翻成：${String(e?.message ?? e)}`;
+        }
+        await sendSystem(runner, space, text, { what: "查手机" });
+      }, runner);
+    } catch (e) {
+      logError(scope, "快捷指令「查手机」失败", e);
+    }
+    return true;
+  }
+
   if (result.memory) {
     try {
       await respondingWhile(space, async () => {
@@ -2711,6 +2746,86 @@ async function searchRound(
 }
 
 /**
+ * MCP 工具的那几趟往返（见 mcp.js）。
+ *
+ * 模型第一次回复里要了工具（文本标记 `[工具:名字 {…}]`，或者原生的 tool_calls）
+ * 时：真去调，把结果接在后面再问一次。和 searchRound 同一个形态 —— 对方只收到
+ * 最后那条回复，中间这几趟不进 history、不进存档，只在 messages 的副本上加东西；
+ * 工具调不通也不算失败，那句错误照样交给模型。
+ *
+ * 和搜索不一样的地方：**可以连着调几趟**（拿到结果之后发现还要查别的），
+ * 上限是角色上配的 maxRounds；总次数另有 maxCalls 卡着。最后一趟告诉模型
+ * 别再调了（原生模式下 tool_choice 设成 none）。
+ *
+ * @param {string} reply 第一次的回复
+ * @param {object[]} toolCalls 第一次回复里的原生 tool_calls（文本标记模式下用不到）
+ * @param {object} ctx 同 searchRound，另外要 `kit`（mcp.js:roleToolkit 的结果，没有就是 null）
+ * @returns {Promise<string|null>} 最后那条回复原文；这轮没调工具时返回 null
+ */
+async function mcpRound(reply, toolCalls, { kit, eps, params, messages, scope, llmScope, onPrompt }) {
+  if (!kit) return null;
+  const native = kit.mode === "native";
+  const tools = native ? openAiTools(kit) : null;
+  const { maxRounds, maxCalls } = kit.limits;
+  let calls = native ? toolCalls ?? [] : parseToolMarkers(reply, kit);
+  if (!calls.length) return null;
+
+  // 副本 —— 原数组是 notePrompt 记下的那一份，不能动
+  const convo = [...messages];
+  let used = 0;
+  for (let round = 1; calls.length; round++) {
+    const run = calls.slice(0, Math.max(0, maxCalls - used));
+    const skipped = calls.slice(run.length);
+    used += run.length;
+    const final = round >= maxRounds || used >= maxCalls;
+
+    const names = calls.map((c) => (native ? c.function.name : c.name));
+    logInfo(
+      scope,
+      `模型要调 MCP 工具（第 ${round} 趟）：${names.join(" / ")}` +
+        (skipped.length ? `，超出额度的 ${skipped.length} 个不调` : "")
+    );
+
+    const results = await runToolCalls(
+      kit,
+      native ? run.map((c) => ({ id: c.id, name: c.function.name, args: c.function.arguments })) : run,
+      scope
+    );
+
+    if (native) {
+      // 每个 tool_call 都得有一条回应，没调的也要说一声，不然上游直接 400
+      convo.push({ role: "assistant", content: reply, tool_calls: calls });
+      for (const r of results) convo.push({ role: "tool", tool_call_id: r.id, content: r.text });
+      for (const c of skipped) {
+        convo.push({ role: "tool", tool_call_id: c.id, content: "这次没调用：这一轮的工具次数用完了。" });
+      }
+      convo.push({ role: "user", content: nativeFollowNote({ final }) });
+    } else {
+      // 模型自己写的标记也带上：不带的话它看不出这些结果是自己要的
+      convo.push({ role: "assistant", content: reply }, { role: "user", content: textResultsNote(results, { final }) });
+    }
+
+    // 「原始提示词」面板里换成这一份 —— 真正最后发出去的是它。给副本：
+    // convo 下一趟还要接着往后加
+    onPrompt?.([...convo]);
+    logDebug(llmScope, "正在等工具结果之后的回复…");
+
+    const out = await chatWithFallback(
+      eps.chat,
+      eps.fallback,
+      convo,
+      params,
+      native ? { tools, toolChoice: final ? "none" : "auto" } : {}
+    );
+    reply = out.content;
+    logInfo(llmScope, `工具结果之后的回复 ${reply.length} 字`, reply);
+    if (final) break;
+    calls = native ? out.toolCalls : parseToolMarkers(reply, kit);
+  }
+  return reply;
+}
+
+/**
  * 查岗的那一趟往返。
  *
  * 模型第一次回复里写了 `[查岗实时电脑屏幕]` / `[查岗实时手机屏幕]` 时：真去抓
@@ -3150,9 +3265,18 @@ async function handleTurn(
     runner.history.get(sessionId) ?? [],
     weatherNote
   );
-  const { messages, params, preset, worldInfo } = built;
+  const { params, preset, worldInfo } = built;
   // buildPrompt 裁剪过上文，把结果写回内存 —— 以前是 buildMessages 里做的
   runner.history.set(sessionId, built.history);
+
+  /*
+   * MCP 工具（见 mcp.js）。连服务器、拿工具清单都在这一步，连不上就当这轮
+   * 没有工具 —— roleToolkit 从不抛错。工具说明只进这一份提示词，不进存档。
+   */
+  const mcpKit = await roleToolkit(freshConfig, freshRole, scope);
+  // 查手机「同步到私聊」：最近一次查手机的摘要，只进这一份提示词（见 phonecheck.js:phoneNote）
+  const withPhone = injectPhoneNote(built.messages, phoneNote(freshConfig, freshRole));
+  const messages = mcpKit ? injectToolPrompt(withPhone, mcpKit) : withPhone;
 
   if (worldInfo.hitNames.length) {
     logInfo(
@@ -3191,11 +3315,20 @@ async function handleTurn(
   );
 
   let reply;
+  let toolCalls = [];
   const askedAt = Date.now();
   try {
-    // 主模型失败自动退到这个角色自己的副 API。生成参数来自预设，主副共用
-    const { content } = await chatWithFallback(eps.chat, eps.fallback, messages, params);
-    reply = content;
+    // 主模型失败自动退到这个角色自己的副 API。生成参数来自预设，主副共用。
+    // 原生 function calling 模式下工具清单走请求体（见 mcpRound）
+    const out = await chatWithFallback(
+      eps.chat,
+      eps.fallback,
+      messages,
+      params,
+      mcpKit?.mode === "native" ? { tools: openAiTools(mcpKit) } : {}
+    );
+    reply = out.content;
+    toolCalls = out.toolCalls ?? [];
   } catch (e) {
     // 主副都挂了：历史里那条 user 消息留着（下轮还能带上），但要说清楚。
     // 带上等了多久 —— 「等 3 秒就报错」和「等满 300 秒超时」是两种毛病
@@ -3206,6 +3339,30 @@ async function handleTurn(
   }
 
   logInfo(llmScope, `模型回复 ${reply.length} 字，花了 ${secsSince(askedAt)}s`, reply);
+
+  /*
+   * MCP 工具：模型要了工具就真去调，拿结果再问（可能连着几趟，见 mcpRound）。
+   *
+   * **排在搜索之前**：原生模式下只有第一次请求带着工具清单，tool_calls 只会
+   * 出现在第一次的回复里，得先接住；后面搜索 / 查岗看到的都是工具之后那条回复。
+   * 失败的处理和搜索那段一样。
+   */
+  try {
+    const tooled = await mcpRound(reply, toolCalls, {
+      kit: mcpKit,
+      eps,
+      params,
+      messages,
+      scope,
+      llmScope,
+      onPrompt: (followUp) => notePrompt(promptMeta, followUp),
+    });
+    if (tooled !== null) reply = tooled;
+  } catch (e) {
+    logError(llmScope, "MCP 工具之后那次生成失败，这一轮没能拿到回复", e);
+    await respondingWhile(space, () => notifyFailure(runner, space, "这条消息没回上来", e), runner);
+    throw e;
+  }
 
   /*
    * 联网搜索：回复里写了 [搜索:…] 就真去搜一趟，拿结果再问一次。
@@ -3334,6 +3491,13 @@ async function handleTurn(
   if (withoutSpy !== forUser.trim()) {
     logInfo(scope, "发给对方的那份里收掉了查岗标签（存档留原文）", forUser);
     forUser = withoutSpy;
+  }
+
+  // MCP 工具标记同理（标记长什么样是角色上配的，见 mcp.js:stripToolMarkers）
+  const withoutTools = stripToolMarkers(forUser, freshRole);
+  if (withoutTools !== forUser.trim()) {
+    logInfo(scope, "发给对方的那份里收掉了 MCP 工具标记（存档留原文）", forUser);
+    forUser = withoutTools;
   }
 
   /*
@@ -3497,6 +3661,9 @@ async function handleTurn(
           stripSpyTags(reply) === ""
           ? "模型这轮只写了查岗标签，没写给对方看的正文（查岗一轮只查一次，" +
             "第二次回复里再写标签不会再查）。"
+          : stripToolMarkers(reply, freshRole) === ""
+          ? "模型这轮只写了 MCP 工具标记，没写给对方看的正文（工具额度用完之后再写标记不会再调）。" +
+            "可以在「角色 → MCP 工具」里把往返次数调高，或者换个更听话的模型。"
           : "模型这轮写的东西被预设里的正则规则全部删掉了（大概只输出了思维链，没写正文）。" +
             "这一条不是上游的问题，去「预设 → 正则」里看看哪条规则吃掉了整段。";
     /*
@@ -4264,7 +4431,12 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId) {
   const forPrompt = [...historyArr, { role: "user", content: timePrefix + forModel }];
 
   const built = await buildPrompt(config, role, user, forPrompt, weatherNote);
-  const { messages, params, preset, worldInfo } = built;
+  const { params, preset, worldInfo } = built;
+  // MCP 工具：主动开口的这一路也给（「早上自己开口前先查一下今天的日程」），
+  // 和正常轮次同一套，见那边的注释
+  const mcpKit = await roleToolkit(config, role, scope);
+  const withPhone = injectPhoneNote(built.messages, phoneNote(config, role));
+  const messages = mcpKit ? injectToolPrompt(withPhone, mcpKit) : withPhone;
 
   // buildPrompt 会按上下文上限裁剪。裁完的最后一条是提示词那份，换成占位符
   // 再写回内存 —— 从这一刻起，上下文里留下的就只有 [触发了主动消息]
@@ -4289,9 +4461,17 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId) {
   notePrompt(promptMeta, messages);
 
   let reply;
+  let toolCalls = [];
   try {
-    const { content } = await chatWithFallback(eps.chat, eps.fallback, messages, params);
-    reply = content;
+    const out = await chatWithFallback(
+      eps.chat,
+      eps.fallback,
+      messages,
+      params,
+      mcpKit?.mode === "native" ? { tools: openAiTools(mcpKit) } : {}
+    );
+    reply = out.content;
+    toolCalls = out.toolCalls ?? [];
   } catch (e) {
     /*
      * 主副都挂了。**不 notifyFailure** —— 对方压根不知道这里要发消息，
@@ -4304,6 +4484,23 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId) {
   }
 
   logInfo(llmScope, `模型回复 ${reply.length} 字`, reply);
+
+  try {
+    const tooled = await mcpRound(reply, toolCalls, {
+      kit: mcpKit,
+      eps,
+      params,
+      messages,
+      scope,
+      llmScope,
+      onPrompt: (followUp) => notePrompt(promptMeta, followUp),
+    });
+    if (tooled !== null) reply = tooled;
+  } catch (e) {
+    logError(llmScope, "主动消息 MCP 工具之后那次生成失败，这次跳过", e);
+    runner.history.set(sessionId, historyArr);
+    return;
+  }
 
   try {
     const searched = await searchRound(reply, {
@@ -4387,6 +4584,12 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId) {
   if (withoutSpy !== forUser.trim()) {
     logInfo(scope, "发给对方的那份里收掉了查岗标签（存档留原文）", forUser);
     forUser = withoutSpy;
+  }
+
+  const withoutTools = stripToolMarkers(forUser, role);
+  if (withoutTools !== forUser.trim()) {
+    logInfo(scope, "发给对方的那份里收掉了 MCP 工具标记（存档留原文）", forUser);
+    forUser = withoutTools;
   }
 
   /*

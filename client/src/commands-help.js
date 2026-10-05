@@ -132,6 +132,12 @@ export const COMMAND_ROWS = [
     desc: "结束这段剧情：先立刻回归线上功能，再补一次大总结、把小/大总结写进这个角色的待总结（记忆库）。那两份总结要打模型，可能要等几分钟，但线下已经关了。",
   },
   {
+    group: "make",
+    cmd: "/查手机",
+    alt: ["/checkphone"],
+    desc: "偷看一眼角色的手机：按「查手机 → 设置」里勾的那几个 App 生成一批，结果发回来一条。要先在「查手机」里给这个角色打开这条指令。",
+  },
+  {
     group: "system",
     cmd: "/重启",
     alt: ["/restart"],
@@ -178,6 +184,7 @@ const COMMAND_WORDS = new Set([
   "offlineoff",
   "sumsmall",
   "sumbig",
+  "checkphone",
   "日记",
   "记忆",
   "重roll",
@@ -189,6 +196,7 @@ const COMMAND_WORDS = new Set([
   "关闭线下",
   "小总结",
   "大总结",
+  "查手机",
 ]);
 
 /**
