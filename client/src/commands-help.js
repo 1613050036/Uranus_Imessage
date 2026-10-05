@@ -133,6 +133,42 @@ export const COMMAND_ROWS = [
   },
   {
     group: "make",
+    cmd: "/小剧场 1",
+    alt: ["/生成小剧场 同人小剧场"],
+    desc: "按模板编号或标题生成一个小剧场。先回一句「开始生成」，好了再发一条；完整页面在网页的「小剧场」里看。",
+  },
+  {
+    group: "make",
+    cmd: "/临时小剧场 提示词",
+    alt: [],
+    desc: "用这次写的提示词直接生成，不进模板目录。{{char}} / {{user}} 会换成名字。",
+  },
+  {
+    group: "make",
+    cmd: "/生成随机小剧场",
+    alt: [],
+    desc: "从模板目录里随机挑一个生成。",
+  },
+  {
+    group: "make",
+    cmd: "/小剧场 重试",
+    alt: [],
+    desc: "用这个角色上一次小剧场的设定（模板、人设、世界书）重新生成一次。",
+  },
+  {
+    group: "make",
+    cmd: "/小剧场目录",
+    alt: [],
+    desc: "列出模板目录和编号。编号跟着模板顺序走，删了中间的后面会往前挪。",
+  },
+  {
+    group: "make",
+    cmd: "/查看小剧场 1",
+    alt: [],
+    desc: "看某个模板的标题和提示词（不是生成好的成品）。",
+  },
+  {
+    group: "make",
     cmd: "/查手机",
     alt: ["/checkphone"],
     desc: "偷看一眼角色的手机：按「查手机 → 设置」里勾的那几个 App 生成一批，结果发回来一条。要先在「查手机」里给这个角色打开这条指令。",
@@ -185,6 +221,11 @@ const COMMAND_WORDS = new Set([
   "sumsmall",
   "sumbig",
   "checkphone",
+  "theater",
+  "theatertemp",
+  "theaterrandom",
+  "theaterlist",
+  "theaterview",
   "日记",
   "记忆",
   "重roll",
@@ -197,6 +238,12 @@ const COMMAND_WORDS = new Set([
   "小总结",
   "大总结",
   "查手机",
+  "生成小剧场",
+  "小剧场",
+  "临时小剧场",
+  "生成随机小剧场",
+  "小剧场目录",
+  "查看小剧场",
 ]);
 
 /**

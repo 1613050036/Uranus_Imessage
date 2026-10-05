@@ -290,10 +290,14 @@ app.use((req, res, next) => {
      * 在控制台上长得一模一样，没法排查。这里把差一点点的那些喊出来：
      * 只挑带 secret 痕迹或路径形似的，避免把正常的前端 POST 也刷进日志。
      */
+    // 控制台自己的 /api/* 不算（查手机的接口是 /api/phone/…，路径里也带 phone，
+    // 以前会被误报成「快捷指令 URL 填错」）。收图口子本身设在 /api/ 下时照旧比对
+    const ownApi = req.path.startsWith("/api/") && !want.startsWith("/api/");
     const looksLikeShot =
-      /screenshot|phone/i.test(req.path) ||
-      req.query?.secret != null ||
-      req.headers["x-spy-secret"] != null;
+      !ownApi &&
+      (/screenshot|phone/i.test(req.path) ||
+        req.query?.secret != null ||
+        req.headers["x-spy-secret"] != null);
     if (looksLikeShot && (req.method === "POST" || req.method === "PUT")) {
       logWarn(
         "查岗",

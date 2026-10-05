@@ -33,7 +33,14 @@ import { DATA_DIR, readJson, writeJson } from "./datadir.js";
 import { stripEnvPrefix } from "./env.js";
 import { chatCompletion } from "./llm.js";
 import { logError, logInfo, logWarn } from "./logs.js";
-import { appendDiaryLine, diaryLogLine, memoryKeyFor } from "./memorystore.js";
+import {
+  appendDiaryLine,
+  diaryLogLine,
+  memoryKeyFor,
+  readMemo,
+  readMemories,
+  readRecentDiaries,
+} from "./memorystore.js";
 import { listSessions, recentMessages } from "./sessions.js";
 import { activate, worldBooksFor } from "./worldinfo.js";
 
@@ -257,6 +264,45 @@ function existingNote(apps, state) {
   return lines.join("\n");
 }
 
+const DAY_MS = 86400000;
+
+/**
+ * 记忆库那三样，各自跟着这个角色的开关走：
+ *  - 记忆：只取「记忆库 → 设置 → 注入近 N 天的记忆」那个 N 天里的（不做语义检索）
+ *  - 备忘录：整份
+ *  - 日记：这个角色设的「注入近 N 天日记」
+ * 手机里的东西得和角色记得的事对得上，不然一翻手机就 OOC。
+ */
+function memoryBlock(config, role) {
+  const gates = role?.memories ?? {};
+  const key = memoryKeyFor(role);
+  const parts = [];
+  try {
+    if (gates.memory?.enabled) {
+      const inject = config.memories?.memory?.recentInject ?? {};
+      const days = inject.enabled === false ? 0 : inject.days ?? 3;
+      const cutoff = Date.now() - days * DAY_MS;
+      const lines = readMemories(key)
+        .filter((m) => m?.content && (Number(m.timestamp) || 0) >= cutoff)
+        .sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0))
+        .map((m) => `- ${m.date || "未知日期"} | ${String(m.content).trim()}`);
+      if (days > 0 && lines.length) parts.push(`<近${days}天的记忆>\n${lines.join("\n")}\n</近${days}天的记忆>`);
+    }
+    if (gates.memo?.enabled) {
+      const memo = String(readMemo(key) ?? "").trim();
+      if (memo) parts.push(`<备忘录>\n${memo}\n</备忘录>`);
+    }
+    if (gates.diary?.enabled) {
+      const days = gates.diary.injectDays ?? 3;
+      const text = days > 0 ? readRecentDiaries(key, days).map((d) => `【${d.date}】\n${d.text.trim()}`).join("\n\n") : "";
+      if (text) parts.push(`<近${days}天的日记>\n${text}\n</近${days}天的日记>`);
+    }
+  } catch (e) {
+    logWarn(SCOPE, "记忆库没读全，这次查手机少带了一部分", String(e?.message ?? e));
+  }
+  return parts.join("\n\n");
+}
+
 /**
  * @param {"append"|"reset"} mode append = 在原来的手机上接着加（模型能看到已有的条目）；
  *        reset = 当这台手机是全新的，不给它看旧内容
@@ -282,6 +328,8 @@ function buildMessages(config, role, apps, bookIds, mode = "append") {
       .join("\n\n");
   }
 
+  const memory = memoryBlock(config, role);
+
   // 其他角色：通讯录里出现了就算「真实存在的人」
   const others = (config.roles ?? [])
     .filter((r) => r.id !== role.id && r.name)
@@ -291,11 +339,20 @@ function buildMessages(config, role, apps, bookIds, mode = "append") {
   const known = fresh ? [] : (state.apps.contacts ?? []).slice(0, 15).map((c) => `${c.title}（${c.value || "—"}）`);
   const existing = fresh ? "" : existingNote(apps, state);
 
+  /*
+   * 置顶那一段说清楚这是什么任务。**不走预设** —— 预设是给聊天回复用的（气泡、思维链、
+   * 正则那一套），套到这里只会让模型输出聊天格式而不是 JSON。
+   */
+  const userName = vars.user || "用户";
   const system = [
-    `你是 ${vars.char}。下面是你的人设，接下来要生成的是**你自己手机里的内容**。`,
-    `<人设>\n${fill(role.description) || "（没有写人设）"}\n</人设>`,
-    user?.description ? `<${vars.user || "用户"}的人设>\n${fill(user.description)}\n</${vars.user || "用户"}的人设>` : "",
+    `你是一个「查手机」内容生成助手。${userName}正在偷偷翻看角色「${vars.char}」的手机，` +
+      `你要以 ${vars.char} 本人的视角，生成 TA 手机里各个 App 的真实内容。` +
+      "内容必须严格贴合下面的角色人设、世界设定、记忆、备忘录、日记和最近的聊天，不能 OOC；" +
+      "只输出要求的 JSON，不写解释、不写聊天回复。",
+    `<${vars.char}的人设>\n${fill(role.description) || "（没有写人设）"}\n</${vars.char}的人设>`,
+    user?.description ? `<${userName}的人设>\n${fill(user.description)}\n</${userName}的人设>` : "",
     world ? `<世界设定>\n${world}\n</世界设定>` : "",
+    fill(memory),
   ]
     .filter(Boolean)
     .join("\n\n");

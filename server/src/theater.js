@@ -402,21 +402,59 @@ function startJob(kind, title, run) {
   jobs.set(job.id, job);
   // 只留最近 30 个
   while (jobs.size > 30) jobs.delete(jobs.keys().next().value);
-  (async () => {
+  const done = (async () => {
     try {
       const play = await run();
       job.playId = play.id;
       job.status = "done";
       logInfo(SCOPE, `「${play.title}」生成好了，${Math.round((Date.now() - job.startedAt) / 1000)} 秒`);
+      return play;
     } catch (e) {
       job.status = "error";
       job.error = String(e?.message ?? e);
       logError(SCOPE, `「${title}」没能生成`, job.error);
+      return null;
     } finally {
       job.endedAt = Date.now();
     }
   })();
+  // 不可枚举：面板那边 JSON 序列化任务时不带它。iMessage 指令那条路要等它（waitJob）
+  Object.defineProperty(job, "done", { value: done });
   return job;
+}
+
+/** 等一个任务跑完。成功给成品记录，失败抛出那句错误。 */
+export async function waitJob(job) {
+  const play = await job.done;
+  if (!play) throw new Error(job.error || "没能生成");
+  return play;
+}
+
+/* ================= iMessage 指令用 ================= */
+
+export function listTemplates() {
+  return loadState().templates;
+}
+
+/**
+ * 按标题或目录编号（从 1 开始，和「小剧场目录」那份顺序一致）找模板。
+ * 和插件一样：编号跟着模板当前的顺序走，删了中间的，后面的编号会往前挪。
+ */
+export function findTemplate(arg) {
+  const s = String(arg ?? "").trim();
+  if (!s) return null;
+  const list = listTemplates();
+  if (/^\d+$/.test(s)) return list[Number(s) - 1] ?? null;
+  return list.find((t) => t.title === s) ?? list.find((t) => t.title.toLowerCase() === s.toLowerCase()) ?? null;
+}
+
+/** 这个角色最近一次生成的成品（「小剧场 重试」用）。 */
+export function latestPlayOf(roleId) {
+  return (
+    loadState()
+      .plays.filter((p) => p.roleId === roleId && p.snapshot)
+      .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+  );
 }
 
 /* ================= 对外 ================= */
@@ -458,11 +496,15 @@ export function generate(config, { roleId, templateId, prompt, bookIds }) {
   }
   if (!text) throw new Error("提示词是空的");
 
-  // 记住这个角色这次勾的世界书，下次默认还是这几本
-  state.roleBooks[role.id] = Array.isArray(bookIds) ? bookIds : [];
-  saveState(state);
+  // 记住这个角色这次勾的世界书，下次默认还是这几本。没传（iMessage 指令那条路）
+  // 就用上次在面板里勾的
+  if (Array.isArray(bookIds)) {
+    state.roleBooks[role.id] = bookIds;
+    saveState(state);
+  }
+  const books = Array.isArray(bookIds) ? bookIds : state.roleBooks[role.id] ?? [];
 
-  const snap = buildSnapshot(config, role, { title, prompt: text, bookIds });
+  const snap = buildSnapshot(config, role, { title, prompt: text, bookIds: books });
   logInfo(
     SCOPE,
     `开始生成「${title}」（${role.name}${snap.bookNames.length ? `，世界书：${snap.bookNames.join("、")}` : ""}` +

@@ -9,6 +9,7 @@ import {
 import { pickRefFromText, resolveRefFile } from "./media.js";
 import { restartNotice } from "./restart.js";
 import { readSession, writeSession } from "./sessions.js";
+import { findTemplate, latestPlayOf, listTemplates } from "./theater.js";
 
 /**
  * iMessage 里的快捷指令。
@@ -61,6 +62,11 @@ const COMMANDS = new Set([
   "sumsmall",
   "sumbig",
   "checkphone",
+  "theater",
+  "theatertemp",
+  "theaterrandom",
+  "theaterlist",
+  "theaterview",
 ]);
 
 /**
@@ -100,6 +106,13 @@ const COMMAND_ALIASES = {
   小总结: "sumsmall",
   大总结: "sumbig",
   查手机: "checkphone",
+  // 小剧场那几条照搬插件 astrbot_plugin_html_theater 的写法。「小剧场」和「生成小剧场」是同一条
+  生成小剧场: "theater",
+  小剧场: "theater",
+  临时小剧场: "theatertemp",
+  生成随机小剧场: "theaterrandom",
+  小剧场目录: "theaterlist",
+  查看小剧场: "theaterview",
 };
 
 /**
@@ -112,7 +125,7 @@ const COMMAND_ALIASES = {
  * 那几个，`/images/logo.png` 这种路径的第一段是 `images` 不是 `image`，
  * 照样当聊天发给模型。
  */
-const FREE_TEXT_COMMANDS = new Set(["image"]);
+const FREE_TEXT_COMMANDS = new Set(["image", "theater", "theatertemp", "theaterview"]);
 
 /**
  * 手机键盘打出来的字符先归一化。
@@ -391,6 +404,12 @@ function buildHelp(trigger) {
     "/关闭线下  结束这段剧情：补一次大总结，把总结写进待总结，回归线上功能",
     `${padCmd(t)}开关防相亲：开着时所有系统发言（指令确认、报错、总结）都不发出来`,
     `           也可以不带 /，直接发「${bare}」；这个词在网页端「发送」里能改`,
+    "/小剧场 1         按模板编号或标题生成一个小剧场（也可写 /生成小剧场 同人小剧场）",
+    "/临时小剧场 提示词 用这段提示词直接生成，不进模板目录",
+    "/生成随机小剧场   从模板目录里随机挑一个",
+    "/小剧场 重试      用上一次的设定重新生成一次",
+    "/小剧场目录       看模板目录和编号",
+    "/查看小剧场 1     看某个模板的提示词",
     "/查手机    偷看一眼角色的手机（按「查手机 → 设置」里勾的那几个 App 生成，要在角色上打开）",
     "/help      看这张表",
     "",
@@ -618,6 +637,56 @@ function cmdMemory({ role }) {
  * `/查手机` —— 和 /diary 同一个路子：这里只检查开关，真正的生成在 imessage.js
  * （phonecheck.js 要打模型，几十秒，得放在「正在输入」里等）。
  */
+/**
+ * 小剧场那几条（照搬插件的指令）。目录和查看在这里直接回；生成要打模型、几分钟，
+ * 和 /查手机 一个路子：返回 `theater`，由 imessage.js 去生成、生成完再发一条。
+ */
+function cmdTheater({ name, args, config, role }) {
+  const list = listTemplates();
+  const catalog = () =>
+    list.length ? list.map((t, i) => `${i + 1}. ${t.title}`).join("\n") : "（模板目录是空的，去浏览器的「小剧场」里加）";
+
+  if (name === "theaterlist") return { text: `🎭 小剧场目录
+${catalog()}`, log: "快捷指令：小剧场目录" };
+
+  if (name === "theaterview") {
+    const t = findTemplate(args);
+    if (!t) return { text: `⚠️ 没找到小剧场模板「${args}」。
+${catalog()}` };
+    return { text: `🎭 ${t.title}
+${t.prompt}`, log: `快捷指令：查看小剧场「${t.title}」` };
+  }
+
+  if (!config.theater?.model?.provider) {
+    return { text: "⚠️ 还没选小剧场用的模型。去浏览器的「小剧场 → 设置」里选一个。" };
+  }
+
+  if (name === "theatertemp") {
+    if (!args) return { text: "⚠️ 写一下这次的提示词：/临时小剧场 {{char}} 和 {{user}} 被困在午夜书店" };
+    return { theater: { prompt: args, title: "临时小剧场" }, log: "快捷指令：临时小剧场" };
+  }
+
+  if (name === "theaterrandom") {
+    if (!list.length) return { text: `⚠️ ${catalog()}` };
+    const t = list[Math.floor(Math.random() * list.length)];
+    return { theater: { templateId: t.id, title: t.title }, log: `快捷指令：随机小剧场「${t.title}」` };
+  }
+
+  // /小剧场 重试
+  if (/^重试$|^retry$/i.test(args)) {
+    const last = latestPlayOf(role.id);
+    if (!last) return { text: "⚠️ 这个角色还没生成过小剧场，没有可以重试的。" };
+    return { theater: { playId: last.id, title: last.templateTitle || last.title }, log: `快捷指令：重试小剧场「${last.title}」` };
+  }
+
+  if (!args) return { text: `用法：/小剧场 编号或标题
+${catalog()}` };
+  const t = findTemplate(args);
+  if (!t) return { text: `⚠️ 没找到小剧场模板「${args}」。
+${catalog()}` };
+  return { theater: { templateId: t.id, title: t.title }, log: `快捷指令：生成小剧场「${t.title}」` };
+}
+
 function cmdCheckPhone({ role }) {
   if (!role?.phone?.command) {
     return { text: "⚠️ 这个角色没开 /查手机。去浏览器的「查手机」里，在这个角色的设置里打开。" };
@@ -886,6 +955,12 @@ export function tryCommand(text, ctx) {
       return cmdSummary("small");
     case "sumbig":
       return cmdSummary("big");
+    case "theater":
+    case "theatertemp":
+    case "theaterrandom":
+    case "theaterlist":
+    case "theaterview":
+      return cmdTheater(args);
     case "checkphone":
       return cmdCheckPhone(args);
     default:
