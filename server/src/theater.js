@@ -448,6 +448,42 @@ export function findTemplate(arg) {
   return list.find((t) => t.title === s) ?? list.find((t) => t.title.toLowerCase() === s.toLowerCase()) ?? null;
 }
 
+/** 插件原版的注入提示词。config.theater.injectionPrompt 留空时用它。 */
+export const DEFAULT_INJECTION_PROMPT = "[系统提示]这是你的真实经历与内容，请根据你当前人设，直接自然回应用户。";
+
+/** 小剧场正文注入时的字数上限：长篇 HTML 抽出来的字可能上万，整段塞进上下文太亏。 */
+const INJECT_MAX_CHARS = 6000;
+
+/**
+ * 「生成后注入当前会话」那条消息，照插件 _reaction_request 的格式拼：
+ *
+ *   注入提示词
+ *   [小剧场提示词]
+ *   这次的提示词            ← 设置里可以关掉
+ *   [小剧场正文]
+ *   从 HTML 里抽出来的纯文字（不带 CSS / JS / 标签）
+ *
+ * 这条会当成用户发来的一轮交给角色回复，和回复一起进会话历史（插件也是这么存的）。
+ */
+export function reactionPrompt(config, play) {
+  const t = config.theater ?? {};
+  let text = "";
+  try {
+    text = htmlText(readPlayHtml(play.id));
+  } catch {
+    text = String(play.text ?? "");
+  }
+  if (text.length > INJECT_MAX_CHARS) text = `${text.slice(0, INJECT_MAX_CHARS)}…`;
+  const parts = [];
+  // 和插件一样：留空 = 不加这一句（默认值在 config.js:normalizeTheater 里填好了）
+  const lead = String(t.injectionPrompt ?? DEFAULT_INJECTION_PROMPT).trim();
+  if (lead) parts.push(lead);
+  const prompt = String(play.snapshot?.templatePrompt ?? "").trim();
+  if (t.injectTheaterPrompt !== false && prompt) parts.push("[小剧场提示词]", prompt);
+  parts.push("[小剧场正文]", text);
+  return parts.join("\n\n");
+}
+
 /** 这个角色最近一次生成的成品（「小剧场 重试」用）。 */
 export function latestPlayOf(roleId) {
   return (

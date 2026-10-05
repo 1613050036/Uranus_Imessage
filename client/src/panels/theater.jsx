@@ -481,6 +481,43 @@ function SettingsCard({ defaultSystemPrompt }) {
             />
           </div>
         )}
+        <label className="flex items-start justify-between gap-4">
+          <span className="min-w-0">
+            <span className="block text-ui text-ink">生成后注入当前会话</span>
+            <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+              在 iMessage 里用 /小剧场 这类指令生成时，生成完等 5 秒，把小剧场的正文（纯文字，不带 CSS 和代码）当成一轮交给角色，
+              角色会照着人设回你一条；这一轮和回复都会存进会话历史，之后聊天都记得。网页面板里生成的不注入（和插件一样）。
+            </span>
+          </span>
+          <Switch checked={Boolean(t.injectAfterGeneration)} onChange={(v) => patch({ injectAfterGeneration: v })} label="生成后注入当前会话" />
+        </label>
+        {t.injectAfterGeneration && (
+          <div className="grid grid-cols-1 gap-5 border-l-2 border-line pl-4">
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-ui text-ink">注入时带上小剧场提示词</span>
+                <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                  关掉就只带正文，免得角色把这次的提示词和之前的搞混。
+                </span>
+              </span>
+              <Switch
+                checked={t.injectTheaterPrompt !== false}
+                onChange={(v) => patch({ injectTheaterPrompt: v })}
+                label="注入时带上小剧场提示词"
+              />
+            </label>
+            <Field label="注入提示词" hint="放在最前面的那句话；清空就不加">
+              <textarea
+                className={`${inputCls} min-h-[4rem] leading-relaxed`}
+                value={t.injectionPrompt ?? ""}
+                onChange={(e) => patch({ injectionPrompt: e.target.value })}
+              />
+            </Field>
+            <p className="-mt-2 text-meta leading-relaxed text-ink-faint">
+              这一轮会多花一次聊天请求，正文最多带 6000 字。
+            </p>
+          </div>
+        )}
         <Field label="系统提示词" hint="留空用默认的（插件原版那段）">
           <textarea
             className={`${inputCls} min-h-[8rem] font-mono text-xs leading-relaxed`}

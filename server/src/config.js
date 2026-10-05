@@ -1141,6 +1141,19 @@ function normalizeTheater(input) {
     // 生成时带上这个角色最近的聊天记录。默认关，和插件一致
     injectContext: Boolean(input?.injectContext),
     contextCount: clampInt(input?.contextCount, 20, 1, 100),
+    /*
+     * 生成后注入当前会话（照插件 inject_after_generation）：只在 iMessage 里用指令生成时，
+     * 等 5 秒把「注入提示词 + 小剧场提示词 + 正文」当一轮交给角色回复，这一轮进会话历史。
+     * 默认关，和插件一致。
+     */
+    injectAfterGeneration: Boolean(input?.injectAfterGeneration),
+    // 注入时带不带小剧场提示词。缺字段算开，和插件默认一致
+    injectTheaterPrompt: input?.injectTheaterPrompt !== false,
+    // 注入提示词。没这个字段 = 插件原版那句；用户清空 = 不加（插件「留空时不注入此提示词」）
+    injectionPrompt:
+      input?.injectionPrompt === undefined
+        ? "[系统提示]这是你的真实经历与内容，请根据你当前人设，直接自然回应用户。"
+        : str(input.injectionPrompt),
   };
 }
 

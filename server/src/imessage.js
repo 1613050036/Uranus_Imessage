@@ -134,7 +134,12 @@ import {
   textResultsNote,
 } from "./mcp.js";
 import { batchText, injectPhoneNote, phoneNote, runGenerate as runPhoneGenerate } from "./phonecheck.js";
-import { generate as generateTheater, retry as retryTheater, waitJob as waitTheater } from "./theater.js";
+import {
+  generate as generateTheater,
+  reactionPrompt,
+  retry as retryTheater,
+  waitJob as waitTheater,
+} from "./theater.js";
 
 /**
  * iMessage 桥接模块（多号码版）。
@@ -1987,15 +1992,27 @@ async function handleCommand(getConfig, runner, space, spaceId, userText, peer =
       logWarn(scope, "小剧场的「开始生成」没发出去", e)
     );
     waitTheater(job).then(
-      (play) =>
-        sendSystem(
+      async (play) => {
+        await sendSystem(
           runner,
           space,
           `🎭《${play.title}》生成好了，去浏览器的「小剧场」里看完整页面。\n\n${String(play.text ?? "").slice(0, 160)}…`,
           { what: "小剧场" }
-        ),
+        );
+        /*
+         * 生成后注入当前会话（照插件 inject_after_generation）：等 5 秒，把
+         * 「注入提示词 + 小剧场提示词 + 正文」当成对方发来的一轮交给 handleTurn ——
+         * 角色照常回复、照常发出去，这一轮和回复一起进会话历史，之后聊天都带着它。
+         * 和插件一样只在指令这条路上做；面板里生成的不注入。
+         */
+        const config = getConfig();
+        if (!config.theater?.injectAfterGeneration) return;
+        await sleep(5);
+        logInfo(scope, `小剧场《${play.title}》注入当前会话，让角色回应`);
+        await handleTurn(getConfig, runner, space, spaceId, reactionPrompt(config, play), [], peer, {});
+      },
       (e) => sendSystem(runner, space, `⚠️ 小剧场没生成出来：${String(e?.message ?? e)}`, { what: "小剧场" })
-    ).catch((e) => logError(scope, "小剧场的结果没发出去", e));
+    ).catch((e) => logError(scope, "小剧场的结果没发出去（或者注入之后的回复失败了）", e));
     return true;
   }
 
