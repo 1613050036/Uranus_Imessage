@@ -42,6 +42,7 @@ import Holidays from "date-holidays";
 
 import { WEATHER_CACHE_PATH, readJson, writeJson } from "./datadir.js";
 import { logDebug, logWarn } from "./logs.js";
+import { specialDayNames } from "./reminder.js";
 import { whyNetwork } from "./net.js";
 
 /**
@@ -1068,14 +1069,48 @@ async function resolveSides(env) {
   return { user, char };
 }
 
+/**
+ * {{user}} 那边的时区：定时提醒按它算（用户定的：异地有时差就按用户那边）。
+ * 两种模式都看「所在城市」（userCity）；没填或解析不出来就用系统时区。
+ * 不看 time.enabled —— 时间感知关着，提醒也得按对的时区响。
+ */
+export async function userTzOf(role) {
+  try {
+    const geo = await geocode(String(role?.env?.time?.userCity ?? "").trim());
+    if (validTz(geo?.tz)) return geo.tz;
+  } catch {
+    /* 落到系统时区 */
+  }
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
 /** 一边的时间段：`{{user}}发送当地时间 CST : … | 周二, 工作日` */
-function timeSegment(label, who, geo, at, workday) {
+function timeSegment(label, who, geo, at, workday, dayMark) {
   const tz = geo?.tz || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const { date, time, year } = tzParts(tz, at);
   const dow = tzDayOfWeek(tz, at);
   const tag = workday ? dayTag(geo?.country ?? "", date, year, at, dow) : "";
   const head = `${who}${label} ${tzAbbr(tz, at)} : ${date} ${time}`;
-  return tag ? `${head} | ${tzWeekday(tz, at)}, ${tag}` : `${head} | ${tzWeekday(tz, at)}`;
+  const week = tzWeekday(tz, at) + specialMark(date, dayMark, tag);
+  return tag ? `${head} | ${week}, ${tag}` : `${head} | ${week}`;
+}
+
+/**
+ * 星期后面缀的那截：「 · 宝宝的生日」「 · 在一起第一年纪念日」（reminder.js:specialDayNames）。
+ *
+ * 只缀在 {{user}} 那一侧（异地时两边日期可能差一天，生日纪念日按 {{user}} 那边的日子过）。
+ * dayMark（{id, aheadDays, festivals}）不传就不缀 —— 线下那条前缀按服务器时间，跟这些日子没关系。
+ */
+function specialMark(date, dayMark, tag = "") {
+  if (dayMark === undefined) return "";
+  try {
+    // 法定假日那一截（「国庆节」）已经写在后面了，节日表里同名的不再报一遍
+    const names = specialDayNames(date, dayMark.id, [tag], dayMark);
+    return names.length ? ` · ${names.join("、")}` : "";
+  } catch (e) {
+    logWarn("环境", "读纪念日失败，这一轮不带", e);
+    return "";
+  }
 }
 
 /**
@@ -1088,13 +1123,14 @@ function timeSegment(label, who, geo, at, workday) {
  * 城市取「所在城市」那一个（异地模式下的 userCity），charCity 在这个模式
  * 下不参与计算。
  */
-function timeSegmentSame(geo, at, workday) {
+function timeSegmentSame(geo, at, workday, dayMark) {
   const tz = geo?.tz || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const { date, time, year } = tzParts(tz, at);
   const dow = tzDayOfWeek(tz, at);
   const tag = workday ? dayTag(geo?.country ?? "", date, year, at, dow) : "";
   const head = `时间 : ${date} ${time}`;
-  return tag ? `${head} | ${tzWeekday(tz, at)}, ${tag}` : `${head} | ${tzWeekday(tz, at)}`;
+  const week = tzWeekday(tz, at) + specialMark(date, dayMark, tag);
+  return tag ? `${head} | ${week}, ${tag}` : `${head} | ${week}`;
 }
 
 /**
@@ -1183,11 +1219,13 @@ export async function buildEnv(role, keys, now = new Date()) {
     const workday = env.time.workday !== false;
 
     // 同城模式只认一个地方（userCity 那个输入框），两边共用它
+    // 星期后缀要的：哪个角色（生日纪念日按角色分）、提前几天、报不报节日
+    const dayMark = { id: role?.id ?? "", aheadDays: env.time.aheadDays ?? 1, festivals: env.time.festivals !== false };
     const time = same
-      ? `[${timeSegmentSame(sides.user, now, workday)}]`
+      ? `[${timeSegmentSame(sides.user, now, workday, dayMark)}]`
       : "[" +
         [
-          timeSegment("发送当地时间", "{{user}}", sides.user, now, workday),
+          timeSegment("发送当地时间", "{{user}}", sides.user, now, workday, dayMark),
           timeSegment("收到当地时间", "{{char}}", sides.char, now, workday),
         ].join(" | ") +
         "]";

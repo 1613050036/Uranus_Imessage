@@ -358,7 +358,7 @@ export async function autoMcdMenuText(config, opts, mode, scope = "麦当劳") {
 }
 
 /** 平时只注入这一句，聊到吃的才换成完整说明（同 luckin.js:LUCKIN_SHORT_HINT）。 */
-export const MCD_SHORT_HINT = "你能帮对方点麦当劳（对方聊到饿了、想吃东西时，完整的写法会告诉你）。";
+export const MCD_SHORT_HINT = "你能帮对方点麦当劳（对方聊到饿了、想吃东西时，完整的写法会告诉你）。想先看看麦当劳现在有什么再挑，就单独写一个 [看菜单:麦当劳]，系统会把菜单拿给你看，看完再回对方。";
 
 /** 聊到吃的那些词。宽一点无所谓：判错的代价只是这一轮多带几百字。 */
 const WANT_RE = /麦当劳|麦记|金拱门|汉堡|巨无霸|麦辣|薯条|鸡块|麦乐鸡|麦旋风|板烧|麦满分|鸡翅|饿了|好饿|饿死|吃点|吃啥|吃什么|外卖|夜宵|宵夜/i;

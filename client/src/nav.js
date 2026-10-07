@@ -1,4 +1,5 @@
 import {
+  AlarmClock,
   AtSign,
   BookOpen,
   Brain,
@@ -246,6 +247,17 @@ export const NAV = [
     desc: "翻翻角色自己的手机：通讯录、信息、通话、购物、外卖、浏览器、钱包、今天的活动轨迹、收藏夹，还能自己加 App。内容是模型按人设虚构的，和「查岗」不是一回事。",
     empty: "还没有角色。",
     items: (c) => (c.roles ?? []).map((r) => ({ id: r.id, label: roleLabel(r) })),
+  },
+  {
+    id: "reminders",
+    label: "提醒",
+    icon: AlarmClock,
+    /*
+     * 定时提醒（server/src/reminder.js）。条目在 data/reminders.json，不在 config 里；
+     * 角色那边的开关在「角色 → 单独配置 → 定时提醒」。
+     */
+    desc: "角色帮你记的提醒，和你自己的课表、生日、纪念日。到点由角色按人设来找你；生日和纪念日当天还会写进时间感知。",
+    anchors: ["设置", "角色设的", "我的日程"],
   },
   {
     id: "theater",

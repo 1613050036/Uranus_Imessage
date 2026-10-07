@@ -27,6 +27,7 @@
 
 import { LUCKIN_SHORT_HINT, luckinWanted } from "./luckin.js";
 import { MCD_SHORT_HINT, mcdWanted } from "./mcd.js";
+import { reminderPromptState } from "./reminder.js";
 import { applyVars, resolveEndpoint, resolveUser } from "./config.js";
 import { listEmojiTags } from "./emoji.js";
 import { stripEnvPrefix } from "./env.js";
@@ -291,6 +292,19 @@ function formatBlock(entry, fill, role, config, sent, orders = {}) {
             .replace(/\n{2,}/g, "\n")
             .trim()
         : mcd ? MCD_SHORT_HINT : LUCKIN_SHORT_HINT;
+    }
+    /*
+     * 定时提醒：现在几点（{{user}} 那边）、默认提前量、还没到点的那几条。
+     * imessage.js 按 {{user}} 的时区算好传进来；没传（别的调用方）就按系统时区现算。
+     */
+    if (child.kind === "reminder") {
+      const st = orders.reminder ?? reminderPromptState(role?.id ?? "", null);
+      text = text
+        .replace(/\{\{\s*提醒当前时间\s*\}\}/g, st.now)
+        .replace(/\{\{\s*提醒提前量\s*\}\}/g, String(st.lead))
+        .replace(/\{\{\s*提醒列表变量\s*\}\}/g, st.list)
+        .replace(/\n{2,}/g, "\n")
+        .trim();
     }
     if (child.kind === "react") {
       const list = Array.isArray(role?.reactSend?.emojis) ? role.reactSend.emojis : [];
@@ -887,7 +901,7 @@ export async function buildPrompt(config, role, user, history, weatherNote = "",
          * 标记，然后被原样打进剧情正文里。
          */
         if (offline) break;
-        parts.push({ role: "system", content: formatBlock(entry, fill, role, config, sent, { luckin: opts?.luckin, mcd: opts?.mcd }) });
+        parts.push({ role: "system", content: formatBlock(entry, fill, role, config, sent, { luckin: opts?.luckin, mcd: opts?.mcd, reminder: opts?.reminder }) });
         break;
       case "context": {
         const woven = weaveDepths(sent, world.depths);

@@ -1272,6 +1272,8 @@ function normalizeRole(input, id, legacy) {
     // 瑞幸点单：开关 + 先看菜单 + 取餐码提醒 + 确认时限。token 是全局的（config.luckinApi），
     // 见下面那个函数和 luckin.js
     luckin: normalizeLuckin(input?.luckin),
+    // 定时提醒：只有开关。条目和默认提前量不在 config 里（data/reminders.json，见 reminder.js）
+    reminder: { enabled: Boolean(input?.reminder?.enabled) },
     // 麦当劳点单：开关 + 默认外送还是到店 + 自动带菜单 + 确认时限，见 mcd.js
     mcd: normalizeMcd(input?.mcd),
     // 消息回应、消息特效：开关 + 白名单。两条都是「勾了才能用」，
@@ -2152,6 +2154,12 @@ function normalizeRoleEnv(input) {
       charCity: str(time.charCity).trim(),
       // 工作日与节假日感知，默认开
       workday: time.workday === undefined ? true : Boolean(time.workday),
+      // 提前感知：节日、生日、纪念日提前几天写进时间戳（「明天万圣节」），0 = 只在当天。默认 1
+      aheadDays: Number.isFinite(Number(time.aheadDays)) && time.aheadDays !== ""
+        ? Math.max(0, Math.min(7, Math.round(Number(time.aheadDays))))
+        : 1,
+      // 节日（万圣节、七夕、母亲节……）进不进时间戳，默认开。生日纪念日不受它管（reminder.js）
+      festivals: time.festivals === undefined ? true : Boolean(time.festivals),
     },
     weather: {
       enabled: Boolean(weather.enabled),

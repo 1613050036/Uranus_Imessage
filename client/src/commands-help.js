@@ -25,6 +25,7 @@ export const COMMAND_GROUPS = [
   { key: "model", label: "模型" },
   { key: "make", label: "生成" },
   { key: "offline", label: "线下模式" },
+  { key: "reminder", label: "提醒" },
   { key: "system", label: "系统" },
 ];
 
@@ -174,6 +175,30 @@ export const COMMAND_ROWS = [
     desc: "偷看一眼角色的手机：按「查手机 → 设置」里勾的那几个 App 生成一批，结果发回来一条。要先在「查手机」里给这个角色打开这条指令。",
   },
   {
+    group: "reminder",
+    cmd: "/提醒 明天8:00 带钥匙",
+    alt: ["/增加提醒", "/提醒 每天 7:30 吃药", "/提醒 每周一三 8:00 高数", "/提醒 每月15号 9:00 交房租"],
+    desc: "加一条自己的提醒，到点由这个角色按人设来提醒你。开头可写 每天 / 每周几 / 每月几号 / 每年；末尾可加「提前30分钟」或「准时」，不写就用「提醒」里的默认提前量。",
+  },
+  {
+    group: "reminder",
+    cmd: "/增加纪念日 在一起 2025年10月10日",
+    alt: [],
+    desc: "每年这天写进时间感知（「周五 · 在一起第一年纪念日」），满 100、200… 天也会告诉角色，当天早上 9 点角色会来找你。要写全年份。",
+  },
+  {
+    group: "reminder",
+    cmd: "/增加生日 宝宝 10月10日",
+    alt: ["/增加生日 宝宝 农历八月十五"],
+    desc: "生日当天写进时间感知，早上 9 点角色会来找你。农历就在日期前面写「农历」。",
+  },
+  {
+    group: "reminder",
+    cmd: "/提醒列表",
+    alt: ["/删除提醒 2"],
+    desc: "看还没到点的提醒和日程（带编号）；/删除提醒 加编号删掉一条。网页端在侧边栏「提醒」里。",
+  },
+  {
     group: "system",
     cmd: "/重启",
     alt: ["/restart"],
@@ -226,6 +251,11 @@ const COMMAND_WORDS = new Set([
   "theaterrandom",
   "theaterlist",
   "theaterview",
+  "remind",
+  "remindlist",
+  "reminddel",
+  "addanniv",
+  "addbday",
   "日记",
   "记忆",
   "重roll",
@@ -244,6 +274,12 @@ const COMMAND_WORDS = new Set([
   "生成随机小剧场",
   "小剧场目录",
   "查看小剧场",
+  "提醒",
+  "增加提醒",
+  "提醒列表",
+  "删除提醒",
+  "增加纪念日",
+  "增加生日",
 ]);
 
 /**

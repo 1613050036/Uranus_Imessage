@@ -192,7 +192,7 @@ const MEDIA_TAG = new RegExp(
     // 取消订单：[取消订单] / [取消订单:瑞幸]，排在瑞幸 / 麦当劳前面免得被当成点一样叫「取消订单」的东西
     "[[［]\\s*(?:取消订单|cancel_order)\\s*(?:[:：]\\s*(?<cancelOrder>[^\\]］]{0,20}?))?\\s*[\\]］]",
     // 瑞幸两条，菜单那条得排前面，不然 `[瑞幸菜单:拿铁]` 会被当成「点一杯叫 菜单:拿铁 的咖啡」
-    "[[［]\\s*(?:瑞幸菜单|luckin_menu)\\s*[:：]\\s*(?<luckinMenu>[^\\]］]{1,120}?)\\s*[\\]］]",
+    "[[［]\\s*(?:看菜单|查菜单|瑞幸菜单|麦当劳菜单|luckin_menu|menu)\\s*(?:[:：]\\s*(?<luckinMenu>[^\\]］]{0,120}?))?\\s*[\\]］]",
     "[[［]\\s*(?:瑞幸咖啡|瑞幸|luckin)\\s*[:：]\\s*(?<luckin>[^\\]］]{1,300}?)\\s*[\\]］]",
     "[[［]\\s*(?:麦当劳|mcd|mcdonalds)\\s*[:：]\\s*(?<mcd>[^\\]］]{1,300}?)\\s*[\\]］]",
     "[[［]\\s*(?:transfer_money|transfer|转账|转钱)\\s*[:：]\\s*(?<transfer>\\d[^\\]］]{0,80}?)\\s*[\\]］]",
@@ -301,8 +301,8 @@ export function splitMedia(text) {
     } else if (m[0] && /^[[［]\s*(?:取消订单|cancel_order)/i.test(m[0])) {
       // 不写品牌就是「最近那一单」，交给 imessage.js:cancelOrderPart 找
       parts.push({ kind: "cancel_order", text: String(g.cancelOrder ?? "").trim() });
-    } else if (g.luckinMenu !== undefined) {
-      // 「先看菜单」在 imessage.js:luckinMenuRound 里消费，到这儿还剩的（第二次回复里
+    } else if (m[0] && /^[[［]\s*(?:看菜单|查菜单|瑞幸菜单|麦当劳菜单|luckin_menu|menu)/i.test(m[0])) {
+      // 「先看菜单」在 imessage.js:menuRound 里消费，到这儿还剩的（第二次回复里
       // 又写了一遍、或者开关关着）一律吞掉，不当文字发出去
     } else if (g.luckin !== undefined) {
       const t = g.luckin.trim();

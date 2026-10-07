@@ -2536,6 +2536,53 @@ function RoleLocationSendFields({ role }) {
   );
 }
 
+/**
+ * 「定时提醒」那一段：只有开关。条目、默认提前量、自己的日程都在侧边栏「提醒」里
+ * （server/src/reminder.js，不在 config 里）。
+ */
+function RoleReminderFields({ role, onGoto }) {
+  const { updateRole } = useConfig();
+  const openGate = usePresetGate(role);
+  const rm = role.reminder ?? {};
+
+  return (
+    <div className="grid grid-cols-1 gap-6">
+      <label className="flex items-start justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-ui text-ink">让角色帮你设提醒</span>
+          <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+            模型写
+            <code className="mx-1 bg-sunken px-1">[2026年10月10日08:00 | 提醒她带钥匙]</code>
+            就记下一条提醒，到点（默认再提前 10 分钟一次）叫角色按人设来找你。
+            可以一次设好几条（发课表让它提醒这周的课），也能写成「帮我点早餐」——
+            到点它会照点单的格式去点，下单照旧要你给卡片点回应。
+            <br />
+            时间按你那边算：异地的话看「所在城市」。写错了的会在列表里标「已失效」，
+            角色下一轮会收到一句你看不见的提示让它重设。
+            <br />
+            关掉之后角色设过的提醒不会再响，你自己加的日程不受影响。
+          </span>
+        </span>
+        <Switch
+          checked={Boolean(rm.enabled)}
+          onChange={(v) => {
+            updateRole(role.id, { reminder: { ...rm, enabled: v } });
+            if (v) openGate("reminder");
+          }}
+          label="启用定时提醒"
+        />
+      </label>
+      {onGoto && (
+        <div>
+          <Button variant="outline" onClick={() => onGoto("reminders")}>
+            去「提醒」看列表和默认提前量
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 单个 logo 文件的体积上限。比壁纸那边小得多 —— 这是张几十像素宽的小图标。 */
 const LOGO_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -5226,6 +5273,8 @@ export function RoleEnvFields({ role }) {
         userCity: time.userCity ?? "",
         charCity: time.charCity ?? "",
         workday: time.workday === false ? "0" : "1",
+        aheadDays: String(time.aheadDays ?? 1),
+        festivals: time.festivals === false ? "0" : "1",
         weather: weather.enabled ? "1" : "0",
         range: weather.range ? "1" : "0",
         tomorrow: weather.tomorrow === false ? "0" : "1",
@@ -5254,6 +5303,8 @@ export function RoleEnvFields({ role }) {
     time.userCity,
     time.charCity,
     time.workday,
+    time.aheadDays,
+    time.festivals,
     weather.enabled,
     weather.range,
     weather.tomorrow,
@@ -5399,6 +5450,36 @@ export function RoleEnvFields({ role }) {
                 : "。超出范围后会自动只报工作日/休息日，不会把春节说成工作日。"}
             </p>
           )}
+
+          {/*
+            提前感知（server/src/reminder.js:specialDayNames）：节日、生日、纪念日当天写在星期后面，
+            提前几天写「明天万圣节」。生日纪念日在侧边栏「提醒 → 我的日程」里加。
+          */}
+          <label className="flex items-start justify-between gap-4">
+            <span className="min-w-0">
+              <span className="block text-ui text-ink">节日感知</span>
+              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                情人节、万圣节、圣诞节、七夕、中秋、母亲节这些：当天写在星期后面（「周六 · 万圣节」），
+                那一整天的时间戳都带着。生日和纪念日不受这个开关管，它们在「提醒 → 我的日程」里加，总是会进。
+              </span>
+            </span>
+            <Switch
+              checked={time.festivals !== false}
+              onChange={(v) => patchTime({ festivals: v })}
+              label="启用节日感知"
+            />
+          </label>
+
+          <NumberField
+            label="提前感知"
+            hint="节日、生日、纪念日提前几天就写进时间戳：1 天是「明天万圣节」，2 天还会有「后天…」。0 = 只在当天"
+            value={time.aheadDays ?? 1}
+            min={0}
+            max={7}
+            step={1}
+            suffix="天"
+            onChange={(v) => patchTime({ aheadDays: Math.max(0, Math.min(7, Math.round(v || 0))) })}
+          />
 
           {/* 天气 */}
           <label className="flex items-start justify-between gap-4 border-t border-line pt-6">
@@ -6288,6 +6369,14 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
           badge={onOff(role.luckin?.enabled || role.mcd?.enabled)}
         >
           <RoleOrderFields role={role} onGoto={onGoto} />
+        </Fold>
+
+        <Fold
+          title="定时提醒"
+          desc="说「明天提醒我带钥匙」，角色写个标记，到点自己来找你；设好的都在侧边栏「提醒」里"
+          badge={onOff(role.reminder?.enabled)}
+        >
+          <RoleReminderFields role={role} onGoto={onGoto} />
         </Fold>
 
         {/*

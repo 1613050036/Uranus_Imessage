@@ -36,7 +36,27 @@ import {
   userLabel,
 } from "./config.js";
 import { isCommandMessage, privacyOn, tryCommand } from "./commands.js";
-import { buildEnv } from "./env.js";
+import { buildEnv, userTzOf } from "./env.js";
+import {
+  addItem,
+  applyRoleTags,
+  describeForList,
+  dueAction,
+  fmtWhen,
+  leadOf,
+  listForCommand,
+  loadReminders,
+  localParts,
+  noteLastChat,
+  parseDayCommand,
+  parseRemindCommand,
+  patchItem,
+  reminderPromptState,
+  removeItem,
+  specialName,
+  splitReminderTags,
+  updateReminders,
+} from "./reminder.js";
 import { pickEmoji } from "./emoji.js";
 import { isDocAttachment, readDocument } from "./docread.js";
 import { notePrompt } from "./lastprompt.js";
@@ -434,6 +454,12 @@ function createRunner(projectRefId) {
     luckinLoc: new Map(),
     // 「取餐码提醒」的轮询定时器，按 `角色key::卡片guid` 索引。只在内存里，见 armLuckinPoll
     luckinPoll: new Map(),
+    // 定时提醒的心跳（见 armReminders）和「标记写错了」那几句系统提示：
+    // peerKey -> [hint]，对方下一条消息进来时一起递给模型，和 reactPending 一个路子，
+    // 但不过期 —— 提醒可能是明天的事，对方隔一个小时才回也得让角色知道没设上
+    reminderTimer: null,
+    reminderBusy: false,
+    reminderHints: new Map(),
     stopped: false, // stopBridge 之后消息循环要认得出自己已经过期
     retries: 0, // 连续失败了几次，决定下次等多久（见 RETRY_DELAYS）
     retryTimer: null, // 待触发的自动重连
@@ -2000,6 +2026,28 @@ async function handleCommand(getConfig, runner, space, spaceId, userText, peer =
    * 「开始生成」，生成在后台跑，跑完再发一条（成品标题 + 一小段正文）。
    * 两条都不进历史存档。HTML 本身在 iMessage 里显示不了，去控制台「小剧场」里看。
    */
+  /*
+   * 定时提醒那几条：commands.js 只认出是哪条，时间要按 {{user}} 的时区解析
+   * （异步查城市），所以在这儿做。和别的指令一样不进上下文、不打模型。
+   */
+  if (result.reminder) {
+    let text;
+    try {
+      text = await runReminderCommand(role, result.reminder, {
+        projectRefId: runner.projectRefId,
+        spaceId,
+        peer: peer || spaceId,
+      });
+    } catch (e) {
+      logError(scope, "提醒指令出错", e);
+      text = `⚠️ 提醒没加上：${String(e?.message ?? e)}`;
+    }
+    await sendSystem(runner, space, text, { what: "提醒指令" }).catch((e) =>
+      logWarn(scope, "提醒指令的回执没发出去", e)
+    );
+    return true;
+  }
+
   if (result.theater) {
     const t = result.theater;
     let job;
@@ -2817,6 +2865,74 @@ async function searchRound(
 }
 
 /**
+ * 「看菜单」的那一趟往返：模型写了 `[看菜单:瑞幸]` / `[看菜单:麦当劳@到店]` 时，
+ * 真去查一次菜单，接在回复后面再问一次。和 searchRound 一个形态 —— 对方只收到第二次的回复，
+ * 菜单只活在这一次的副本里，不进历史和存档。
+ *
+ * 没写品牌（`[看菜单]`）就按话里提到的猜，猜不出就两家都看（开着的那几家）。
+ * 一家都没开 / 都查不到也问第二次，告诉模型没看到，免得它干等着。
+ *
+ * @returns {Promise<string|null>} 第二次的回复；这轮没写标记返回 null
+ */
+const MENU_TAG = /[[［]\s*(?:看菜单|查菜单|瑞幸菜单|麦当劳菜单|menu)\s*(?:[:：]\s*([^\]］]{0,120}?))?\s*[\]］]/gi;
+
+async function menuRound(reply, { runner, role, config, peer, eps, params, messages, scope, llmScope, onPrompt }) {
+  const tags = [...String(reply ?? "").matchAll(MENU_TAG)];
+  if (!tags.length) return null;
+  const user = resolveUser(config, role);
+  const want = new Map(); // brand -> 到店/外送
+  for (const t of tags) {
+    const head = t[0];
+    const arg = String(t[1] ?? "");
+    const store = /@\s*到店|自提/.test(arg) ? "到店" : /@\s*外送|外卖/.test(arg) ? "外送" : "";
+    if (/瑞幸|luckin|咖啡/i.test(head + arg)) want.set("luckin", "");
+    else if (/麦当劳|mcd|麦记/i.test(head + arg)) want.set("mcd", store);
+    else {
+      for (const b of ["luckin", "mcd"]) if (role?.[b]?.enabled) want.set(b, store);
+    }
+  }
+
+  const blocks = [];
+  for (const [brand, store] of want) {
+    const b = ORDER_BRANDS[brand];
+    const bScope = scopeOf(runner, b.label);
+    if (!role?.[brand]?.enabled) {
+      blocks.push(`${b.label}：这个功能没开，看不了。`);
+      continue;
+    }
+    if (!brandReady(config, brand)) {
+      blocks.push(`${b.label}：还没配好，看不了菜单。`);
+      continue;
+    }
+    try {
+      const loc = await luckinLocation(runner, { peer, config, role }, bScope);
+      if (!loc && b.needsLoc) {
+        blocks.push(`${b.label}：不知道{{user}}在哪儿，查不了附近门店。`);
+        continue;
+      }
+      const useRole = brand === "mcd" && store ? { ...role, mcd: { ...role.mcd, mode: store === "到店" ? "pickup" : "delivery" } } : role;
+      blocks.push(`【${b.label}】\n${await b.menu(config, loc, useRole, bScope, user)}`);
+      logInfo(bScope, "模型要看菜单，查好了递给它");
+    } catch (e) {
+      logWarn(bScope, "模型要看菜单，没查到", e);
+      blocks.push(`${b.label}：菜单这会儿没查到（${String(e?.message ?? e).slice(0, 80)}）。`);
+    }
+  }
+
+  const note =
+    `<菜单>\n${blocks.join("\n\n") || "没有能看的菜单。"}\n</菜单>\n\n` +
+    "上面是你刚看的菜单（{{user}}看不到这一步）。现在正式回复{{user}}，别再写 [看菜单:…]。" +
+    "要帮忙点就照点单的格式写，商品名照菜单上的写；只是聊聊、推荐的话就按人设自然地说。" +
+    "照你原来的格式回答（思考块、气泡分隔这些照旧写）。";
+  const followUp = [...messages, { role: "assistant", content: reply }, { role: "user", content: note }];
+  logInfo(llmScope, `菜单注入 ${want.size} 家，只注入这一次`, blocks.join("\n\n"));
+  onPrompt?.(followUp);
+  const { content } = await chatWithFallback(eps.chat, eps.fallback, followUp, params);
+  logInfo(llmScope, `看完菜单后的回复 ${content.length} 字`, content);
+  return content;
+}
+
+/**
  * MCP 工具的那几趟往返（见 mcp.js）。
  *
  * 模型第一次回复里要了工具（文本标记 `[工具:名字 {…}]`，或者原生的 tool_calls）
@@ -3348,13 +3464,14 @@ async function handleTurn(
     runner.history.get(sessionId) ?? [],
     scopeOf(runner, "麦当劳")
   );
+  const reminder = await reminderStateFor(freshRole);
   const built = await buildPrompt(
     freshConfig,
     freshRole,
     user,
     runner.history.get(sessionId) ?? [],
     weatherNote,
-    { luckin, mcd }
+    { luckin, mcd, reminder }
   );
   const { params, preset, worldInfo } = built;
   // buildPrompt 裁剪过上文，把结果写回内存 —— 以前是 buildMessages 里做的
@@ -3484,6 +3601,27 @@ async function handleTurn(
     if (searched !== null) reply = searched;
   } catch (e) {
     logError(llmScope, "联网搜索之后那次生成失败，这一轮没能拿到回复", e);
+    await respondingWhile(space, () => notifyFailure(runner, space, "这条消息没回上来", e), runner);
+    throw e;
+  }
+
+  // 看菜单：[看菜单:瑞幸] / [看菜单:麦当劳]，查到了接上再问一次（见 menuRound）
+  try {
+    const viewed = await menuRound(reply, {
+      runner,
+      role: freshRole,
+      config: freshConfig,
+      peer,
+      eps,
+      params,
+      messages,
+      scope,
+      llmScope,
+      onPrompt: (followUp) => notePrompt(promptMeta, followUp),
+    });
+    if (viewed !== null) reply = viewed;
+  } catch (e) {
+    logError(llmScope, "看完菜单那次生成失败，这一轮没能拿到回复", e);
     await respondingWhile(space, () => notifyFailure(runner, space, "这条消息没回上来", e), runner);
     throw e;
   }
@@ -3690,6 +3828,7 @@ async function handleTurn(
    * 先让 IG 那边看见的话会被当成私聊发图。发布在后台跑（见 xhsrun.js 顶上），
    * 这里拿到的只是写上下文的那几句。
    */
+  forUser = await takeReminders(runner, freshRole, spaceId, peer, forUser);
   const xhsLines = takeXhs(freshConfig, freshRole, forUser, scope);
   forUser = xhsLines.rest;
   if (igRouteFor(freshRole, forUser)) {
@@ -4466,19 +4605,20 @@ async function fireProactive(getConfig, runner, spaceId) {
  * 时间前缀照加：和别的 user 轮次一致，「自主判断」那边也要靠它才知道
  * 上一次是什么时候的事。
  */
-async function runProactiveTurn(getConfig, runner, slot, spaceId) {
+async function runProactiveTurn(getConfig, runner, slot, spaceId, override = null) {
   const config = getConfig();
   const role = currentRole(config, runner);
-  const scope = scopeOf(runner, "主动消息");
+  const scope = scopeOf(runner, override ? "定时提醒" : "主动消息");
   const llmScope = scopeOf(runner, "LLM");
   const space = slot.space;
   const peer = slot.peer || spaceId;
 
-  if (!role?.proactive?.enabled) return;
+  // 定时提醒借这条路开口（override 带着那段提示词），不看主动消息的开关
+  if (!override && !role?.proactive?.enabled) return;
 
   const eps = resolveRoleEndpoints(config, role);
   if (!eps.chat) {
-    logError(scope, "这个角色的聊天 API 没配好，主动消息发不了");
+    logError(scope, `这个角色的聊天 API 没配好，${override ? "提醒" : "主动消息"}发不了`);
     return;
   }
 
@@ -4486,7 +4626,7 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId) {
   loadHistory(runner, role, sessionId, scope);
 
   const user = resolveUser(config, role);
-  const { toModel, toHistory } = buildProactiveInput(role, user, { read: slot.read });
+  const { toModel, toHistory } = override ?? buildProactiveInput(role, user, { read: slot.read });
   if (!toModel.trim()) {
     logWarn(scope, "主动消息提示词是空的，这次不发");
     return;
@@ -4499,15 +4639,20 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId) {
    * 只进**这一次请求**，和上面那段提示词一样不落历史 —— 落了的话每轮都要
    * 重发一遍，而且模型会以为自己刚被要求发帖，下一轮接着发。
    */
-  const composeNote = [igComposeNote(config, role, { user }), xhsComposeNote(config, role, { user })]
-    .filter(Boolean)
-    .join("\n\n");
+  // 提醒那一轮就是来提醒的，不给发帖的选项
+  const composeNote = override
+    ? ""
+    : [igComposeNote(config, role, { user }), xhsComposeNote(config, role, { user })]
+        .filter(Boolean)
+        .join("\n\n");
   const forModel = composeNote ? `${toModel}\n\n${composeNote}` : toModel;
   if (composeNote) logDebug(scope, `${role.name} 这一轮可以顺手发条 Instagram`);
 
   logInfo(
     scope,
-    `触发主动消息（${sessionId}）${slot.read ? "，对方已读上一条但没回" : ""}`
+    override
+      ? `触发${override.label}（${sessionId}）`
+      : `触发主动消息（${sessionId}）${slot.read ? "，对方已读上一条但没回" : ""}`
   );
 
   // 时间前缀和正常轮次同一个来路；天气照旧只进这一份提示词，不进存档
@@ -4522,7 +4667,18 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId) {
   const historyArr = runner.history.get(sessionId) ?? [];
   const forPrompt = [...historyArr, { role: "user", content: timePrefix + forModel }];
 
-  const built = await buildPrompt(config, role, user, forPrompt, weatherNote);
+  /*
+   * 提醒那一轮可能正是「帮我点早餐」：点单那两条要按这份上文判要不要给完整说明
+   * （提醒原文里有「麦当劳」就会给），菜单也要在这儿先查好，和正常轮次一个规矩。
+   */
+  const orderState = override
+    ? {
+        luckin: await orderPromptState("luckin", runner, config, role, peer, forPrompt, scopeOf(runner, "瑞幸")),
+        mcd: await orderPromptState("mcd", runner, config, role, peer, forPrompt, scopeOf(runner, "麦当劳")),
+      }
+    : {};
+  const reminder = await reminderStateFor(role);
+  const built = await buildPrompt(config, role, user, forPrompt, weatherNote, { ...orderState, reminder });
   const { params, preset, worldInfo } = built;
   // MCP 工具：主动开口的这一路也给（「早上自己开口前先查一下今天的日程」），
   // 和正常轮次同一套，见那边的注释
@@ -4608,6 +4764,27 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId) {
     if (searched !== null) reply = searched;
   } catch (e) {
     logError(llmScope, "主动消息搜索之后那次生成失败，这次跳过", e);
+    runner.history.set(sessionId, historyArr);
+    return;
+  }
+
+  // 看菜单：主动开口那一轮也能先看一眼（「下午了，看看瑞幸有啥新品」）
+  try {
+    const viewed = await menuRound(reply, {
+      runner,
+      role,
+      config,
+      peer,
+      eps,
+      params,
+      messages,
+      scope,
+      llmScope,
+      onPrompt: (followUp) => notePrompt(promptMeta, followUp),
+    });
+    if (viewed !== null) reply = viewed;
+  } catch (e) {
+    logError(llmScope, "主动消息看完菜单那次生成失败，这次跳过", e);
     runner.history.set(sessionId, historyArr);
     return;
   }
@@ -4710,6 +4887,7 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId) {
   let recorded = reply;
   let igDone = false;
   // 小红书先摘，理由见正常轮次那段
+  forUser = await takeReminders(runner, freshRole, spaceId, peer, forUser);
   const xhsLines = takeXhs(freshConfig, freshRole, forUser, scope);
   forUser = xhsLines.rest;
   if (igRouteFor(freshRole, forUser)) {
@@ -4815,12 +4993,261 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId) {
       return;
     }
     runner.messageCount += 1;
+    // 提醒那一轮借的是主动消息的路，「等对方回话 / 已读没回」那两笔是主动消息自己的账，别动
+    if (override) return;
     // 从这一刻起等对方回话：期间收到已读回执就记一笔，下一条会缀上那句话
     slot.awaiting = true;
     slot.read = false;
     // 这两笔要跟着表一起落盘，不然重启后「已读但没回」就丢了
     saveSlot(runner.projectRefId, spaceId, slot);
   }, runner);
+}
+
+/* ================= 定时提醒（数据和算时间见 reminder.js） ================= */
+
+/** 心跳间隔。小手机那边 DO 的心跳是 30 秒，这里再短一截，到点最多晚这么久。 */
+const REMINDER_TICK_MS = 20_000;
+
+/**
+ * 提示词里那条子条目要的三个变量，按 {{user}} 的时区算好。
+ * 角色没开定时提醒就不算 —— 那条子条目反正会被角色闸挡掉。
+ */
+async function reminderStateFor(role) {
+  if (!role?.reminder?.enabled) return undefined;
+  try {
+    return reminderPromptState(role.id, await userTzOf(role));
+  } catch (e) {
+    logWarn("定时提醒", "算提醒清单失败，这一轮提示词里不带", e);
+    return undefined;
+  }
+}
+
+/**
+ * 把这一轮输出里的提醒标记摘掉、落成条目，返回剩下的正文。
+ *
+ * 存档和上下文里留原文（调用方的 recorded 是没摘过的那份）—— 角色下一轮要看得见
+ * 自己设过什么。写错的、时间已经过了的：列表里记一条「已失效」，再攒一句系统提示，
+ * 对方下一条消息进来时递给角色让它重设（对方看不见，见 takeReminderHints）。
+ */
+async function takeReminders(runner, role, spaceId, peer, text) {
+  if (!role?.reminder?.enabled) return text;
+  const { rest, tags } = splitReminderTags(text);
+  if (!tags.length) return text;
+  const scope = scopeOf(runner, "定时提醒");
+  try {
+    const tz = await userTzOf(role);
+    const out = applyRoleTags(tags, {
+      roleId: role.id,
+      tz,
+      chat: { projectRefId: runner.projectRefId, spaceId, peer },
+    });
+    for (const it of out.set) {
+      logInfo(scope, `${role.name} 设了提醒：${it.date} ${it.time.slice(0, 5)} ${it.title}`);
+    }
+    for (const it of out.cancelled) logInfo(scope, `${role.name} 取消了提醒：${it.title}`);
+    const key = peerKeyOf(peer);
+    for (const f of out.failed) {
+      logWarn(scope, `${role.name} 写的提醒没设上：${f.why}`, f.raw);
+      const hint = f.cancel
+        ? `[系统提示:你写的 ${f.raw} 没生效：${f.why}]`
+        : `[系统提示:你刚才写的提醒 ${f.raw} 没设上：${f.why}。还要提醒的话，按 [YYYY年M月D日HH:MM | 要提醒的事] 重新写一次。这条提示{{user}}看不到]`;
+      if (!key) continue;
+      const list = runner.reminderHints.get(key) ?? [];
+      list.push(hint);
+      runner.reminderHints.set(key, list.slice(-5));
+    }
+  } catch (e) {
+    logError(scope, "提醒标记没能落盘（标记照样从短信里摘掉）", e);
+  }
+  return rest;
+}
+
+/**
+ * `/提醒`、`/增加纪念日`、`/增加生日`、`/提醒列表`、`/删除提醒 N` 真正干活的地方。
+ * 返回要回给对方的那句话。加的都是「用户自己的」日程，由这个角色来提醒。
+ */
+async function runReminderCommand(role, { op, args }, chat) {
+  const tz = await userTzOf(role);
+  if (op === "remindlist" || op === "reminddel") {
+    const rows = listForCommand(role.id, tz);
+    if (op === "remindlist") {
+      if (!rows.length) return "现在没有还没到点的提醒和日程。";
+      return ["还没到点的提醒和日程：", ...rows.map((it, i) => `${i + 1}. ${describeForList(it, tz)}`)].join("\n");
+    }
+    const n = Number(String(args).trim());
+    const hit = Number.isInteger(n) && n >= 1 ? rows[n - 1] : null;
+    if (!hit) return `⚠️ 没有第 ${String(args).trim() || "?"} 条。先发 /提醒列表 看编号。`;
+    // 角色设的标「已取消」留在列表里（角色下一轮能看到它没了）；自己加的直接删
+    if (hit.source === "role") patchItem(hit.id, { status: "cancelled" });
+    else removeItem(hit.id);
+    return `✅ 删掉了：${describeForList(hit, tz)}`;
+  }
+  const parsed =
+    op === "remind"
+      ? parseRemindCommand(args, { tz })
+      : parseDayCommand(op === "addanniv" ? "anniversary" : "birthday", args);
+  if (!parsed.ok) return `⚠️ ${parsed.why}`;
+  const item = addItem({ ...parsed.item, roleId: role.id, tz, ...chat });
+  const what = { anniversary: "纪念日", birthday: "生日" }[item.kind] ?? "提醒";
+  return `✅ 加好了${what}：${describeForList(item, tz)}`;
+}
+
+/** 取走攒着的「提醒没设上」系统提示。 */
+function takeReminderHints(runner, peerKey) {
+  if (!peerKey) return [];
+  const list = runner.reminderHints.get(peerKey) ?? [];
+  runner.reminderHints.delete(peerKey);
+  return list;
+}
+
+function armReminders(getConfig, runner) {
+  if (runner.reminderTimer) clearInterval(runner.reminderTimer);
+  runner.reminderTimer = setInterval(() => void reminderTick(getConfig, runner), REMINDER_TICK_MS);
+  runner.reminderTimer.unref?.();
+  // 第一跳不等满一个周期：关机期间到点的早点补上
+  setTimeout(() => void reminderTick(getConfig, runner), 5_000).unref?.();
+}
+
+/**
+ * 这一条该不该由这条线路来发。
+ *
+ *  - 角色设的：记着是在哪条线路、哪个会话里设的，就回那儿去说；角色那个开关关了就不响。
+ *  - 用户自己的：发到这个角色最近说话的那个会话（reminder.js:noteLastChat）；
+ *    一次都没记过就用这条线路手上最近那个会话。
+ */
+function reminderTarget(item, role, runner, lastChat) {
+  if (item.source === "role") {
+    if (!role.reminder?.enabled) return null;
+    if (item.projectRefId && item.projectRefId !== runner.projectRefId) return null;
+    if (!item.spaceId) return null;
+    return { spaceId: item.spaceId, peer: item.peer };
+  }
+  const lc = lastChat?.[role.id];
+  if (lc?.spaceId) {
+    if (lc.projectRefId && lc.projectRefId !== runner.projectRefId) return null;
+    return { spaceId: lc.spaceId, peer: lc.peer };
+  }
+  const last = runner.lastSpace;
+  return last?.spaceId ? { spaceId: last.spaceId, peer: last.peer } : null;
+}
+
+const humanMinutes = (n) => (n >= 60 && n % 60 === 0 ? `${n / 60}小时` : `${n}分钟`);
+
+/**
+ * 到点那一轮发给模型的提示词（只进这一次请求）和进上下文的占位符。
+ *
+ * 到点那句是用户逐字定的：「现在是你帮{{user}}设置的提醒时间：X，请根据人设发送信息，
+ * 注意不要OOC」。提前那一声要说清楚「到点还会再叫你」—— 不然「帮宝宝点早餐」那种，
+ * 模型提前十分钟就把单下了，到点又下一单。
+ */
+function reminderInput(item, stage, occ, tz) {
+  // 自定义类型带上用户起的类型名：「吃药：维生素D」
+  const title = item.kind === "custom" && item.label ? `${item.label}：${item.title}` : item.title;
+  if (stage === "lead") {
+    const left = humanMinutes(Math.max(1, Math.round((occ - Date.now()) / 60_000)));
+    const when = fmtWhen(occ, tz);
+    const toModel =
+      item.source === "role"
+        ? `[系统提示:再过${left}（${when}）就是你帮{{user}}设置的提醒：${title}。现在先提前跟{{user}}说一声，请根据人设发送信息，注意不要OOC。到点还会再叫你一次，要办的事（比如点单）等到点再办，这次只提醒]`
+        : `[系统提示:再过${left}（${when}）是{{user}}自己设的日程：${title}。现在先提前提醒{{user}}一声，请根据人设发送信息，注意不要OOC]`;
+    return { toModel, toHistory: `[触发了提前提醒：${title}]`, label: "提前提醒" };
+  }
+  let toModel;
+  if (item.source === "role") {
+    toModel = `[系统提示:现在是你帮{{user}}设置的提醒时间：${title}，请根据人设发送信息，注意不要OOC]`;
+  } else if (item.kind === "birthday" || item.kind === "anniversary") {
+    const p = localParts(occ, tz);
+    const day = specialName(item, `${p.y}-${String(p.m).padStart(2, "0")}-${String(p.d).padStart(2, "0")}`);
+    toModel = `[系统提示:今天是${day}，请根据人设给{{user}}发消息，注意不要OOC]`;
+  } else {
+    toModel = `[系统提示:现在是{{user}}自己设的日程提醒时间：${title}，请根据人设提醒{{user}}，注意不要OOC]`;
+  }
+  return { toModel, toHistory: `[触发了提醒：${title}]`, label: "提醒" };
+}
+
+/**
+ * 先记账再开口。返回 false = 这一下已经有人记过了（同一个角色挂在两条线路上，
+ * 另一条的心跳抢先了），这边就别再发。
+ */
+function markReminder(id, stage, occ) {
+  let ok = false;
+  updateReminders((s) => {
+    const it = s.items.find((x) => x.id === id);
+    if (!it || it.status !== "pending") return false;
+    const now = Date.now();
+    if (stage === "lead") {
+      if (it.leadFor === occ) return false;
+      it.leadFor = occ;
+    } else {
+      if (it.handledUntil && it.handledUntil > occ) return false;
+      it.handledUntil = occ + 1000;
+      if (stage === "due") it.firedAt = now;
+      if (it.repeat?.type === "once") it.status = stage === "due" ? "done" : "missed";
+    }
+    it.updatedAt = now;
+    ok = true;
+  });
+  return ok;
+}
+
+/**
+ * 心跳：这条线路上的角色有没有该响的提醒。
+ *
+ * 用户定的：无视勿扰（提醒是自己要的）；过点 30 分钟内补发，再早的标「已错过」。
+ * 线下模式 / 提示词协助模式开着时先不说 —— 那会儿角色不在线上，等结束了再说，
+ * 拖过了 30 分钟就算错过。
+ */
+async function reminderTick(getConfig, runner) {
+  if (runner.stopped || runner.reminderBusy) return;
+  runner.reminderBusy = true;
+  const scope = scopeOf(runner, "定时提醒");
+  try {
+    const role = currentRole(getConfig(), runner);
+    if (!role) return;
+    const state = loadReminders();
+    const mine = state.items
+      .filter((it) => it.status === "pending" && it.notify && (!it.roleId || it.roleId === role.id))
+      .map((it) => ({ it, target: reminderTarget(it, role, runner, state.lastChat) }))
+      .filter((x) => x.target);
+    if (!mine.length) return;
+    const userTz = await userTzOf(role);
+
+    for (const { it, target } of mine) {
+      if (runner.stopped) return;
+      // 角色设的一次性提醒按设的那一刻的时区算（标记里写的就是那时候 {{user}} 那边的钟点）
+      const tz = it.repeat.type === "once" && it.tz ? it.tz : userTz;
+      const act = dueAction(it, Date.now(), tz, state.settings);
+      if (!act.stage) continue;
+
+      if (act.stage === "missed") {
+        if (markReminder(it.id, "missed", act.occ)) {
+          logInfo(scope, `「${it.title}」${fmtWhen(act.occ, tz)} 到点时没在线，过了半小时以上，不补了`);
+        }
+        continue;
+      }
+      if (isOfflineOn(memoryKeyFor(role)) || isAssistOn(runner.projectRefId, target.spaceId)) continue;
+
+      const slot = {
+        space: runner.lastSpace?.spaceId === target.spaceId ? runner.lastSpace.space : null,
+        peer: target.peer || target.spaceId,
+      };
+      if (!(await ensureSpace(runner, slot, target.spaceId))) continue;
+      if (!markReminder(it.id, act.stage, act.occ)) continue;
+
+      const lead = act.stage === "lead" ? `（提前 ${leadOf(it, state.settings)} 分钟）` : "";
+      logInfo(scope, `${act.stage === "lead" ? "提前提醒" : "到点提醒"}「${it.title}」${lead}`);
+      await chain(
+        runner,
+        target.spaceId,
+        () => runProactiveTurn(getConfig, runner, slot, target.spaceId, reminderInput(it, act.stage, act.occ, tz)),
+        "提醒发送出错"
+      );
+    }
+  } catch (e) {
+    logError(scope, "提醒心跳出错，下一跳再看", e);
+  } finally {
+    runner.reminderBusy = false;
+  }
 }
 
 /**
@@ -7548,6 +7975,9 @@ async function startRunner(getConfig, project, meta, retries = 0) {
     // 重启前排着的主动消息接着数 —— 这一步就是「关机不清计时器」
     rehydrateProactive(getConfig, runner);
 
+    // 定时提醒的心跳。关机期间到点的也是它补（过点 30 分钟内补发，再早的标「已错过」）
+    armReminders(getConfig, runner);
+
     /*
      * 还没人收、也还没提醒过的转账同理接着数。
      *
@@ -7616,6 +8046,12 @@ async function startRunner(getConfig, project, meta, retries = 0) {
              * 那一轮就只发 IG、不发短信（见 igSessionFor）。
              */
             runner.lastSpace = { space, spaceId, peer, at: Date.now() };
+            // 用户自己的日程到点往哪个会话发：记这个角色最近在哪儿说话（没变不写盘）
+            noteLastChat(currentRole(getConfig(), runner)?.id, {
+              projectRefId: runner.projectRefId,
+              spaceId,
+              peer,
+            });
 
             /*
              * 已读回执：对方读了我们发出去的某条消息。
@@ -8355,7 +8791,9 @@ async function startRunner(getConfig, project, meta, retries = 0) {
              * 同样只在真的收到东西时才兑现：光贴不说话的话这里走不到，
              * 提示躺在 reactPending 里等下一条消息（超过 TTL 作废）。
              */
-            const reactHints = gotSomething ? takeReactHints(runner, peerKeyOf(peer)) : [];
+            const reactHints = gotSomething
+              ? [...takeReminderHints(runner, peerKeyOf(peer)), ...takeReactHints(runner, peerKeyOf(peer))]
+              : [];
             for (const hint of reactHints) {
               enqueue(getConfig, runner, space, spaceId, { text: hint, message }, peer);
             }
@@ -8612,6 +9050,8 @@ function scheduleRetry(getConfig, runner, err) {
 /** 停掉一条连接，清干净它的定时器。 */
 async function stopRunner(runner) {
   runner.stopped = true;
+  if (runner.reminderTimer) clearInterval(runner.reminderTimer);
+  runner.reminderTimer = null;
   // 清掉未触发的合并定时器，避免桥接停掉后还去发消息
   for (const slot of runner.pending.values()) {
     if (slot.timer) clearTimeout(slot.timer);

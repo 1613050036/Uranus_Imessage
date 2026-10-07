@@ -74,6 +74,7 @@ import { LUCKIN_MCP_URL, MCD_MCP_URL } from "./luckin.js";
 import { mcdAddresses } from "./mcd.js";
 import { mountTheater } from "./theater.js";
 import { mountPhone } from "./phonecheck.js";
+import { mountReminders } from "./reminderapi.js";
 import {
   assistantGreeting,
   buildAssistantMessages,
@@ -1324,6 +1325,8 @@ mountTheater(app, loadConfig);
 
 // ---- 查手机（侧边栏的「查手机」分区，见 phonecheck.js）----
 mountPhone(app, loadConfig);
+// 定时提醒的面板（条目在 data/reminders.json，不走 /api/config）
+mountReminders(app, loadConfig);
 
 /**
  * 测试一台 MCP 服务器：连上、握手、列工具。前端传的是界面上那份（可能还没保存），
@@ -2372,6 +2375,8 @@ app.get("/api/env/preview", async (req, res) => {
       userCity: str(q.userCity, saved.time?.userCity ?? ""),
       charCity: str(q.charCity, saved.time?.charCity ?? ""),
       workday: bool(q.workday, saved.time?.workday !== false),
+      aheadDays: q.aheadDays !== undefined ? Number(q.aheadDays) : saved.time?.aheadDays ?? 1,
+      festivals: bool(q.festivals, saved.time?.festivals !== false),
     },
     weather: {
       enabled: bool(q.weather, Boolean(saved.weather?.enabled)),

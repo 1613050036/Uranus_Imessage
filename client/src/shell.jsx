@@ -33,6 +33,7 @@ import { OfflinePanel } from "./panels/offline.jsx";
 import { PresetPanel } from "./panels/preset.jsx";
 import { RolePanel } from "./panels/role.jsx";
 import { TheaterPanel } from "./panels/theater.jsx";
+import { RemindersPanel } from "./panels/reminders.jsx";
 import { PhonePanel } from "./panels/phone.jsx";
 import { SetupButton, SetupWizard, useAutoOpenSetup } from "./panels/setup.jsx";
 import { GlobalSearch } from "./search.jsx";
@@ -679,6 +680,7 @@ export function AppShell() {
                   {tab === "context" && <ContextPanel onGoto={goto} />}
                   {tab === "offline" && <OfflinePanel onGoto={goto} />}
                   {tab === "memories" && <MemoriesPanel onGoto={goto} />}
+                  {tab === "reminders" && <RemindersPanel />}
                   {tab === "theater" && <TheaterPanel />}
                   {tab === "phone" && <PhonePanel />}
                   {tab === "instagram" && <InstagramPanel onGoto={goto} />}

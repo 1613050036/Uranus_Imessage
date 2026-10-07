@@ -245,6 +245,12 @@ export const POLLS_DIR = path.join(DATA_DIR, "polls");
  * 对齐所有桥接。只有设置（用哪个模型、提示词、超时）进 config.theater。
  */
 export const THEATER_DIR = path.join(DATA_DIR, "theater");
+
+/**
+ * 定时提醒（reminder.js）：角色设的和用户自己的日程都在这一个文件里，外加默认提前量。
+ * **不进 config.json**，理由同上：每触发一次就要写一次。
+ */
+export const REMINDERS_PATH = path.join(DATA_DIR, "reminders.json");
 export const THEATER_HTML_DIR = path.join(THEATER_DIR, "html");
 
 /**
