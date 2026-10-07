@@ -7,7 +7,9 @@ import {
   isCardUrl,
   mapsUrlFor,
   renderMapsLinks,
+  sendLayoutCard,
   sendTransferCard,
+  updateLayoutCard,
   updateTransferCard,
 } from "./card.js";
 import { watchChatBackground } from "./chatbg.js";
@@ -122,7 +124,19 @@ import {
 } from "./spy.js";
 import { renderLogo } from "./transferlogo.js";
 import { findTransfer, putTransfer, readTransfers } from "./transferstore.js";
-import { parseSearchQueries, runSearch, stripSearchTags } from "./websearch.js";
+import {
+  draftOrder,
+  linesText,
+  luckinReady,
+  menuText,
+  money as luckinMoney,
+  orderStatus,
+  parseOrderSpec,
+  placeOrder,
+  resolveLocation,
+} from "./luckin.js";
+import { findOrder, putOrder } from "./luckinstore.js";
+import { parseSearchQueries, runSearch, stripSearchTags, stripXmlBlocks } from "./websearch.js";
 import {
   injectToolPrompt,
   nativeFollowNote,
@@ -412,6 +426,10 @@ function createRunner(projectRefId) {
     // （transferstore 的 reminded）—— 只提醒一次这件事不能靠定时器保证，
     // 定时器活不过重启。见 armTransferRemind
     transferRemind: new Map(),
+    // peerKey -> {lat, lon}：对方在对话里最近发来的位置，瑞幸找店用（见 notePeerLocation）
+    luckinLoc: new Map(),
+    // 「取餐码提醒」的轮询定时器，按 `角色key::卡片guid` 索引。只在内存里，见 armLuckinPoll
+    luckinPoll: new Map(),
     stopped: false, // stopBridge 之后消息循环要认得出自己已经过期
     retries: 0, // 连续失败了几次，决定下次等多久（见 RETRY_DELAYS）
     retryTimer: null, // 待触发的自动重连
@@ -3447,6 +3465,30 @@ async function handleTurn(
   }
 
   /*
+   * 瑞幸「先看菜单」：回复里写了 `[瑞幸菜单:…]` 就查商品和价格再问一次
+   * （见 luckinMenuRound）。角色上那个开关关着时直接跳过，标记由 splitMedia 吞掉。
+   */
+  try {
+    const menued = await luckinMenuRound(reply, {
+      runner,
+      role: freshRole,
+      config: freshConfig,
+      eps,
+      params,
+      messages,
+      scope,
+      llmScope,
+      peer,
+      onPrompt: (followUp) => notePrompt(promptMeta, followUp),
+    });
+    if (menued !== null) reply = menued;
+  } catch (e) {
+    logError(llmScope, "看完瑞幸菜单之后那次生成失败，这一轮没能拿到回复", e);
+    await respondingWhile(space, () => notifyFailure(runner, space, "这条消息没回上来", e), runner);
+    throw e;
+  }
+
+  /*
    * 查岗：回复里写了 `[查岗实时电脑屏幕]` / `[查岗实时手机屏幕]` 就真去抓一张
    * 屏幕，识成文字再问一次。和上面的搜索是同一个形态（见 spyRound）。
    *
@@ -5554,6 +5596,339 @@ async function claimTransferOnReact(runner, role, message, scope) {
   return { amount: hit.amount, note: hit.note, currency: hit.currency };
 }
 
+/* ================= 瑞幸点单（见 luckin.js） ================= */
+
+/** 卡片右上角那行状态字。 */
+const LUCKIN_STATE_LABEL = {
+  pending: "待确认",
+  ordered: "已下单 · 待支付",
+  ready: "待取餐",
+  expired: "已失效",
+  failed: "下单失败",
+};
+
+/** 订单卡片上方那行小字，空着兜底。和转账一样，发和改要算出同一个值。 */
+const luckinAppName = (name) => String(name ?? "").trim() || "瑞幸咖啡";
+
+/**
+ * 一单拼成 MiniAppLayout。槽位和转账卡片一样是苹果钉死的，只决定往哪个槽放什么：
+ *
+ *   caption            瑞幸 ¥16.90        实付
+ *   subcaption         生椰拿铁 大杯/少冰 ×1
+ *   trailingCaption    待确认 / 已下单 · 待支付 / 待取餐 …
+ *   trailingSubcaption 门店名（查到取餐码之后换成取餐码）
+ */
+function luckinLayout(order) {
+  const label = LUCKIN_STATE_LABEL[order.state] ?? order.state;
+  const items = linesText(order.lines);
+  const tail = order.pickupCode ? `取餐码 ${order.pickupCode}` : order.shopName;
+  return {
+    caption: `瑞幸 ${luckinMoney(order.total)}`,
+    subcaption: items.slice(0, 120),
+    trailingCaption: label,
+    ...(tail ? { trailingSubcaption: String(tail).slice(0, 60) } : {}),
+    summary: `瑞幸订单 ${luckinMoney(order.total)} · ${items}（${label}）`.slice(0, 300),
+  };
+}
+
+/** 这一单按哪儿找店：对方最近发来的位置 > 「查找」共享过来的位置 > 「你」设置里的地址。 */
+async function luckinLocation(runner, ctx, scope) {
+  const key = peerKeyOf(ctx?.peer ?? "");
+  const found = runner.locLast?.get(key);
+  const live =
+    runner.luckinLoc?.get(key) ?? (hasFix(found) ? { lat: found.latitude, lon: found.longitude } : null);
+  const user = resolveUser(ctx?.config, ctx?.role);
+  return resolveLocation(live, user?.address, scope);
+}
+
+/**
+ * 对方消息里带了位置（地图链接已经被 renderMapsLinks 换成 `[location:名:纬,经]`）就记下来，
+ * 下一单按这儿找店。只在内存里 —— 位置是会变的，重启后退回设置里的地址正合适。
+ */
+function notePeerLocation(runner, peer, text) {
+  const m = /[[［]\s*location\s*[:：][^\]］]*?[:：]\s*(-?\d{1,3}\.\d+)\s*[,，]\s*(-?\d{1,3}\.\d+)\s*[\]］]/i.exec(
+    String(text ?? "")
+  );
+  if (m) runner.luckinLoc?.set(peerKeyOf(peer), { lat: Number(m[1]), lon: Number(m[2]) });
+}
+
+/**
+ * 执行一个 `[瑞幸:…]`：查店、配单、算价，发一张「待确认」的订单卡片。
+ *
+ * 闸：角色开关、token、位置。自定义卡片只有云端（Photon）能发，本地 Mac 模式退化成
+ * 一句文字报给对方看，**不下单**（那边没有「贴 emoji 确认」这条路）。
+ *
+ * 哪一步失败都不发卡片，给角色攒一句系统提示说清原因，让它自己跟对方解释 ——
+ * 「门店打烊了」「没有这款」这种话由角色说出来比一张报错卡片自然。
+ *
+ * @returns {Promise<boolean>} 发出去了没有
+ */
+async function sendLuckinPart(runner, space, part, ctx) {
+  const scope = scopeOf(runner, "瑞幸");
+  const role = ctx?.role;
+  const config = ctx?.config;
+  const key = peerKeyOf(ctx?.peer ?? "");
+  const fail = (why) => {
+    logWarn(scope, `这一单没配成：${why}`);
+    noteReaction(runner, key, "", "", `[系统提示:你想给{{user}}点的瑞幸没配成：${why}]`);
+    return false;
+  };
+
+  if (!role?.luckin?.enabled) {
+    logInfo(scope, `这个角色没开「瑞幸点单」，跳过这条：[瑞幸:${part.text}]`);
+    return false;
+  }
+  if (!luckinReady(config)) return fail("还没填瑞幸的 token（设置 → 瑞幸）");
+  const spec = parseOrderSpec(part.text);
+  if (!spec.items.length) return fail(`「${part.text}」里认不出要点什么`);
+
+  const loc = await luckinLocation(runner, ctx, scope);
+  if (!loc) return fail("不知道{{user}}在哪儿 —— 让{{user}}发个位置，或者在「你」的设置里填地址");
+
+  let draft;
+  try {
+    draft = await draftOrder(config, spec, loc, scope);
+  } catch (e) {
+    return fail(String(e?.message ?? e));
+  }
+  const order = { ...draft, state: "pending", createdAt: Date.now(), peerKey: key };
+  logInfo(
+    scope,
+    `配好一单：${linesText(order.lines)}，${luckinMoney(order.total)}，${order.shopName}（按${loc.from}找的店）`
+  );
+
+  if (runner.mode !== "cloud") {
+    noteSent(
+      runner,
+      ctx,
+      await space.send(`瑞幸 ${luckinMoney(order.total)}：${linesText(order.lines)}（${order.shopName}）`)
+    );
+    noteReaction(runner, key, "", "", "[系统提示:本地模式发不了订单卡片，这一单只是报给{{user}}看，没有下单]");
+    return true;
+  }
+
+  const appName = luckinAppName(role.luckin.appName);
+  const session = await sendLayoutCard({
+    projectId: runner.projectId,
+    projectSecret: runner.projectSecret,
+    chatGuid: ctx?.spaceId ?? "",
+    appName,
+    layout: luckinLayout(order),
+    what: "瑞幸订单卡片",
+    scope,
+  });
+  if (!session) return fail("订单卡片没发出去（看控制台日志）");
+  if (!putOrder(memoryKeyFor(role), { ...session, ...order, appName })) {
+    logWarn(scope, "这一单没存下来，对方点回应也下不了单");
+  }
+
+  const extra = order.missed.length ? `；${order.missed.join("；")}` : "";
+  noteReaction(
+    runner,
+    key,
+    "",
+    "",
+    `[系统提示:瑞幸订单卡片已发出：${linesText(order.lines)}，实付 ${luckinMoney(order.total)}，` +
+      `${order.shopName}，等{{user}}点回应确认${extra}]`
+  );
+  return true;
+}
+
+/** 下单后隔多久查一次取餐码、最多查几次（一分钟一次，查 45 分钟）。 */
+const LUCKIN_POLL_MS = 60_000;
+const LUCKIN_POLL_MAX = 45;
+
+/**
+ * 对方给一张订单卡片贴了 emoji → 下单、改卡片、发付款码。
+ *
+ * 和收转账同一个位置拦（reactSend 那道闸之前，理由见 claimTransferOnReact）。
+ * 超过角色上配的确认时限就不下单、卡片改成「已失效」—— 隔久了价格和券都不作数。
+ *
+ * @returns {Promise<boolean>} 这个 emoji 是不是冲着订单卡片来的（是的话调用方别再往下走）
+ */
+async function claimLuckinOnReact(getConfig, runner, role, space, spaceId, peer, message, scope) {
+  if (!role?.luckin?.enabled || runner.mode !== "cloud") return false;
+  const target = message?.content?.target;
+  const guid = String(target?.parentId ?? target?.id ?? "").trim();
+  const roleKey = memoryKeyFor(role);
+  const hit = guid ? findOrder(roleKey, guid) : null;
+  if (!hit) return false;
+  if (hit.state !== "pending") {
+    logDebug(scope, `这张订单卡片已经是「${LUCKIN_STATE_LABEL[hit.state] ?? hit.state}」了，不重复处理`);
+    return true;
+  }
+
+  const key = peerKeyOf(peer);
+  const update = async (next) => {
+    putOrder(roleKey, next);
+    await updateLayoutCard({
+      projectId: runner.projectId,
+      projectSecret: runner.projectSecret,
+      session: next,
+      appName: next.appName,
+      layout: luckinLayout(next),
+      what: `瑞幸订单卡片（改成「${LUCKIN_STATE_LABEL[next.state]}」）`,
+      scope,
+    });
+  };
+
+  const mins = clampInt(role.luckin.confirmMinutes, 30, 1, 240);
+  if (Date.now() - Number(hit.createdAt ?? 0) > mins * 60_000) {
+    await update({ ...hit, state: "expired" });
+    logInfo(scope, `订单卡片超过 ${mins} 分钟才确认，按失效处理，没下单`);
+    noteReaction(runner, key, "", "", "[系统提示:{{user}}确认得太晚，那张瑞幸订单已失效、没下单，要喝的话得重新点]");
+    return true;
+  }
+
+  // 先钉成「已下单」再去下单：对方手快连贴两个 emoji 时，第二个看到的就不是 pending 了
+  putOrder(roleKey, { ...hit, state: "ordered" });
+  let paid;
+  try {
+    paid = await placeOrder(getConfig(), hit, scope);
+  } catch (e) {
+    const why = String(e?.message ?? e);
+    await update({ ...hit, state: "failed" });
+    logWarn(scope, "瑞幸下单失败", e);
+    noteReaction(runner, key, "", "", `[系统提示:{{user}}确认了瑞幸订单，但下单失败：${why}]`);
+    return true;
+  }
+  const ordered = { ...hit, state: "ordered", orderId: paid.orderId, orderedAt: Date.now() };
+  await update(ordered);
+
+  /*
+   * 付款码。瑞幸给的 payOrderUrl 是 `weixin://` 扫码支付链接，iMessage 里点不开、
+   * 手机浏览器也跳不进微信付款，只能用微信扫 —— 所以发它托管的那张二维码图。
+   * 拿不到图就让对方去瑞幸 App 的订单里付。
+   */
+  let qrSent = false;
+  if (paid.qrUrl) {
+    try {
+      const res = await fetch(paid.qrUrl, { signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      const mimeType = res.headers.get("content-type")?.split(";")[0] || "image/png";
+      const { attachment } = await import("spectrum-ts");
+      await space.send(
+        attachment(buf, { mimeType, name: `瑞幸付款码${mimeType.includes("jpeg") ? ".jpg" : ".png"}` })
+      );
+      qrSent = true;
+    } catch (e) {
+      logWarn(scope, "付款二维码没发出去", e);
+    }
+  }
+  noteReaction(
+    runner,
+    key,
+    "",
+    "",
+    `[系统提示:{{user}}确认了瑞幸订单，已下单（订单号 ${paid.orderId || "未知"}），实付 ${luckinMoney(hit.total)}，` +
+      (qrSent ? "付款二维码已经发给{{user}}，用微信扫码付" : "付款码没发出去，让{{user}}去瑞幸 App 的订单里付") +
+      "]"
+  );
+
+  if (role.luckin.pickupNotify && paid.orderId) {
+    armLuckinPoll(getConfig, runner, roleKey, ordered, space, spaceId, peer);
+  }
+  return true;
+}
+
+/**
+ * 「取餐码提醒」：隔一分钟查一次订单，查到取餐码就把卡片改成「待取餐」、让角色说一句。
+ *
+ * 只活在内存里：重启就不查了。查 45 次（45 分钟）还没有多半是没付款，停。
+ */
+function armLuckinPoll(getConfig, runner, roleKey, order, space, spaceId, peer) {
+  const scope = scopeOf(runner, "瑞幸");
+  const id = `${roleKey}::${order.messageGuid}`;
+  let tries = 0;
+  const tick = async () => {
+    runner.luckinPoll?.delete(id);
+    if (runner.stopped) return;
+    tries += 1;
+    try {
+      const { code } = await orderStatus(getConfig(), order.orderId, scope);
+      if (code) {
+        const next = { ...order, state: "ready", pickupCode: code };
+        putOrder(roleKey, next);
+        await updateLayoutCard({
+          projectId: runner.projectId,
+          projectSecret: runner.projectSecret,
+          session: next,
+          appName: next.appName,
+          layout: luckinLayout(next),
+          what: "瑞幸订单卡片（取餐码）",
+          scope,
+        });
+        logInfo(scope, `查到取餐码 ${code}`);
+        const hint = `[系统提示:瑞幸那一单可以取了，取餐码 ${code}，门店 ${order.shopName}]`;
+        enqueue(getConfig, runner, space, spaceId, { text: hint }, peer);
+        return;
+      }
+    } catch (e) {
+      logDebug(scope, `查订单状态失败：${String(e?.message ?? e)}`);
+    }
+    if (tries < LUCKIN_POLL_MAX) runner.luckinPoll?.set(id, setTimeout(tick, LUCKIN_POLL_MS));
+    else logInfo(scope, "查了 45 分钟还没有取餐码（多半没付款），不查了");
+  };
+  runner.luckinPoll?.set(id, setTimeout(tick, LUCKIN_POLL_MS));
+}
+
+/**
+ * 「先看菜单」那一趟：回复里写了 `[瑞幸菜单:拿铁|美式]` 就去查，商品和价格接在后面
+ * 再问一次。和 searchRound 同一个形态 —— 不进 history、不进存档，只在副本上加东西。
+ *
+ * @returns {Promise<string|null>} 第二次的回复；这轮没写菜单标记时返回 null
+ */
+async function luckinMenuRound(
+  reply,
+  { runner, role, config, eps, params, messages, scope, llmScope, peer, onPrompt }
+) {
+  if (!role?.luckin?.enabled || !role.luckin.menu || !luckinReady(config)) return null;
+  const m = /[[［]\s*(?:瑞幸菜单|luckin_menu)\s*[:：]\s*([^\]］]{1,120}?)\s*[\]］]/i.exec(stripXmlBlocks(reply));
+  if (!m) return null;
+  let body = m[1];
+  let store = "";
+  const at = body.search(/[@＠]/);
+  if (at >= 0) {
+    store = body.slice(at + 1).trim();
+    body = body.slice(0, at);
+  }
+  const queries = body
+    .split(/[|｜,，、]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  if (!queries.length) return null;
+  logInfo(scope, `角色要先看瑞幸菜单：${queries.join(" / ")}`);
+
+  let text;
+  const loc = await luckinLocation(runner, { peer, config, role }, scope);
+  if (!loc) text = "不知道对方在哪儿，查不了门店。";
+  else {
+    try {
+      text = await menuText(config, loc, queries, store, scope);
+    } catch (e) {
+      text = `没查到：${String(e?.message ?? e)}`;
+    }
+  }
+  logInfo(llmScope, "瑞幸菜单注入（只注入这一次）", text);
+
+  const followUp = [
+    ...messages,
+    { role: "assistant", content: reply },
+    {
+      role: "user",
+      content:
+        `<瑞幸菜单>\n${text}\n</瑞幸菜单>\n\n上面是刚查到的商品和价格。现在正式回答对方，` +
+        "要点就写 [瑞幸:…]，别再写 [瑞幸菜单:…]。照你原来的格式回答（预设里要求的思考块、气泡分隔这些照旧写）。",
+    },
+  ];
+  onPrompt?.(followUp);
+  const { content } = await chatWithFallback(eps.chat, eps.fallback, followUp, params);
+  logInfo(llmScope, `看完菜单后的回复 ${content.length} 字`, content);
+  return content;
+}
+
 /**
  * 执行一个 `[music:歌手-歌名]`：查出真实链接，发成一张音乐卡片。
  *
@@ -6252,6 +6627,7 @@ async function sendBubbles(runner, space, chat, text, ctx = {}) {
       else if (part.kind === "music") ok = await sendMusicPart(runner, space, part, ctx);
       else if (part.kind === "location") ok = await sendLocationPart(runner, space, part, ctx);
       else if (part.kind === "transfer") ok = await sendTransferPart(runner, space, part, ctx);
+      else if (part.kind === "luckin") ok = await sendLuckinPart(runner, space, part, ctx);
       else if (part.kind === "poll") ok = await sendPollPart(runner, space, part, ctx);
       else ok = await sendImagePart(runner, space, part, ctx);
       // 语音退化成文字时也算发出去了一条（sendVoicePart 里已经发过）
@@ -6287,6 +6663,7 @@ const KIND_NAMES = {
   music: "音乐卡片",
   location: "位置",
   transfer: "转账卡片",
+  luckin: "瑞幸订单",
   react: "emoji 回应",
   undo: "撤回",
   vote: "投票",
@@ -7156,6 +7533,25 @@ async function startRunner(getConfig, project, meta, retries = 0) {
                * 角色开了「收款后立刻通知」（transfer.notifyOnClaim，默认关）
                * 就当场起一轮，见下面那个分叉。
                */
+              /*
+               * 瑞幸订单卡片：贴 emoji 就是确认下单。和收款一样拦在 reactSend 那道闸
+               * 之前，结果攒成系统提示等下条消息一起送（见 claimLuckinOnReact）。
+               */
+              if (
+                await claimLuckinOnReact(
+                  getConfig,
+                  runner,
+                  who,
+                  space,
+                  spaceId,
+                  peer,
+                  message,
+                  scopeOf(runner, "瑞幸")
+                )
+              ) {
+                continue;
+              }
+
               const claimed = await claimTransferOnReact(
                 runner,
                 who,
@@ -7239,6 +7635,8 @@ async function startRunner(getConfig, project, meta, retries = 0) {
             const plainText = renderMapsLinks(
               parts.map(extractText).filter(Boolean).join("\n")
             );
+            // 带了位置就记下来，瑞幸点单按这儿找最近的店（见 notePeerLocation）
+            notePeerLocation(runner, peer, plainText);
 
             /*
              * 卡片（网易云音乐那种从 app 的 iMessage 扩展里发出来的气泡）。
@@ -8138,6 +8536,8 @@ async function stopRunner(runner) {
    */
   for (const timer of runner.transferRemind?.values() ?? []) clearTimeout(timer);
   runner.transferRemind?.clear();
+  for (const timer of runner.luckinPoll?.values() ?? []) clearTimeout(timer);
+  runner.luckinPoll?.clear();
 
   if (runner.instance) {
     try {

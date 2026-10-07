@@ -56,6 +56,18 @@ export function UserDetail({ user, onBack, onGoto }) {
             />
           </Field>
 
+          <Field
+            label="常用地址"
+            hint="角色帮你点瑞幸时按这儿找最近的门店，不会写进提示词。你在对话里发了位置的话按那个位置。最准的写法是在苹果地图上长按 → 分享 → 拷贝链接贴进来，或者直接填「纬度,经度」；写文字地址也行，会去 OpenStreetMap 查一次坐标"
+          >
+            <input
+              className={inputCls}
+              value={user.address ?? ""}
+              onChange={(e) => updateUser(user.id, { address: e.target.value })}
+              placeholder="例：https://maps.apple.com/?ll=30.2741,120.1551 或 杭州市西湖区文三路 90 号"
+            />
+          </Field>
+
           <p className="border-l-2 border-line py-1.5 pl-3 text-meta leading-relaxed text-ink-soft">
             这里也能用变量：{"{{char}}"} 是当前角色的名字，{"{{user}}"} 是上面那个名字。
             留空的变量会替换成「助手」/「用户」，不会把花括号原样发出去。

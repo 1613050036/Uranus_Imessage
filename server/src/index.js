@@ -70,6 +70,7 @@ import {
   describeVideo,
 } from "./llm.js";
 import { testServer as testMcpServer } from "./mcp.js";
+import { LUCKIN_MCP_URL, MCD_MCP_URL } from "./luckin.js";
 import { mountTheater } from "./theater.js";
 import { mountPhone } from "./phonecheck.js";
 import {
@@ -1335,6 +1336,32 @@ app.post("/api/mcp/test", async (req, res) => {
     logWarn("MCP", "测试连接失败", result.error);
   }
   res.status(result.ok ? 200 : 400).json(result);
+});
+
+/**
+ * 点单分区的「测试连接」：拿界面上填的 token（可能还没保存）连一次瑞幸 / 麦当劳的
+ * 官方 MCP，握手 + 列工具。token 不落盘也不进日志。
+ */
+app.post("/api/order/test", async (req, res) => {
+  const brand = req.body?.brand === "mcd" ? "mcd" : "luckin";
+  const token = String(req.body?.token ?? "").trim();
+  const label = brand === "mcd" ? "麦当劳" : "瑞幸";
+  if (!token) return res.status(400).json({ ok: false, error: "先填 token" });
+  const result = await testMcpServer({
+    name: label,
+    transport: "http",
+    url: brand === "mcd" ? MCD_MCP_URL : LUCKIN_MCP_URL,
+    headers: [{ name: "Authorization", value: `Bearer ${token}` }],
+    timeout: 20,
+  });
+  if (result.ok) logInfo("点单", `${label}连接成功，${result.tools.length} 个工具，${result.ms}ms`, result.tools.map((t) => t.name).join("、"));
+  else logWarn("点单", `${label}连接失败`, result.error);
+  res.status(result.ok ? 200 : 400).json({
+    ok: result.ok,
+    ms: result.ms,
+    error: result.error,
+    tools: (result.tools ?? []).map((t) => t.name),
+  });
 });
 
 /** 拉模型列表，给「获取模型列表」弹窗用。 */

@@ -626,6 +626,10 @@ export const DEFAULT_CONFIG = {
     // WeatherAPI（国外）：地址内置，只要一把 key
     weatherapi: { key: "" },
   },
+  // 瑞幸点单的 token（luckin.js），只写 data.config.json
+  luckinApi: { token: "" },
+  // 麦当劳点单的 token（open.mcd.cn/mcp），同上。点单链路还没接，先能填能测
+  mcdApi: { token: "" },
   // 联网搜索的密钥，同样全局一份（只写 data.config.json）。
   // 两个都没开 = 走 DuckDuckGo 的 HTML 端点（免费、无密钥，但不保证稳定）
   searchApi: {
@@ -1265,6 +1269,9 @@ function normalizeRole(input, id, legacy) {
     locationSend: normalizeLocationSend(input?.locationSend),
     // 转账卡片：开关 + 卡片上那行小字。见下面那个函数
     transfer: normalizeTransfer(input?.transfer),
+    // 瑞幸点单：开关 + 先看菜单 + 取餐码提醒 + 确认时限。token 是全局的（config.luckinApi），
+    // 见下面那个函数和 luckin.js
+    luckin: normalizeLuckin(input?.luckin),
     // 消息回应、消息特效：开关 + 白名单。两条都是「勾了才能用」，
     // 一个都没勾就整条不进提示词（省 token），见下面那两个函数
     reactSend: normalizeReactSend(input?.reactSend),
@@ -1826,6 +1833,38 @@ function normalizeTransfer(input) {
     remindOnPending: Boolean(input?.remindOnPending),
     remindMinutes: clampInt(input?.remindMinutes, 120, 1, 1440),
   };
+}
+
+/**
+ * 瑞幸点单（luckin.js）。
+ *
+ * **默认关**：开着就意味着这个角色能替用户下真单（虽然最后一步要用户贴 emoji
+ * 确认），这只能由用户自己决定。
+ *
+ *  - menu：「先看菜单」—— 模型能先写 `[瑞幸菜单:拿铁]` 查商品和价格，看完再点。
+ *    默认关：每查一次要多问模型一轮，这一轮的花费翻倍。
+ *  - pickupNotify：下单后隔一会儿查一次订单，查到取餐码就让角色告诉对方。
+ *    默认关：查到之后要起一轮回复，花 token。
+ *  - confirmMinutes：订单卡片多久之内贴 emoji 算数。超了卡片改成「已失效」，不下单 ——
+ *    隔了一晚上的价格和券早就不作数了。
+ *  - appName：卡片上方那行小字（和转账卡片的 appName 一个位置）。
+ */
+function normalizeLuckin(input) {
+  return {
+    enabled: Boolean(input?.enabled),
+    menu: Boolean(input?.menu),
+    pickupNotify: Boolean(input?.pickupNotify),
+    confirmMinutes: clampInt(input?.confirmMinutes, 30, 1, 240),
+    appName: str(input?.appName).slice(0, 40),
+  };
+}
+
+/**
+ * 瑞幸点单的 token，全局一份，和 searchApi 一个待遇（只写 data.config.json）。
+ * 来自 open.lkcoffee.com，每个人自己的，大约一个月过期。
+ */
+function normalizeLuckinApi(input) {
+  return { token: str(input?.token).trim().slice(0, 2000) };
 }
 
 /**
@@ -2947,6 +2986,11 @@ function normalizeUser(input, id) {
     id,
     name: str(input?.name),
     description: str(input?.description),
+    /*
+     * 常用地址，瑞幸点单找最近的门店用（luckin.js:resolveLocation）。对方在对话里
+     * 发了位置的话那个优先。可以写文字地址，也可以直接贴「纬度,经度」或苹果地图链接。
+     */
+    address: str(input?.address).trim().slice(0, 300),
     scope: input?.scope === "roles" ? "roles" : "global",
     roleRefs: Array.isArray(input?.roleRefs)
       ? [...new Set(input.roleRefs.map((r) => str(r).trim()).filter(Boolean))]
@@ -3068,6 +3112,8 @@ export function normalizeConfig(input) {
   base.worldBooks = normalizeWorldBooks(input.worldBooks);
   base.weatherApi = normalizeWeatherApi(input.weatherApi);
   base.searchApi = normalizeSearchApi(input.searchApi);
+  base.luckinApi = normalizeLuckinApi(input.luckinApi);
+  base.mcdApi = normalizeLuckinApi(input.mcdApi);
   base.spyApi = normalizeSpyApi(input.spyApi);
   base.ttsApi = normalizeTtsApi(input.ttsApi);
   base.referenceImages = normalizeReferenceImages(input.referenceImages);
@@ -3210,6 +3256,9 @@ function mergeSecrets(main, data) {
   // 查岗手机那条腿同理（SMTP 密码 + 收图口子的校验密钥）
   // MCP 服务器列表整块只住密钥文件里（地址、token、环境变量）
   if (Array.isArray(data.mcpKeys)) merged.mcpServers = data.mcpKeys;
+  // 瑞幸的 token 同理
+  if (data.luckinKeys && typeof data.luckinKeys === "object") merged.luckinApi = data.luckinKeys;
+  if (data.mcdKeys && typeof data.mcdKeys === "object") merged.mcdApi = data.mcdKeys;
   if (data.spyKeys && typeof data.spyKeys === "object") {
     merged.spyApi = data.spyKeys;
   }
@@ -3284,6 +3333,8 @@ function writeToDisk(normalized) {
     searchKeys: normalized.searchApi,
     spyKeys: normalized.spyApi,
     mcpKeys: normalized.mcpServers,
+    luckinKeys: normalized.luckinApi,
+    mcdKeys: normalized.mcdApi,
     ttsKeys: normalized.ttsApi,
     cloudKeys: normalized.cloudBackup,
   });
@@ -3304,6 +3355,9 @@ function writeToDisk(normalized) {
     spyApi: {},
     // MCP 服务器列表同理
     mcpServers: [],
+    // 瑞幸 token 同理
+    luckinApi: {},
+    mcdApi: {},
     // TTS 同理
     ttsApi: {},
     // 云备份整块同理

@@ -210,6 +210,12 @@ export const OFFLINE_MEDIA_DIR = path.join(OFFLINE_DIR, "media");
 export const TRANSFERS_DIR = path.join(DATA_DIR, "transfers");
 
 /**
+ * 瑞幸订单卡片：一个角色一份，卡片句柄 + 订单内容 + 状态（见 luckinstore.js）。
+ * 不进 config.json，理由同 TRANSFERS_DIR。
+ */
+export const LUCKIN_DIR = path.join(DATA_DIR, "luckin");
+
+/**
  * 转账卡片上那张缩略图的素材（品牌 logo 之类）。
  *
  * 和壁纸一样分两处：`assets/transfer-logos/` 是随代码发的内置素材（只读，
@@ -408,6 +414,7 @@ export function ensureLayout() {
     OFFLINE_STORIES_DIR,
     OFFLINE_MEDIA_DIR,
     TRANSFERS_DIR,
+    LUCKIN_DIR,
     TRANSFER_LOGO_DIR,
     POLLS_DIR,
   ]) {

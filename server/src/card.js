@@ -1006,6 +1006,38 @@ export async function sendTransferCard({
   image,
   scope = "转账",
 }) {
+  return sendLayoutCard({
+    projectId,
+    projectSecret,
+    chatGuid,
+    appName,
+    layout: transferLayout({ amount, note, state: "pending", currency, appName, image }),
+    what: `转账卡片 ${formatAmount(amount)}`,
+    scope,
+  });
+}
+
+/**
+ * 发一张自定义排版的卡片，骑的是转账卡片那一套扩展身份。
+ *
+ * 转账和瑞幸订单（luckin.js）都走这儿：两者只是 layout 不一样，身份、线路挨个试、
+ * 句柄怎么回都是同一套（见 sendTransferCard 的注释）。
+ *
+ * @param {object} opts
+ * @param {object} opts.layout MiniAppLayout（六个文字槽 + 可选图）
+ * @param {string} [opts.what] 日志里怎么称呼这张卡片
+ * @returns {Promise<null | {messageGuid: string, chatGuid: string,
+ *   sessionId: string, targetMessageGuid: string}>}
+ */
+export async function sendLayoutCard({
+  projectId,
+  projectSecret,
+  chatGuid,
+  appName,
+  layout,
+  what = "卡片",
+  scope = "卡片",
+}) {
   if (!projectId || !projectSecret || !chatGuid) return null;
 
   let opened = [];
@@ -1018,7 +1050,7 @@ export async function sendTransferCard({
       extensionBundleId: TRANSFER_BUNDLE_ID,
       teamId: TRANSFER_TEAM_ID,
       url: TRANSFER_URL,
-      layout: transferLayout({ amount, note, state: "pending", currency, appName, image }),
+      layout,
     };
 
     let lastError = null;
@@ -1027,12 +1059,11 @@ export async function sendTransferCard({
         const result = await client.messages.sendCustomizedMiniApp(chatGuid, message);
         const session = result?.miniAppCardSession;
         if (!session?.sessionId) {
-          // 发出去了但没给句柄：卡片在对方手机上，只是以后改不了状态。
-          // 当成功报，别让用户以为这笔没发出去
-          logWarn(scope, "卡片发出去了，但没拿到会话句柄，这笔以后改不了「已收款」");
+          // 发出去了但没给句柄：卡片在对方手机上，只是以后改不了状态
+          logWarn(scope, `${what}发出去了，但没拿到会话句柄，以后改不了状态`);
           return null;
         }
-        logDebug(scope, `发了一张转账卡片（线路 ${instanceId}）：${formatAmount(amount)}`);
+        logDebug(scope, `发了一张${what}（线路 ${instanceId}）`);
         return {
           messageGuid: String(session.messageGuid ?? result?.guid ?? ""),
           chatGuid: String(session.chatGuid ?? chatGuid),
@@ -1044,10 +1075,10 @@ export async function sendTransferCard({
         logDebug(scope, `线路 ${instanceId} 发不出这张卡片：${String(e?.message ?? e)}`);
       }
     }
-    if (lastError) logWarn(scope, "转账卡片没能发出去", lastError);
+    if (lastError) logWarn(scope, `${what}没能发出去`, lastError);
     return null;
   } catch (e) {
-    logWarn(scope, "转账卡片没能发出去（开不了客户端）", e);
+    logWarn(scope, `${what}没能发出去（开不了客户端）`, e);
     return null;
   } finally {
     await closeClients(opened);
@@ -1101,6 +1132,33 @@ export async function updateTransferCard({
   state,
   scope = "转账",
 }) {
+  return updateLayoutCard({
+    projectId,
+    projectSecret,
+    session,
+    appName,
+    layout: transferLayout({ amount, note, state, currency, appName, image }),
+    what: `转账卡片（改成「${TRANSFER_STATE_LABEL[state] ?? state}」）`,
+    scope,
+  });
+}
+
+/**
+ * 把一张 sendLayoutCard 发出去的卡片原地换成新的 layout。
+ *
+ * appName 必须和发的时候算出同一个值（身份一致，见 updateTransferCard）。
+ *
+ * @returns {Promise<boolean>} 改成功了没有
+ */
+export async function updateLayoutCard({
+  projectId,
+  projectSecret,
+  session,
+  appName,
+  layout,
+  what = "卡片",
+  scope = "卡片",
+}) {
   if (!projectId || !projectSecret || !session?.sessionId) return false;
 
   let opened = [];
@@ -1119,25 +1177,22 @@ export async function updateTransferCard({
       extensionBundleId: TRANSFER_BUNDLE_ID,
       teamId: TRANSFER_TEAM_ID,
       url: TRANSFER_URL,
-      layout: transferLayout({ amount, note, state, currency, appName, image }),
+      layout,
     };
 
     for (const { client, instanceId } of opened) {
       try {
         await client.messages.updateCustomizedMiniApp(handle, message);
-        logDebug(
-          scope,
-          `把一张转账卡片改成了「${TRANSFER_STATE_LABEL[state] ?? state}」（线路 ${instanceId}）`
-        );
+        logDebug(scope, `改好了${what}（线路 ${instanceId}）`);
         return true;
       } catch (e) {
         logDebug(scope, `线路 ${instanceId} 改不了这张卡片：${String(e?.message ?? e)}`);
       }
     }
-    logWarn(scope, "转账卡片的状态没改过去（气泡还停在原来那个状态）");
+    logWarn(scope, `${what}没改过去（气泡还停在原来那个状态）`);
     return false;
   } catch (e) {
-    logWarn(scope, "转账卡片的状态没改过去（开不了客户端）", e);
+    logWarn(scope, `${what}没改过去（开不了客户端）`, e);
     return false;
   } finally {
     await closeClients(opened);

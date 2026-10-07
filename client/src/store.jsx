@@ -1210,6 +1210,17 @@ export function ConfigProvider({ children }) {
       updateConfig((c) => ({ ...c, searchApi: { ...c.searchApi, ...patch } })),
     [updateConfig]
   );
+  /** 瑞幸点单的 token。同样**全局一份**，理由同上；角色那边只有开关。 */
+  const updateLuckinApi = useCallback(
+    (patch) =>
+      updateConfig((c) => ({ ...c, luckinApi: { ...c.luckinApi, ...patch } })),
+    [updateConfig]
+  );
+  /** 麦当劳点单的 token，同上。 */
+  const updateMcdApi = useCallback(
+    (patch) => updateConfig((c) => ({ ...c, mcdApi: { ...c.mcdApi, ...patch } })),
+    [updateConfig]
+  );
   /**
    * MCP 服务器列表。同样**全局一份**、所有角色共用，理由同上（地址和请求头里
    * 有 token）。角色那边只勾用哪几台（role.mcp.servers）。
@@ -2180,6 +2191,8 @@ export function ConfigProvider({ children }) {
         updatePrivacy,
         updateWeatherApi,
         updateSearchApi,
+        updateLuckinApi,
+        updateMcdApi,
         updateMcpServers,
         updateSpyApi,
         updateTtsApi,

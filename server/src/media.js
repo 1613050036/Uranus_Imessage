@@ -116,6 +116,8 @@ export const MAX_TTS_CHARS = 1000;
  *           [react:😂:2]           ← 往回数第 2 条
  *           [react:❤️:我想你了]     ← 按原文找那条
  *           [回应:😂]/[贴纸:😂]/[tapback:😂]
+ *   瑞幸    [瑞幸:生椰拿铁|大杯|少冰]  ← 点一单，后端查店算价发订单卡片（luckin.js）
+ *           [瑞幸菜单:拿铁]        ← 「先看菜单」，发送前就被消费掉，这里只负责吞掉
  *   转账    [transfer:4000:零花钱]  ← 发一张带金额和备注的转账卡片
  *           [transfer:4000]        ← 不写备注也行
  *           [转账:4000:零花钱]/[transfer_money:…]
@@ -186,6 +188,9 @@ const MEDIA_TAG = new RegExp(
     "[[［]\\s*(?:music|song|音乐|歌曲|点歌)\\s*[:：]\\s*(?<music>[^\\]］]{1,120}?)\\s*[\\]］]",
     "[[［]\\s*(?:share_location|location|位置|定位|共享位置)\\s*[:：]\\s*(?<location>[^\\]］]{1,160}?)\\s*[\\]］]",
     "[[［]\\s*(?:reaction|react|tapback|回应|贴纸)\\s*[:：]\\s*(?<react>[^\\]］]{1,80}?)\\s*[\\]］]",
+    // 瑞幸两条，菜单那条得排前面，不然 `[瑞幸菜单:拿铁]` 会被当成「点一杯叫 菜单:拿铁 的咖啡」
+    "[[［]\\s*(?:瑞幸菜单|luckin_menu)\\s*[:：]\\s*(?<luckinMenu>[^\\]］]{1,120}?)\\s*[\\]］]",
+    "[[［]\\s*(?:瑞幸咖啡|瑞幸|luckin)\\s*[:：]\\s*(?<luckin>[^\\]］]{1,300}?)\\s*[\\]］]",
     "[[［]\\s*(?:transfer_money|transfer|转账|转钱)\\s*[:：]\\s*(?<transfer>\\d[^\\]］]{0,80}?)\\s*[\\]］]",
     /*
      * 投票三条，顺序要紧：`poll_add` / `poll_vote` 都得排在 `poll` 前面，否则
@@ -289,6 +294,12 @@ export function splitMedia(text) {
       const isLL = /^-?\d{1,3}(?:\.\d+)?\s*[,，]\s*-?\d{1,3}(?:\.\d+)?$/.test(tail);
       const name = (isLL ? body.slice(0, at) : body).trim();
       if (name) parts.push({ kind: "location", text: name, ll: isLL ? tail : "" });
+    } else if (g.luckinMenu !== undefined) {
+      // 「先看菜单」在 imessage.js:luckinMenuRound 里消费，到这儿还剩的（第二次回复里
+      // 又写了一遍、或者开关关着）一律吞掉，不当文字发出去
+    } else if (g.luckin !== undefined) {
+      const t = g.luckin.trim();
+      if (t) parts.push({ kind: "luckin", text: t });
     } else if (g.react !== undefined) {
       // 第一个冒号切开：前面是 emoji，后面是「贴哪条」。
       // 后半段照 [reply:] 的规矩，数字 = 倒数第几条、其它 = 原文片段，
@@ -395,7 +406,8 @@ export function stripMediaTags(text, currency) {
         p.kind !== "undo" &&
         p.kind !== "react" &&
         p.kind !== "vote" &&
-        p.kind !== "poll_add"
+        p.kind !== "poll_add" &&
+        p.kind !== "luckin"
     )
     .map((p) => {
       if (p.kind === "transfer") return transferAsText(p, currency);

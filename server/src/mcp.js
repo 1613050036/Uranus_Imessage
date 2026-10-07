@@ -40,6 +40,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { whyNetwork } from "./net.js";
 import { logDebug, logInfo, logWarn } from "./logs.js";
 import { clampInt, pickId, str } from "./normalize.js";
 import { stripXmlBlocks } from "./websearch.js";
@@ -748,6 +749,19 @@ async function withClient(server, fn) {
   }
 }
 
+/**
+ * 后端自己调一台远程服务器上的工具，不经过角色、不进工具清单。
+ *
+ * 瑞幸点单（luckin.js）用它：瑞幸开放的是一台 MCP 服务器，但工具链由代码按
+ * 固定顺序调，模型只写一行标记。共用这里的连接池和「会话过期换条连接」那一套。
+ *
+ * @param {{id:string, transport:"http", url:string, headers:{name:string,value:string}[], timeout:number}} server
+ * @returns {Promise<object>} tools/call 的原始 result
+ */
+export function callServerTool(server, name, args) {
+  return withClient(server, (c) => c.callTool(name, args));
+}
+
 /** 服务器在日志和提示词里叫什么。 */
 export function serverLabel(s) {
   return s?.name || s?.url || s?.command || s?.id || "MCP";
@@ -787,7 +801,9 @@ export async function testServer(input) {
       })),
     };
   } catch (e) {
-    return { ok: false, ms: Date.now() - startedAt, error: String(e?.message ?? e) };
+    // undici 网络层的错只给一句 fetch failed，真原因在 cause 里，交给 whyNetwork 翻成人话
+    const error = e instanceof McpError ? e.message : whyNetwork(e);
+    return { ok: false, ms: Date.now() - startedAt, error };
   } finally {
     client.close();
   }

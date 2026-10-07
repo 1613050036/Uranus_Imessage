@@ -92,6 +92,8 @@ export function buildBundle(config, { includeSecrets = false } = {}) {
       ttsKeys: config?.ttsApi ?? {},
       // MCP 服务器（地址、请求头里的 token、环境变量）同理
       mcpKeys: config?.mcpServers ?? [],
+      luckinKeys: config?.luckinApi ?? {},
+      mcdKeys: config?.mcdApi ?? {},
     };
   } else {
     /*
@@ -187,6 +189,10 @@ export function applyBundle(bundle, current) {
     const tk = bundle.secrets.ttsKeys;
     if (tk && typeof tk === "object" && !Array.isArray(tk)) next.ttsApi = tk;
     if (Array.isArray(bundle.secrets.mcpKeys)) next.mcpServers = bundle.secrets.mcpKeys;
+    const lk = bundle.secrets.luckinKeys;
+    if (lk && typeof lk === "object" && !Array.isArray(lk)) next.luckinApi = lk;
+    const mk = bundle.secrets.mcdKeys;
+    if (mk && typeof mk === "object" && !Array.isArray(mk)) next.mcdApi = mk;
   } else {
     // 本地的 key 按 id 盖回导入的服务商上；备份里那些空串占位丢掉
     const local = new Map((current?.providers ?? []).map((p) => [p.id, p.keys]));

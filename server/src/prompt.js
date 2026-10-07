@@ -25,6 +25,7 @@
  * 它跟着消息进存档，见 env.js 的文件头。
  */
 
+import { LUCKIN_MENU_PARA, LUCKIN_SHORT_HINT, luckinWanted } from "./luckin.js";
 import { applyVars, resolveEndpoint, resolveUser } from "./config.js";
 import { listEmojiTags } from "./emoji.js";
 import { stripEnvPrefix } from "./env.js";
@@ -229,7 +230,7 @@ function effectListText(keys) {
  * ROLE_GATED_CHILDREN 里，由下面 spyText 单独处理 —— 两条腿都关就整条跳过，
  * 只开一条腿时还要把另一条腿那几行删掉（见那个函数的注释）。
  */
-function formatBlock(entry, fill, role, config) {
+function formatBlock(entry, fill, role, config, sent) {
   const lines = [];
   const intro = fill(entry?.content ?? "");
   if (intro) lines.push(intro);
@@ -263,6 +264,18 @@ function formatBlock(entry, fill, role, config) {
     // 这正是用户要的省 token —— 苹果自带的 emoji 几百个，全塞进去每轮都在白烧。
     // 空清单留着比不留更糟：模型会看见「你必须从【可用emoji】里选」后面跟一片空白，
     // 然后自己编一个。
+    /*
+     * 瑞幸：完整说明只在这几句聊到咖啡时才给，平时换成一句话（luckin.js:luckinWanted）。
+     * 用户要的省 token —— 完整那段两百来字，多数轮次根本用不上。
+     */
+    if (child.kind === "luckin") {
+      text = luckinWanted(sent)
+        ? text
+            .replace(/\{\{\s*瑞幸菜单变量\s*\}\}/g, role?.luckin?.menu ? LUCKIN_MENU_PARA : "")
+            .replace(/\n{2,}/g, "\n")
+            .trim()
+        : LUCKIN_SHORT_HINT;
+    }
     if (child.kind === "react") {
       const list = Array.isArray(role?.reactSend?.emojis) ? role.reactSend.emojis : [];
       if (!list.length) continue;
@@ -858,7 +871,7 @@ export async function buildPrompt(config, role, user, history, weatherNote = "",
          * 标记，然后被原样打进剧情正文里。
          */
         if (offline) break;
-        parts.push({ role: "system", content: formatBlock(entry, fill, role, config) });
+        parts.push({ role: "system", content: formatBlock(entry, fill, role, config, sent) });
         break;
       case "context": {
         const woven = weaveDepths(sent, world.depths);

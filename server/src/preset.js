@@ -81,7 +81,7 @@ const ENTRY_ROLES = ["system", "user", "assistant"];
 export const REGEX_TARGETS = ["userInput", "aiOutput"];
 
 /**
- * 「消息格式与功能」的子条目，固定十九条、不能增删。
+ * 「消息格式与功能」的子条目，固定二十条、不能增删。
  *
  * 拆成子条目是为了能单独开关：生图链路接上了但语音还没接的时候，
  * 可以只开图片那条，不用手改一整段文字再改回来。
@@ -89,7 +89,7 @@ export const REGEX_TARGETS = ["userInput", "aiOutput"];
  * 查岗占**四条**（看屏幕 / 看手机里的东西 / 动手机 / 放歌），对着角色面板上
  * 那四摊开关，理由见 SPY_SCREEN_CHILD 上面那段。
  *
- * 十九条的执行链路**都是接上的**。除了 quote 之外，其余十八条都多压一道闸 ——
+ * 二十条的执行链路**都是接上的**。除了 quote 之外，其余十九条都多压一道闸 ——
  * 角色单独配置里那个开关关着时，这一条无论开没开都不注入（见 ROLE_GATED_CHILDREN 和
  * prompt.js:formatBlock）。voice / image / search 的理由是会往外发请求、要花钱；
  * leaveOnRead 不花钱，但它会让角色**干脆不回消息**；sticker 也不花钱，
@@ -119,6 +119,7 @@ export const FORMAT_CHILD_KINDS = [
   "card",
   "location",
   "transfer",
+  "luckin",
   "poll",
   "search",
   "leaveOnRead",
@@ -156,6 +157,7 @@ export const FORMAT_CHILD_TAGS = {
   card: "share_card",
   location: "share_location",
   transfer: "转账",
+  luckin: "瑞幸点单",
   poll: "投票",
   search: "联网搜索",
   leaveOnRead: "leave_on_read",
@@ -207,6 +209,8 @@ export const ROLE_GATED_CHILDREN = {
   card: "cardSend",
   location: "locationSend",
   transfer: "transfer",
+  // 能替用户下真单（最后要用户贴 emoji 确认），默认关，见 config.js:normalizeLuckin
+  luckin: "luckin",
   poll: "poll",
   react: "reactSend",
   effect: "effectSend",
@@ -444,7 +448,7 @@ export const LEGACY_FORMAT_INTRO = [
 ].join("\n");
 
 /**
- * 每个子条目的默认内容（FORMAT_CHILD_KINDS 那十九条各一段）。
+ * 每个子条目的默认内容（FORMAT_CHILD_KINDS 那二十条各一段）。
  *
  * voice / sticker / image / quote / undoSend 这几段是用户给的规范原文（含
  * `{{表情包变量}}`、`{{图生图变量}}` 两个变量）。外层的
@@ -541,6 +545,26 @@ export const DEFAULT_FORMAT_CHILDREN = {
       "卡片直接发在这个对话里。",
     "对方收下之后卡片右上角会变成「已收款」，你会收到系统提示，" +
       "那时候再顺着说一句就行；没收之前别催。",
+  ].join("\n"),
+  /*
+   * 瑞幸这条是**完整说明**，只在对方最近几句话聊到咖啡/瑞幸时才注入；
+   * 平时只注入 LUCKIN_SHORT_HINT 那一句（见 prompt.js:formatBlock）。
+   * {{瑞幸菜单变量}} 换成「先看菜单」那段，角色没开就换成空串。
+   */
+  luckin: [
+    "瑞幸点单",
+    "说明：对方想喝咖啡、让你帮忙点，或者你想请对方喝一杯时，写成 [瑞幸:商品名|规格|规格]，" +
+      "系统会去离对方最近的瑞幸门店配好这一单、算好价，发一张订单卡片给对方。" +
+      "对方给卡片点一下回应才会真的下单，然后用微信扫码付款、到店取。",
+    "商品名写瑞幸菜单上的叫法（生椰拿铁、厚乳拿铁、美式、橙C美式……）；" +
+      "规格写冷热、杯型、糖度、冰量这些（冰、热、大杯、超大杯、少冰、少甜、不另外加糖），没有就不写。" +
+      "按你记得的对方口味自己挑，别反过来问一堆。",
+    "几杯一起点用 + 连起来，数量写在商品名后面：[瑞幸:生椰拿铁|大杯|少冰+美式×2|热]。" +
+      "对方点名了门店（公司楼下那家、XX广场店）就在最后加 @门店名里的词：[瑞幸:生椰拿铁|大杯@XX广场]。",
+    "{{瑞幸菜单变量}}",
+    "示例：「下午犯困吧{{sep}}[瑞幸:生椰拿铁|大杯|少冰]{{sep}}给你点了，看一眼没问题就点一下」",
+    "规则：订单卡片要单独占一条气泡，一轮最多点一单；价格、门店、付款码都由系统给，" +
+      "别自己编价格或者取餐码。下单后你会收到系统提示，按提示里的真实情况说话。",
   ].join("\n"),
   poll: [
     "投票",
@@ -841,7 +865,7 @@ export const LEGACY_FORMAT_PROMPT = [
 /**
  * 某个子条目缺 `enabled` 字段时默认开不开：**恒定为开**。
  *
- * 十九条的链路现在都接上了，其中十八条还各自压着第二道闸 —— 角色单独配置里那个开关
+ * 二十条的链路现在都接上了，其中十九条还各自压着第二道闸 —— 角色单独配置里那个开关
  * （ROLE_GATED_CHILDREN），默认全是关的，所以这里开着也不会凭空往提示词里
  * 加东西。反过来如果它们跟着 `enabled` 走，用户在角色里打开之后还得再翻进
  * 预设面板开一次，两个开关都要对才生效 —— 那是很难猜到的。
@@ -860,7 +884,7 @@ function defaultChildEnabled() {
 /**
  * 新建 format 条目时的子条目。
  *
- * 十九条默认全开着，但其中十八条压着角色那道闸（默认关），所以实际注入的只有
+ * 二十条默认全开着，但其中十九条压着角色那道闸（默认关），所以实际注入的只有
  * quote 一条 —— 用户在哪个角色上打开「发送表情包」，才会在那个角色的提示词里
  * 看到它。
  */
@@ -1156,7 +1180,7 @@ function normalizeParams(input) {
 }
 
 /**
- * 「消息格式与功能」的子条目：固定十九条、不能增删，只能开关和改内容。
+ * 「消息格式与功能」的子条目：固定二十条、不能增删，只能开关和改内容。
  *
  * 老配置里没有 children 字段，得从那一整段 content 迁过来 —— 缺 `enabled` 的
  * 一律补成开（见 defaultChildEnabled）。以前这里还分「用户改没改过引言」，
