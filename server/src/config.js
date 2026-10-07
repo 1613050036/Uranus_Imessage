@@ -1870,6 +1870,8 @@ function normalizeMcd(input) {
   return {
     enabled: Boolean(input?.enabled),
     mode: input?.mode === "pickup" ? "pickup" : "delivery",
+    // 外送送到麦当劳账号里的哪个地址。空着 = 按「你」里的常用地址猜（mcd.js:pickAddress）
+    addressId: str(input?.addressId).slice(0, 80),
     menu: input?.menu === undefined ? true : Boolean(input.menu),
     confirmMinutes: clampInt(input?.confirmMinutes, 30, 1, 240),
     appName: str(input?.appName).slice(0, 40),

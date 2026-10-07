@@ -129,6 +129,10 @@ export function unwrapResult(result, tool) {
   const body = result?.structuredContent ?? findJson(text);
   if (result?.isError) throw new LuckinError(`${tool} 失败：${text.slice(0, 200) || "瑞幸没说原因"}`);
   if (body === undefined) throw new LuckinError(`${tool} 回的不是 JSON：${text.slice(0, 200)}`);
+  // 麦当劳失败时回的是 `{success:false, code, message}`，不带 data —— 下面那条认不出来
+  if (body && typeof body === "object" && body.success === false) {
+    throw new LuckinError(`${tool} 失败：${body.msg ?? body.message ?? JSON.stringify(body).slice(0, 200)}`);
+  }
   if (body && typeof body === "object" && !Array.isArray(body) && "data" in body) {
     const failed =
       body.success === false || (body.code !== undefined && String(body.code) !== "0" && body.code !== 200);
@@ -188,12 +192,17 @@ export async function callBrand(config, brand, tool, args, scope) {
      * 对方那边可能已经下了，再调一次就是两单。服务器明确回了错（没有网络错误码）也不重试。
      */
     if (/create[-_]?order/i.test(tool) || !netCodes(first).length) throw fail(first);
-    logDebug(scope, `${tool} 第一次没连上（${netCodes(first)[0]}），再试一次`);
-    try {
-      result = await callServerTool(server, tool, args);
-    } catch (e) {
-      throw fail(e);
+    let last = first;
+    for (let i = 1; i <= 2 && !result; i++) {
+      logDebug(scope, `${tool} 第 ${i} 次没连上（${netCodes(last)[0]}），再试一次`);
+      try {
+        result = await callServerTool(server, tool, args);
+      } catch (e) {
+        if (!netCodes(e).length) throw fail(e);
+        last = e;
+      }
     }
+    if (!result) throw fail(last);
   }
   const data = unwrapResult(result, tool);
   logDebug(
@@ -399,8 +408,16 @@ export async function findShop(config, loc, storeHint, scope) {
   let list = [];
   if (storeHint) list = asList(await callLuckin(config, "queryShopList", { ...base, deptName: storeHint }, scope));
   if (!list.length) list = asList(await callLuckin(config, "queryShopList", base, scope));
-  const shop = list.find((s) => s?.deptId != null);
-  if (!shop) throw new LuckinError("附近没查到营业中的瑞幸门店");
+  /*
+   * 实测附近八家里七家「打烊中」也照样列出来，而且按距离排 —— 最近那家往往打烊了。
+   * 有 workStatus 就只挑营业中的；一家营业的都没有就直说，别给人点一杯取不到的。
+   */
+  const all = list.filter((s) => s?.deptId != null);
+  const open = all.filter((s) => !s.workStatus || /营业/.test(String(s.workStatus)));
+  const shop = open[0];
+  if (!shop) {
+    throw new LuckinError(all.length ? "附近的瑞幸现在都打烊了" : "附近没查到瑞幸门店");
+  }
   return {
     deptId: shop.deptId,
     name: String(shop.deptName ?? shop.shopName ?? `门店 ${shop.deptId}`),
@@ -431,22 +448,52 @@ export function specDesc(product) {
  *
  * @returns {Promise<{product: object, missed: string[]}>}
  */
+/**
+ * 同一个选项瑞幸自己就有两种叫法：商品详情里叫「超大杯」，切过一次规格之后返回里叫「特大杯」（实测）。
+ * 比对前两边都换成同一个词。
+ */
+const SPEC_ALIASES = [[/特大杯/g, "超大杯"]];
+const specKey = (t) => SPEC_ALIASES.reduce((x, [re, to]) => x.replace(re, to), String(t ?? "").replace(/\s+/g, ""));
+
 async function applySpecs(config, deptId, product, specs, qty, scope) {
   let cur = product;
+  /*
+   * 搜索结果里每组规格**只给当前选中的那一项**（温度只有「冰」，没有「热」），
+   * 拿它对规格词永远对不上。有规格要切时先查一次商品详情，那里是全部选项。
+   */
+  if (specs.length) {
+    try {
+      const full = await callLuckin(config, "queryProductDetailInfo", { deptId, productId: cur.productId }, scope);
+      if (Array.isArray(full?.productAttrs)) cur = { ...cur, ...full };
+    } catch (e) {
+      logDebug(scope, `商品详情没查到，按搜索结果里的规格对：${String(e?.message ?? e)}`);
+    }
+  }
   const missed = [];
   for (const word of specs) {
-    const w = word.replace(/\s+/g, "");
+    const w = specKey(word);
+    /*
+     * 先找名字一模一样的，再找互相包含的（「大杯」对「大杯16oz」），包含的里挑名字最长的。
+     * 不能见包含就收：「超大杯」包含「大杯」，按顺序扫会先撞上「大杯」，切成了大杯（实测）。
+     */
     let hit = null;
+    let loose = null;
     for (const g of Array.isArray(cur?.productAttrs) ? cur.productAttrs : []) {
       for (const sub of Array.isArray(g?.productSubAttrs) ? g.productSubAttrs : []) {
-        const n = String(sub?.attributeName ?? "").replace(/\s+/g, "");
-        if (n && (n === w || n.includes(w) || w.includes(n))) {
-          hit = { group: g, sub };
-          break;
+        const n = specKey(sub?.attributeName);
+        if (!n) continue;
+        if (n === w) hit = hit ?? { group: g, sub };
+        else if ((n.includes(w) || w.includes(n)) && (!loose || n.length > loose.len)) {
+          loose = { group: g, sub, len: n.length };
         }
       }
-      if (hit) break;
     }
+    /*
+     * 只靠「对方的词包含选项名」对上的（写「超大杯」对上「大杯」）不算数：那是另一个选项，
+     * 而且往往正是已经选中的那个，会被当成「不用切」悄悄吞掉。记成没对上，告诉角色。
+     */
+    if (!hit && loose && !(specKey(loose.sub.attributeName).includes(w))) loose = null;
+    hit = hit ?? loose;
     if (!hit) {
       missed.push(word);
       continue;
@@ -489,8 +536,12 @@ export async function draftOrder(config, spec, loc, scope = "瑞幸") {
       .filter((p) => p?.productId != null && p?.skuCode)
       .map((p) => ({ p, s: nameScore(item.name, p.productName ?? p.name) }))
       .sort((x, y) => y.s - x.s)[0];
-    // 一个字都对不上就当没有 —— 宁可说没找到，也不给人点一杯别的
-    if (!best || best.s < 20) {
+    /*
+     * 对不太上就当没有 —— 宁可说没找到，也不给人点一杯别的。
+     * 门槛 35：实测这家店不卖厚乳拿铁时，搜「厚乳拿铁」回的是生椰拿铁，两个只共用「拿铁」
+     * 两个字（25 分），门槛低了就会把人要的厚乳换成生椰。
+     */
+    if (!best || best.s < 35) {
       missed.push(`没找到「${item.name}」`);
       continue;
     }
@@ -587,44 +638,6 @@ export async function orderStatus(config, orderId, scope = "瑞幸") {
   return { code, status };
 }
 
-/**
- * 「先看菜单」：搜几个词，把商品和价格拼成一段给模型看的文字。
- *
- * 每个词最多列 8 款，规格只列名字不列全部选项 —— 选项太多会把提示词撑爆，
- * 而模型写标记时只要写规格词，切规格是这边的事。
- */
-export async function menuText(config, loc, queries, storeHint, scope = "瑞幸") {
-  const shop = await findShop(config, loc, storeHint, scope);
-  const blocks = [];
-  for (const q of queries) {
-    let list = [];
-    try {
-      list = await searchProducts(config, shop.deptId, q, scope);
-    } catch (e) {
-      blocks.push(`「${q}」：查不到（${e.message}）`);
-      continue;
-    }
-    const rows = list
-      .filter((p) => p?.productName ?? p?.name)
-      .slice(0, 8)
-      .map((p) => {
-        const price = money(p.estimatePrice ?? p.initialPrice);
-        const groups = (Array.isArray(p.productAttrs) ? p.productAttrs : [])
-          .map((g) =>
-            (Array.isArray(g?.productSubAttrs) ? g.productSubAttrs : [])
-              .map((s) => s?.attributeName)
-              .filter(Boolean)
-              .join("/")
-          )
-          .filter(Boolean)
-          .join("；");
-        return `- ${p.productName ?? p.name} ${price}${groups ? `（可选：${groups}）` : ""}`;
-      });
-    blocks.push(rows.length ? `「${q}」：\n${rows.join("\n")}` : `「${q}」：没有这类商品`);
-  }
-  return `门店：${shop.name}${shop.address ? `（${shop.address}）` : ""}\n${blocks.join("\n")}`;
-}
-
 /** 自动带上菜单时搜哪些词。瑞幸没有「整张菜单」接口，只能按词搜再合并。 */
 const MENU_KEYWORDS = ["拿铁", "美式", "生椰", "厚乳", "茶", "果咖", "冰萃", "新品"];
 
@@ -661,21 +674,13 @@ export async function autoMenuText(config, loc, scope = "瑞幸") {
       const key = String(p?.skuCode ?? name ?? "");
       if (!name || seen.has(key) || rows.length >= MENU_MAX) continue;
       seen.add(key);
-      const groups = (Array.isArray(p.productAttrs) ? p.productAttrs : [])
-        .map((g) =>
-          (Array.isArray(g?.productSubAttrs) ? g.productSubAttrs : [])
-            .map((x) => x?.attributeName)
-            .filter(Boolean)
-            .join("/")
-        )
-        .filter(Boolean)
-        .join("；");
-      rows.push(`- ${name} ${money(p.estimatePrice ?? p.initialPrice)}${groups ? `（${groups}）` : ""}`);
+      rows.push(`- ${name} ${money(p.estimatePrice ?? p.initialPrice)}`);
     }
   }
   const text = rows.length
-    ? `离对方最近的门店：${shop.name}。这家现在能点的（名字 价格（可选规格））：\n${rows.join("\n")}`
+    ? `离对方最近的门店：${shop.name}。这家现在能点的（名字 到手价）：\n${rows.join("\n")}`
     : `离对方最近的门店：${shop.name}，没查到在售商品。`;
+  // 规格不列：搜索结果里每组只有默认那一项。冷热、杯型、糖度、冰量这些按常识写，切规格是这边的事
   menuCache.set(String(shop.deptId), { at: Date.now(), text });
   logInfo(scope, `查好了 ${shop.name} 的菜单（${rows.length} 款），缓存 30 分钟`);
   return text;

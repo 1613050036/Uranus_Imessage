@@ -71,6 +71,7 @@ import {
 } from "./llm.js";
 import { testServer as testMcpServer } from "./mcp.js";
 import { LUCKIN_MCP_URL, MCD_MCP_URL } from "./luckin.js";
+import { mcdAddresses } from "./mcd.js";
 import { mountTheater } from "./theater.js";
 import { mountPhone } from "./phonecheck.js";
 import {
@@ -1362,6 +1363,28 @@ app.post("/api/order/test", async (req, res) => {
     error: result.error,
     tools: (result.tools ?? []).map((t) => t.name),
   });
+});
+
+/**
+ * 麦当劳账号里的收货地址，给角色配置里「送到哪个地址」那个下拉框用。
+ * 只回 addressId、联系人和地址，电话不回（麦当劳给的本来就是打码的，界面上也用不着）。
+ */
+app.post("/api/order/mcd-addresses", async (req, res) => {
+  const token = String(req.body?.token ?? "").trim();
+  if (!token) return res.status(400).json({ ok: false, error: "先填麦当劳的 token" });
+  try {
+    const list = await mcdAddresses({ mcdApi: { token } }, "点单");
+    res.json({
+      ok: true,
+      addresses: list.map((a) => ({
+        addressId: String(a.addressId),
+        name: String(a.contactName ?? ""),
+        address: String(a.fullAddress ?? ""),
+      })),
+    });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: String(e?.message ?? e) });
+  }
 });
 
 /** 拉模型列表，给「获取模型列表」弹窗用。 */

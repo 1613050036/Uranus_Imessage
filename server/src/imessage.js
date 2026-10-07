@@ -5628,10 +5628,16 @@ const ORDER_BRANDS = {
     label: "麦当劳",
     app: "麦当劳",
     what: "吃的",
-    draft: (config, spec, loc, scope) => draftMcdOrder(config, spec, loc, scope),
+    draft: (config, spec, loc, scope, role, user) =>
+      draftMcdOrder(config, spec, { addressId: role?.mcd?.addressId, addressHint: user?.address }, scope),
     place: (config, draft, scope) => placeMcdOrder(config, draft, scope),
-    menu: (config, loc, role, scope) =>
-      autoMcdMenuText(config, loc, role?.mcd?.mode === "pickup" ? "到店" : "外送", scope),
+    menu: (config, loc, role, scope, user) =>
+      autoMcdMenuText(
+        config,
+        { addressId: role?.mcd?.addressId, addressHint: user?.address },
+        role?.mcd?.mode === "pickup" ? "到店" : "外送",
+        scope
+      ),
     wanted: (history) => mcdWanted(history),
     // 外送用账号里的地址、到店先看收藏的门店，位置只是兜底
     needsLoc: false,
@@ -5736,7 +5742,7 @@ async function orderPromptState(brand, runner, config, role, peer, history, scop
   const loc = await luckinLocation(runner, { peer, config, role }, scope);
   if (!loc && b.needsLoc) return { mode: "full", extra: "（不知道对方在哪儿，查不了附近门店的菜单。）" };
   try {
-    return { mode: "full", extra: await b.menu(config, loc, role, scope) };
+    return { mode: "full", extra: await b.menu(config, loc, role, scope, resolveUser(config, role)) };
   } catch (e) {
     logWarn(scope, `${b.label}菜单没查到，这轮不带菜单`, e);
     return { mode: "full" };
@@ -5782,7 +5788,7 @@ async function sendOrderPart(runner, space, part, ctx) {
 
   let draft;
   try {
-    draft = await b.draft(config, spec, loc, scope);
+    draft = await b.draft(config, spec, loc, scope, role, resolveUser(config, role));
   } catch (e) {
     return fail(String(e?.message ?? e));
   }

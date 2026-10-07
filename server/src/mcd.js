@@ -24,7 +24,7 @@
  */
 
 import { LuckinError, asList, callBrand, nameScore, num, remarkField } from "./luckin.js";
-import { logInfo, logWarn } from "./logs.js";
+import { logDebug, logInfo, logWarn } from "./logs.js";
 
 const call = (config, tool, args, scope) => callBrand(config, "mcd", tool, args, scope);
 
@@ -45,16 +45,39 @@ function modeOf(store) {
   return { orderType: PICKUP, storeHint: s.replace(/到店|自取|自提/g, "").trim() };
 }
 
-/** 外送：账号里的默认地址（没标默认就取第一个）+ 能送它的第一家店。 */
-async function deliveryTarget(config, scope) {
-  const raw = await call(config, "delivery-query-addresses", { beType: 2 }, scope);
-  const addrs = asList(raw?.addresses ?? raw).filter((a) => a?.addressId);
+/** 账号里存的收货地址。 */
+export async function mcdAddresses(config, scope = "麦当劳") {
+  const raw = await call(config, "delivery-query-addresses", {}, scope);
+  return asList(raw?.addresses ?? raw).filter((a) => a?.addressId);
+}
+
+/**
+ * 外送送到哪个地址。
+ *
+ * 麦当劳的地址列表**没有「默认」标记**（实测三个地址分在两个城市，第一个是外地的），
+ * 所以不能闭眼取第一个：角色上选过就用选的；没选就拿「你」里的常用地址去比，
+ * 共用字最多的那个；都没有才取第一个，并在日志里说一声。
+ */
+function pickAddress(addrs, chosenId, hint, scope) {
+  const chosen = chosenId && addrs.find((a) => String(a.addressId) === String(chosenId));
+  if (chosen) return chosen;
+  if (hint) {
+    const best = [...addrs].sort((a, b) => nameScore(hint, b.fullAddress) - nameScore(hint, a.fullAddress))[0];
+    if (best && nameScore(hint, best.fullAddress) >= 20) return best;
+  }
+  if (addrs.length > 1) logWarn(scope, "麦当劳账号里有好几个地址、角色上没选，先用第一个 —— 去角色配置 → 点单 → 麦当劳里选一个");
+  return addrs[0];
+}
+
+/** 外送：选定的地址 + 能送它的第一家营业中的店。 */
+async function deliveryTarget(config, opts, scope) {
+  const addrs = await mcdAddresses(config, scope);
   if (!addrs.length) throw new LuckinError("麦当劳账号里还没有收货地址，先去麦当劳 App 里加一个，或者写 @到店");
-  const addr = addrs.find((a) => a.isDefault || a.defaultAddress || a.default) ?? addrs[0];
+  const addr = pickAddress(addrs, opts.addressId, opts.addressHint, scope);
   const stores = asList(await call(config, "delivery-query-stores", { addressId: addr.addressId, beType: 2 }, scope))
     .filter((s) => s?.storeCode);
-  if (!stores.length) throw new LuckinError(`这个地址（${addr.fullAddress ?? "账号里的地址"}）现在没有能送的麦当劳`);
-  const st = stores[0];
+  const st = stores.find((s) => s.businessStatus !== false) ?? null;
+  if (!st) throw new LuckinError(`${addr.fullAddress ?? "这个地址"}现在没有能送的麦当劳`);
   return {
     orderType: DELIVERY,
     storeCode: st.storeCode,
@@ -66,15 +89,28 @@ async function deliveryTarget(config, scope) {
   };
 }
 
-/** 到店：收藏的门店优先，没有再按位置查附近；写了门店词按名字挑。 */
-async function pickupTarget(config, loc, storeHint, scope) {
-  let stores = asList(await call(config, "query-nearby-stores", { searchType: 1, beType: 1 }, scope));
-  if (!stores.length && loc) {
-    stores = asList(
-      await call(config, "query-nearby-stores", { searchType: 2, beType: 1, latitude: loc.lat, longitude: loc.lon }, scope)
-    );
+/**
+ * 到店：先看麦当劳 App 里收藏的门店；没收藏就用「能送到你地址的那几家」当附近的店。
+ *
+ * 不走 searchType=2 按位置查：实测各种城市名 + 关键词写法都回「没有查询到该地址」。
+ * 写了门店词就按名字挑。
+ */
+async function pickupTarget(config, opts, storeHint, scope) {
+  let stores = [];
+  try {
+    stores = asList(await call(config, "query-nearby-stores", { searchType: 1, beType: 1 }, scope));
+  } catch (e) {
+    // 没收藏时麦当劳回的是 success:false「收藏餐厅列表为空」，当没有
+    logDebug(scope, `没有收藏的门店：${String(e?.message ?? e)}`);
   }
-  stores = stores.filter((s) => s?.storeCode);
+  if (!stores.length) {
+    const addrs = await mcdAddresses(config, scope).catch(() => []);
+    if (addrs.length) {
+      const addr = pickAddress(addrs, opts.addressId, opts.addressHint, scope);
+      stores = asList(await call(config, "delivery-query-stores", { addressId: addr.addressId, beType: 2 }, scope));
+    }
+  }
+  stores = stores.filter((s) => s?.storeCode && s.businessStatus !== false);
   if (!stores.length) throw new LuckinError("没查到能去的麦当劳门店（可以在麦当劳 App 里收藏一家常去的）");
   const st = storeHint
     ? [...stores].sort((a, b) => nameScore(storeHint, b.storeName) - nameScore(storeHint, a.storeName))[0]
@@ -82,7 +118,8 @@ async function pickupTarget(config, loc, storeHint, scope) {
   return {
     orderType: PICKUP,
     storeCode: st.storeCode,
-    beCode: st.beCode ?? "",
+    // 到店自取不传 beCode（麦当劳的参数说明里写死了，传了会报错）
+    beCode: "",
     beType: 1,
     addressId: "",
     shopName: String(st.storeName ?? `门店 ${st.storeCode}`),
@@ -108,17 +145,18 @@ async function orderableMeals(config, target, scope) {
   return out;
 }
 
-const targetOf = (config, spec, loc, scope) => {
+/** opts：{ addressId（角色上选的收货地址）, addressHint（「你」里的常用地址，用来猜） } */
+const targetOf = (config, spec, opts, scope) => {
   const { orderType, storeHint } = modeOf(spec.store);
-  return orderType === DELIVERY ? deliveryTarget(config, scope) : pickupTarget(config, loc, storeHint, scope);
+  return orderType === DELIVERY ? deliveryTarget(config, opts, scope) : pickupTarget(config, opts, storeHint, scope);
 };
 
 /**
  * 一整单走到算价：定方式和门店 → 菜单里对名字 → calculate-price。
  * 返回的形状和 luckin.js:draftOrder 一致，imessage.js 那边一套代码管两家的卡片。
  */
-export async function draftMcdOrder(config, spec, loc, scope = "麦当劳") {
-  const target = await targetOf(config, spec, loc, scope);
+export async function draftMcdOrder(config, spec, opts, scope = "麦当劳") {
+  const target = await targetOf(config, spec, opts ?? {}, scope);
   const meals = await orderableMeals(config, target, scope);
   const lines = [];
   const missed = [];
@@ -146,6 +184,7 @@ export async function draftMcdOrder(config, spec, loc, scope = "麦当劳") {
   if (target.orderType === DELIVERY && target.beCode) args.beCode = target.beCode;
   const p = await call(config, "calculate-price", args, scope);
   const tw = Array.isArray(p?.takeWayList) ? p.takeWayList[0] : null;
+  // 外送实测会单列配送费（deliveryPrice）和打包费（packingPrice），都是分，都已经算在 price 里
 
   return {
     ...target,
@@ -153,7 +192,7 @@ export async function draftMcdOrder(config, spec, loc, scope = "麦当劳") {
     total: yuanFromFen(p?.price) ?? lines.reduce((s, l) => s + (l.unitPrice ?? 0) * l.qty, 0),
     original: yuanFromFen(p?.originalPrice),
     privilege: yuanFromFen(p?.discount),
-    delivery: yuanFromFen(p?.deliveryPrice),
+    delivery: (yuanFromFen(p?.deliveryPrice) ?? 0) + (yuanFromFen(p?.packingPrice) ?? 0) || null,
     takeWayCode: String(tw?.takeWayCode ?? tw?.code ?? ""),
     remark: spec.remark ?? "",
     missed,
@@ -186,8 +225,8 @@ export async function placeMcdOrder(config, draft, scope = "麦当劳") {
 
 /** 「自动带上菜单」：这家店这个时段能点的，最多列 60 样。缓存 30 分钟。 */
 const menuCache = new Map();
-export async function autoMcdMenuText(config, loc, mode, scope = "麦当劳") {
-  const target = await targetOf(config, { store: mode }, loc, scope);
+export async function autoMcdMenuText(config, opts, mode, scope = "麦当劳") {
+  const target = await targetOf(config, { store: mode }, opts ?? {}, scope);
   const key = `${target.storeCode}|${target.orderType}`;
   const hit = menuCache.get(key);
   if (hit && Date.now() - hit.at < 30 * 60_000) return hit.text;

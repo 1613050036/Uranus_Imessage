@@ -61,6 +61,56 @@ function TokenField({ label, hint, value, onChange, warn }) {
   );
 }
 
+/**
+ * 麦当劳外送送到哪个地址。账号里的地址没有「默认」标记（实测三个地址分在两个城市），
+ * 所以让用户自己挑一个；不挑就按「你」里的常用地址猜（服务端 mcd.js:pickAddress）。
+ * 列表现拉，不存 —— 只存挑中的 addressId。
+ */
+function McdAddressPicker({ token, value, onChange }) {
+  const [state, setState] = useState(null);
+  const load = async () => {
+    setState({ busy: true });
+    try {
+      const r = await api("/api/order/mcd-addresses", { method: "POST", body: { token } });
+      setState({ list: r.addresses });
+    } catch (e) {
+      setState({ error: String(e?.message ?? e) });
+    }
+  };
+  const list = state?.list ?? [];
+  const known = list.some((a) => a.addressId === value);
+  return (
+    <Field
+      label="外送送到哪个地址"
+      hint="地址是你麦当劳账号里存的（在麦当劳 App 里增删）。不选的话按「你」里的常用地址猜最像的那个"
+    >
+      <div className="grid grid-cols-1 gap-2">
+        {list.length > 0 ? (
+          <select className={inputCls} value={known ? value : ""} onChange={(e) => onChange(e.target.value)}>
+            <option value="">不选，按常用地址猜</option>
+            {list.map((a) => (
+              <option key={a.addressId} value={a.addressId}>
+                {a.address}
+                {a.name ? `（${a.name}）` : ""}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <p className="text-meta text-ink-faint">
+            {value ? "已经选过一个地址。" : "还没选，按常用地址猜。"}点下面的按钮读一下账号里的地址。
+          </p>
+        )}
+        <div>
+          <Button variant="outline" onClick={load} disabled={state?.busy || !token.trim()}>
+            {state?.busy ? "读取中…" : "读取账号里的地址"}
+          </Button>
+        </div>
+        {state?.error && <ResultNote state="fail" message={state.error} />}
+      </div>
+    </Field>
+  );
+}
+
 const linkCls = "mx-1 underline decoration-line underline-offset-2 hover:text-ink";
 
 export function RoleOrderFields({ role, onGoto }) {
@@ -184,7 +234,8 @@ export function RoleOrderFields({ role, onGoto }) {
             <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
               模型写
               <code className="mx-1 bg-sunken px-1">[麦当劳:巨无霸套餐+麦辣鸡翅×2]</code>
-              时配单算价。外送送到你麦当劳账号里存的地址；到店先找你在麦当劳 App 里收藏的门店，没有收藏就按位置找附近的。
+              时配单算价。外送送到你麦当劳账号里存的地址（下面选哪个）；到店先找你在麦当劳 App 里收藏的门店，
+              没有收藏就用能送到你那个地址的几家店。
               麦当劳没有查订单的接口，所以没有取餐码提醒。
             </span>
           </span>
@@ -218,6 +269,8 @@ export function RoleOrderFields({ role, onGoto }) {
                 <option value="pickup">到店自取</option>
               </select>
             </Field>
+
+            <McdAddressPicker token={mcdToken} value={md.addressId ?? ""} onChange={(v) => setMd({ addressId: v })} />
 
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
