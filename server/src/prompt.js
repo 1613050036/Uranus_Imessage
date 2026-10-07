@@ -25,7 +25,7 @@
  * 它跟着消息进存档，见 env.js 的文件头。
  */
 
-import { LUCKIN_MENU_PARA, LUCKIN_SHORT_HINT, luckinWanted } from "./luckin.js";
+import { LUCKIN_SHORT_HINT, luckinWanted } from "./luckin.js";
 import { applyVars, resolveEndpoint, resolveUser } from "./config.js";
 import { listEmojiTags } from "./emoji.js";
 import { stripEnvPrefix } from "./env.js";
@@ -230,7 +230,7 @@ function effectListText(keys) {
  * ROLE_GATED_CHILDREN 里，由下面 spyText 单独处理 —— 两条腿都关就整条跳过，
  * 只开一条腿时还要把另一条腿那几行删掉（见那个函数的注释）。
  */
-function formatBlock(entry, fill, role, config, sent) {
+function formatBlock(entry, fill, role, config, sent, luckin) {
   const lines = [];
   const intro = fill(entry?.content ?? "");
   if (intro) lines.push(intro);
@@ -269,9 +269,16 @@ function formatBlock(entry, fill, role, config, sent) {
      * 用户要的省 token —— 完整那段两百来字，多数轮次根本用不上。
      */
     if (child.kind === "luckin") {
-      text = luckinWanted(sent)
+      /*
+       * luckin 是 imessage.js:luckinPromptState 算好的这一轮该给什么：
+       *  - mode "full"：完整说明，{{瑞幸菜单变量}} 换成菜单或进行中的那一单；
+       *  - mode "short" / "done"：只给一句话（没聊咖啡 / 刚点完就不注入了）；
+       *  - 没传（主动消息这类）：按 luckinWanted 判，不带菜单。
+       */
+      const full = luckin ? luckin.mode === "full" : luckinWanted(sent);
+      text = full
         ? text
-            .replace(/\{\{\s*瑞幸菜单变量\s*\}\}/g, role?.luckin?.menu ? LUCKIN_MENU_PARA : "")
+            .replace(/\{\{\s*瑞幸菜单变量\s*\}\}/g, luckin?.extra ?? "")
             .replace(/\n{2,}/g, "\n")
             .trim()
         : LUCKIN_SHORT_HINT;
@@ -871,7 +878,7 @@ export async function buildPrompt(config, role, user, history, weatherNote = "",
          * 标记，然后被原样打进剧情正文里。
          */
         if (offline) break;
-        parts.push({ role: "system", content: formatBlock(entry, fill, role, config, sent) });
+        parts.push({ role: "system", content: formatBlock(entry, fill, role, config, sent, opts?.luckin) });
         break;
       case "context": {
         const woven = weaveDepths(sent, world.depths);

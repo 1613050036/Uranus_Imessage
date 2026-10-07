@@ -123,16 +123,14 @@ export function RoleOrderFields({ role, onGoto }) {
           <div className="grid grid-cols-1 gap-6 border-t border-line pt-5">
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
-                <span className="block text-ui text-ink">先看菜单</span>
+                <span className="block text-ui text-ink">自动带上菜单</span>
                 <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-                  允许模型先写
-                  <code className="mx-1 bg-sunken px-1">[瑞幸菜单:拿铁|美式]</code>
-                  查附近门店的商品和价格，看完再点。那一趟你看不见。
-                  <strong className="text-ink-soft">每查一次要多问模型一轮</strong>
-                  ，那一轮的花费翻倍，所以默认关。
+                  你聊到咖啡、又没有进行中的订单时，先查一次离你最近那家店的菜单（商品、价格、规格）放进提示词，
+                  你说「随便」角色也能从菜单里替你挑。点完单就不再带了。
+                  菜单大约多几百 token，同一家店 30 分钟内用缓存；第一次要多等一两秒。关掉的话角色凭自己知道的菜单点。
                 </span>
               </span>
-              <Switch checked={Boolean(lk.menu)} onChange={(v) => set({ menu: v })} label="先看菜单" />
+              <Switch checked={lk.menu !== false} onChange={(v) => set({ menu: v })} label="自动带上菜单" />
             </label>
 
             <label className="flex items-start justify-between gap-4">

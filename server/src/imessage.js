@@ -128,16 +128,17 @@ import {
   draftOrder,
   linesText,
   luckinReady,
-  menuText,
+  autoMenuText,
+  luckinWanted,
   money as luckinMoney,
   orderStatus,
   parseOrderSpec,
   placeOrder,
   resolveLocation,
 } from "./luckin.js";
-import { findOrder, putOrder } from "./luckinstore.js";
+import { findOrder, putOrder, readOrders } from "./luckinstore.js";
 import { orderLogo } from "./orderlogos.js";
-import { parseSearchQueries, runSearch, stripSearchTags, stripXmlBlocks } from "./websearch.js";
+import { parseSearchQueries, runSearch, stripSearchTags } from "./websearch.js";
 import {
   injectToolPrompt,
   nativeFollowNote,
@@ -3326,12 +3327,22 @@ async function handleTurn(
 
   // 提示词组装：预设的条目顺序 + 世界书 + 裁剪过的上文，见 prompt.js。
   // 天气单独传 —— 它只进这一份，不进 history
+  // 瑞幸那条子条目这轮给什么（菜单要在调模型之前查好，见 luckinPromptState）
+  const luckin = await luckinPromptState(
+    runner,
+    freshConfig,
+    freshRole,
+    peer,
+    runner.history.get(sessionId) ?? [],
+    scopeOf(runner, "瑞幸")
+  );
   const built = await buildPrompt(
     freshConfig,
     freshRole,
     user,
     runner.history.get(sessionId) ?? [],
-    weatherNote
+    weatherNote,
+    { luckin }
   );
   const { params, preset, worldInfo } = built;
   // buildPrompt 裁剪过上文，把结果写回内存 —— 以前是 buildMessages 里做的
@@ -3465,29 +3476,6 @@ async function handleTurn(
     throw e;
   }
 
-  /*
-   * 瑞幸「先看菜单」：回复里写了 `[瑞幸菜单:…]` 就查商品和价格再问一次
-   * （见 luckinMenuRound）。角色上那个开关关着时直接跳过，标记由 splitMedia 吞掉。
-   */
-  try {
-    const menued = await luckinMenuRound(reply, {
-      runner,
-      role: freshRole,
-      config: freshConfig,
-      eps,
-      params,
-      messages,
-      scope,
-      llmScope,
-      peer,
-      onPrompt: (followUp) => notePrompt(promptMeta, followUp),
-    });
-    if (menued !== null) reply = menued;
-  } catch (e) {
-    logError(llmScope, "看完瑞幸菜单之后那次生成失败，这一轮没能拿到回复", e);
-    await respondingWhile(space, () => notifyFailure(runner, space, "这条消息没回上来", e), runner);
-    throw e;
-  }
 
   /*
    * 查岗：回复里写了 `[查岗实时电脑屏幕]` / `[查岗实时手机屏幕]` 就真去抓一张
@@ -5658,6 +5646,53 @@ function notePeerLocation(runner, peer, text) {
   if (m) runner.luckinLoc?.set(peerKeyOf(peer), { lat: Number(m[1]), lon: Number(m[2]) });
 }
 
+/** 下完单多久之内算「刚点过」，这段时间里不再带菜单和完整说明。 */
+const LUCKIN_DONE_MS = 3 * 3600_000;
+
+/**
+ * 这一轮瑞幸那条子条目该注入什么（交给 prompt.js:formatBlock）。
+ *
+ *  - 这段对话有一张还在等确认的订单卡片 → 完整说明 + 那一单（对方说「换成热的」时角色能改）；
+ *  - 刚下过单（3 小时内）→ 只给一句话：点完就不注入了；
+ *  - 聊到咖啡 → 完整说明，开了「自动带上菜单」就先查附近门店的菜单一起放进去；
+ *  - 都不是 → 一句话。
+ *
+ * 查菜单失败不拦这一轮，当没菜单。
+ *
+ * @returns {Promise<{mode:"full"|"short"|"done", extra?:string}|undefined>} 没开瑞幸返回 undefined
+ */
+async function luckinPromptState(runner, config, role, peer, history, scope) {
+  if (!role?.luckin?.enabled) return undefined;
+  const key = peerKeyOf(peer);
+  const mine = readOrders(memoryKeyFor(role)).filter((o) => o?.peerKey === key);
+  const last = mine[mine.length - 1];
+  if (last?.state === "pending") {
+    const mins = clampInt(role.luckin.confirmMinutes, 30, 1, 240);
+    if (Date.now() - Number(last.createdAt ?? 0) <= mins * 60_000) {
+      return {
+        mode: "full",
+        extra:
+          `现在有一张还没确认的订单：${linesText(last.lines)}，${luckinMoney(last.total)}，${last.shopName}。` +
+          "对方要改的话重新写一个 [瑞幸:…]，新卡片会替代这张。",
+      };
+    }
+  }
+  const doneAt = Number(last?.orderedAt ?? last?.updatedAt ?? 0);
+  if (["ordered", "ready"].includes(last?.state) && Date.now() - doneAt < LUCKIN_DONE_MS) {
+    return { mode: "done" };
+  }
+  if (!luckinWanted(history)) return { mode: "short" };
+  if (!role.luckin.menu || !luckinReady(config)) return { mode: "full" };
+  const loc = await luckinLocation(runner, { peer, config, role }, scope);
+  if (!loc) return { mode: "full", extra: "（不知道对方在哪儿，查不了附近门店的菜单。）" };
+  try {
+    return { mode: "full", extra: await autoMenuText(config, loc, scope) };
+  } catch (e) {
+    logWarn(scope, "瑞幸菜单没查到，这轮不带菜单", e);
+    return { mode: "full" };
+  }
+}
+
 /**
  * 执行一个 `[瑞幸:…]`：查店、配单、算价，发一张「待确认」的订单卡片。
  *
@@ -5877,62 +5912,6 @@ function armLuckinPoll(getConfig, runner, roleKey, order, space, spaceId, peer) 
     else logInfo(scope, "查了 45 分钟还没有取餐码（多半没付款），不查了");
   };
   runner.luckinPoll?.set(id, setTimeout(tick, LUCKIN_POLL_MS));
-}
-
-/**
- * 「先看菜单」那一趟：回复里写了 `[瑞幸菜单:拿铁|美式]` 就去查，商品和价格接在后面
- * 再问一次。和 searchRound 同一个形态 —— 不进 history、不进存档，只在副本上加东西。
- *
- * @returns {Promise<string|null>} 第二次的回复；这轮没写菜单标记时返回 null
- */
-async function luckinMenuRound(
-  reply,
-  { runner, role, config, eps, params, messages, scope, llmScope, peer, onPrompt }
-) {
-  if (!role?.luckin?.enabled || !role.luckin.menu || !luckinReady(config)) return null;
-  const m = /[[［]\s*(?:瑞幸菜单|luckin_menu)\s*[:：]\s*([^\]］]{1,120}?)\s*[\]］]/i.exec(stripXmlBlocks(reply));
-  if (!m) return null;
-  let body = m[1];
-  let store = "";
-  const at = body.search(/[@＠]/);
-  if (at >= 0) {
-    store = body.slice(at + 1).trim();
-    body = body.slice(0, at);
-  }
-  const queries = body
-    .split(/[|｜,，、]/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .slice(0, 3);
-  if (!queries.length) return null;
-  logInfo(scope, `角色要先看瑞幸菜单：${queries.join(" / ")}`);
-
-  let text;
-  const loc = await luckinLocation(runner, { peer, config, role }, scope);
-  if (!loc) text = "不知道对方在哪儿，查不了门店。";
-  else {
-    try {
-      text = await menuText(config, loc, queries, store, scope);
-    } catch (e) {
-      text = `没查到：${String(e?.message ?? e)}`;
-    }
-  }
-  logInfo(llmScope, "瑞幸菜单注入（只注入这一次）", text);
-
-  const followUp = [
-    ...messages,
-    { role: "assistant", content: reply },
-    {
-      role: "user",
-      content:
-        `<瑞幸菜单>\n${text}\n</瑞幸菜单>\n\n上面是刚查到的商品和价格。现在正式回答对方，` +
-        "要点就写 [瑞幸:…]，别再写 [瑞幸菜单:…]。照你原来的格式回答（预设里要求的思考块、气泡分隔这些照旧写）。",
-    },
-  ];
-  onPrompt?.(followUp);
-  const { content } = await chatWithFallback(eps.chat, eps.fallback, followUp, params);
-  logInfo(llmScope, `看完菜单后的回复 ${content.length} 字`, content);
-  return content;
 }
 
 /**

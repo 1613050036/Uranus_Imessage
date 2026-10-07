@@ -1841,8 +1841,9 @@ function normalizeTransfer(input) {
  * **默认关**：开着就意味着这个角色能替用户下真单（虽然最后一步要用户贴 emoji
  * 确认），这只能由用户自己决定。
  *
- *  - menu：「先看菜单」—— 模型能先写 `[瑞幸菜单:拿铁]` 查商品和价格，看完再点。
- *    默认关：每查一次要多问模型一轮，这一轮的花费翻倍。
+ *  - menu：「自动带上菜单」—— 聊到咖啡、又没有进行中的订单时，调模型之前先查附近门店的
+ *    菜单（商品 + 价格 + 规格）放进提示词，角色一次就能挑。默认开；关掉省那几百 token，
+ *    角色凭自己知道的菜单点。
  *  - pickupNotify：下单后隔一会儿查一次订单，查到取餐码就让角色告诉对方。
  *    默认关：查到之后要起一轮回复，花 token。
  *  - confirmMinutes：订单卡片多久之内贴 emoji 算数。超了卡片改成「已失效」，不下单 ——
@@ -1852,7 +1853,7 @@ function normalizeTransfer(input) {
 function normalizeLuckin(input) {
   return {
     enabled: Boolean(input?.enabled),
-    menu: Boolean(input?.menu),
+    menu: input?.menu === undefined ? true : Boolean(input.menu),
     pickupNotify: Boolean(input?.pickupNotify),
     confirmMinutes: clampInt(input?.confirmMinutes, 30, 1, 240),
     appName: str(input?.appName).slice(0, 40),

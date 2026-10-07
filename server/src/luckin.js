@@ -575,6 +575,62 @@ export async function menuText(config, loc, queries, storeHint, scope = "瑞幸"
   return `门店：${shop.name}${shop.address ? `（${shop.address}）` : ""}\n${blocks.join("\n")}`;
 }
 
+/** 自动带上菜单时搜哪些词。瑞幸没有「整张菜单」接口，只能按词搜再合并。 */
+const MENU_KEYWORDS = ["拿铁", "美式", "生椰", "厚乳", "茶", "果咖", "冰萃", "新品"];
+
+/** 一家店的菜单缓存多久。连续几轮聊咖啡不用每轮都去查。 */
+const MENU_TTL_MS = 30 * 60_000;
+
+/** 最多列几款。再多提示词就太长了。 */
+const MENU_MAX = 40;
+
+/** deptId → { at, text } */
+const menuCache = new Map();
+
+/**
+ * 「自动带上菜单」：找到最近的店，按 MENU_KEYWORDS 搜一遍、按 skuCode 去重，
+ * 拼成一段给模型看的菜单。同一家店 30 分钟内直接用缓存。
+ *
+ * 一个词搜失败不影响别的词；全部失败才抛错（调用方当这轮没菜单）。
+ */
+export async function autoMenuText(config, loc, scope = "瑞幸") {
+  const shop = await findShop(config, loc, "", scope);
+  const hit = menuCache.get(String(shop.deptId));
+  if (hit && Date.now() - hit.at < MENU_TTL_MS) return hit.text;
+
+  const results = await Promise.allSettled(
+    MENU_KEYWORDS.map((q) => searchProducts(config, shop.deptId, q, scope))
+  );
+  if (results.every((r) => r.status === "rejected")) throw results[0].reason;
+  const seen = new Set();
+  const rows = [];
+  for (const r of results) {
+    if (r.status !== "fulfilled") continue;
+    for (const p of r.value) {
+      const name = p?.productName ?? p?.name;
+      const key = String(p?.skuCode ?? name ?? "");
+      if (!name || seen.has(key) || rows.length >= MENU_MAX) continue;
+      seen.add(key);
+      const groups = (Array.isArray(p.productAttrs) ? p.productAttrs : [])
+        .map((g) =>
+          (Array.isArray(g?.productSubAttrs) ? g.productSubAttrs : [])
+            .map((x) => x?.attributeName)
+            .filter(Boolean)
+            .join("/")
+        )
+        .filter(Boolean)
+        .join("；");
+      rows.push(`- ${name} ${money(p.estimatePrice ?? p.initialPrice)}${groups ? `（${groups}）` : ""}`);
+    }
+  }
+  const text = rows.length
+    ? `离对方最近的门店：${shop.name}。这家现在能点的（名字 价格（可选规格））：\n${rows.join("\n")}`
+    : `离对方最近的门店：${shop.name}，没查到在售商品。`;
+  menuCache.set(String(shop.deptId), { at: Date.now(), text });
+  logInfo(scope, `查好了 ${shop.name} 的菜单（${rows.length} 款），缓存 30 分钟`);
+  return text;
+}
+
 /** 订单里那几杯写成一行（「生椰拿铁 大杯/少冰 ×1、美式 ×2」）。 */
 export function linesText(lines) {
   return (lines ?? [])
@@ -590,12 +646,6 @@ export function linesText(lines) {
  */
 export const LUCKIN_SHORT_HINT =
   "你能帮对方点瑞幸咖啡（对方聊到想喝咖啡时，完整的写法会告诉你）。";
-
-/** 「先看菜单」那段，换进完整说明里的 {{瑞幸菜单变量}}。角色没开就换成空串。 */
-export const LUCKIN_MENU_PARA =
-  "拿不准菜单上有什么、多少钱时，可以先写 [瑞幸菜单:关键词]（几个词用 | 隔开，最多三个），" +
-  "这条不会发给对方，系统查到附近门店的商品和价格后会再给你看，你看完再写 [瑞幸:…]。" +
-  "能直接点就直接点，别每次都先查。";
 
 /** 聊到咖啡的那些词。宽一点无所谓：判错的代价只是这一轮多带两百字。 */
 const WANT_RE = /瑞幸|luckin|咖啡|拿铁|美式|生椰|厚乳|橙c|摩卡|卡布|澳白|冷萃|奶咖|点(?:一)?杯|来(?:一)?杯|喝点|下午茶|提神|犯困/i;
