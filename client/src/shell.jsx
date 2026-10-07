@@ -34,6 +34,7 @@ import { PresetPanel } from "./panels/preset.jsx";
 import { RolePanel } from "./panels/role.jsx";
 import { TheaterPanel } from "./panels/theater.jsx";
 import { RemindersPanel } from "./panels/reminders.jsx";
+import { CustomCssPanel, useCustomCss } from "./customcss.jsx";
 import { PhonePanel } from "./panels/phone.jsx";
 import { SetupButton, SetupWizard, useAutoOpenSetup } from "./panels/setup.jsx";
 import { GlobalSearch } from "./search.jsx";
@@ -292,6 +293,8 @@ export function SectionList({ section, groups, itemId, onPick, onAnchor }) {
 
 export function AppShell() {
   const { config, loadError } = useConfig();
+  // 自定义 CSS（控制台 / 查手机）：登录进来就注入，网址带 ?nocss 时跳过
+  useCustomCss();
   const [tab, setTab] = useState("role");
   // 每个分区各记一个选中条目 —— 切走再切回来应该还停在原处
   const [picked, setPicked] = useState({});
@@ -701,6 +704,7 @@ export function AppShell() {
                       <ServicePanel />
                       <BackupPanel />
                       <CloudBackupPanel />
+                      <CustomCssPanel />
                     </>
                   )}
                 </div>

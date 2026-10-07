@@ -1894,7 +1894,16 @@ export function IPhone(props) {
 
   const device = (
     <div style={{ width: DEV_W * scale, height: DEV_H * scale }}>
-      <div style={{ width: DEV_W, height: DEV_H, transform: `scale(${scale})`, transformOrigin: "top left" }}>
+      {/*
+        .uranus-phone 是自定义 CSS 的挂点（customcss.jsx 把手机那份包在它里面）；
+        data-app / data-locked 让用户能按「开着哪个 App」「是不是锁屏」分别写样式
+      */}
+      <div
+        className="uranus-phone"
+        data-app={locked ? undefined : open ?? "home"}
+        data-locked={locked ? "" : undefined}
+        style={{ width: DEV_W, height: DEV_H, transform: `scale(${scale})`, transformOrigin: "top left" }}
+      >
         <Device {...props} locked={locked} setLocked={setLocked} open={open} setOpen={setOpen} />
       </div>
     </div>

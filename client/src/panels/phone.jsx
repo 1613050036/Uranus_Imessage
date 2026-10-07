@@ -164,6 +164,7 @@ export function PhonePanel() {
           />
           <p className="mx-auto mt-5 max-w-[400px] text-center text-meta leading-relaxed text-ink-meta">
             点屏幕解锁，生成和各种设置都在手机里的「设置」App。App 里点底部横条回桌面，右上角可以全屏看。
+            想换手机的样子，在「控制台 → 自定义 CSS」里贴 CSS。
           </p>
         </>
       )}

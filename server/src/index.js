@@ -75,6 +75,7 @@ import { mcdAddresses } from "./mcd.js";
 import { mountTheater } from "./theater.js";
 import { mountPhone } from "./phonecheck.js";
 import { mountReminders } from "./reminderapi.js";
+import { mountCustomCss } from "./customcss.js";
 import {
   assistantGreeting,
   buildAssistantMessages,
@@ -1327,6 +1328,8 @@ mountTheater(app, loadConfig);
 mountPhone(app, loadConfig);
 // 定时提醒的面板（条目在 data/reminders.json，不走 /api/config）
 mountReminders(app, loadConfig);
+// 控制台 / 查手机的自定义 CSS（data/custom-css.json，不走 /api/config）
+mountCustomCss(app);
 
 /**
  * 测试一台 MCP 服务器：连上、握手、列工具。前端传的是界面上那份（可能还没保存），
