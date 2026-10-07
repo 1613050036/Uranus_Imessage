@@ -5674,19 +5674,18 @@ function orderLayout(order) {
   const b = ORDER_BRANDS[brand];
   const label = ORDER_STATE_LABEL[order.state] ?? order.state;
   const items = linesText(order.lines);
-  const memo = order.remark ? ` · 备注：${order.remark}` : "";
-  // 角色的悄悄话放在最前面，商品跟在后面（槽位不够长时先截掉的是商品尾巴，不是这句话）
-  const note = order.note ? `「${order.note}」 ` : "";
+  // 备注放在最前面，商品跟在后面（槽位不够长时先截掉的是商品尾巴，不是这句话）
+  const note = order.remark ? `「${order.remark}」 ` : "";
   const where = order.orderType === 2 ? `外送 · ${order.shopName}` : order.shopName;
   const tail = order.pickupCode ? `取餐码 ${order.pickupCode}` : where;
   return {
     caption: `${b.label} ${luckinMoney(order.total)}`,
-    subcaption: `${note}${items}${memo}`.slice(0, 160),
+    subcaption: `${note}${items}`.slice(0, 160),
     trailingCaption: label,
     ...(tail ? { trailingSubcaption: String(tail).slice(0, 60) } : {}),
     image: orderLogo(brand),
     imageTitle: orderAppName(brand, order.appName),
-    summary: `${b.label}订单 ${luckinMoney(order.total)} · ${items}${memo}（${label}）`.slice(0, 300),
+    summary: `${b.label}订单 ${luckinMoney(order.total)} · ${note}${items}（${label}）`.slice(0, 300),
   };
 }
 

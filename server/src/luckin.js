@@ -266,10 +266,9 @@ export function parseOrderSpec(text) {
   let body = String(text ?? "").trim();
   let store = "";
   /*
-   * 两种附言，各管各的，前后顺序随意：
-   *  - `#不要吸管`：给店里的备注，写进订单（两家的下单接口都有 remark，最多 50 字）；
-   *  - `~天气冷了，喝点暖的`：角色写给对方的悄悄话，**只上卡片、不进订单** ——
-   *    店员和骑手看到「宝宝喝点暖的」不合适。
+   * `#备注`：卡片上写什么，订单上就是什么（两家的下单接口都有 remark，最多 50 字）。
+   * 冷热糖度这些有规格可选，备注留给角色写给对方的话（「天气冷了，宝宝喝点暖的」），
+   * 对方拿到手在小票 / 杯贴上还能看到。`~` 是 1.14.1 早先那版的写法，当成同一个东西认。
    */
   const take = (marks) => {
     const m = new RegExp(`[${marks}]([^#＃~～@＠]*)`).exec(body);
@@ -277,8 +276,7 @@ export function parseOrderSpec(text) {
     body = body.replace(m[0], "");
     return m[1].trim();
   };
-  const note = take("~～").slice(0, 60);
-  const remark = take("#＃").slice(0, 50);
+  const remark = [take("#＃"), take("~～")].filter(Boolean).join(" ").slice(0, 50);
   const at = body.search(/[@＠]/);
   if (at >= 0) {
     store = body.slice(at + 1).trim();
@@ -295,7 +293,7 @@ export function parseOrderSpec(text) {
     items.push({ name, qty, specs: specs.filter(Boolean) });
     if (items.length >= MAX_ITEMS) break;
   }
-  return { items, store, remark, note };
+  return { items, store, remark };
 }
 
 /* ================= 位置 ================= */
@@ -668,7 +666,6 @@ async function draftAt(config, shop, spec, loc, scope) {
     privilege: num(preview?.privilegeMoney),
     coupons: Array.isArray(preview?.couponCodeList) ? preview.couponCodeList : [],
     remark: spec.remark ?? "",
-    note: spec.note ?? "",
     missed,
     missingItems,
   };
