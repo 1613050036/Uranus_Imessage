@@ -307,6 +307,7 @@ export async function draftMcdOrder(config, spec, opts, scope = "麦当劳") {
     delivery: (yuanFromFen(p?.deliveryPrice) ?? 0) + (yuanFromFen(p?.packingPrice) ?? 0) || null,
     takeWayCode: String(tw?.takeWayCode ?? tw?.code ?? ""),
     remark: spec.remark ?? "",
+    note: spec.note ?? "",
     missed,
   };
 }

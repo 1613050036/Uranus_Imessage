@@ -265,13 +265,20 @@ export const money = (v) => {
 export function parseOrderSpec(text) {
   let body = String(text ?? "").trim();
   let store = "";
-  let remark = "";
-  // `#` 后面是备注，写在最后：`生椰拿铁|大杯@万象城#不要吸管`
-  const hash = body.search(/[#＃]/);
-  if (hash >= 0) {
-    remark = body.slice(hash + 1).trim().slice(0, 50);
-    body = body.slice(0, hash);
-  }
+  /*
+   * 两种附言，各管各的，前后顺序随意：
+   *  - `#不要吸管`：给店里的备注，写进订单（两家的下单接口都有 remark，最多 50 字）；
+   *  - `~天气冷了，喝点暖的`：角色写给对方的悄悄话，**只上卡片、不进订单** ——
+   *    店员和骑手看到「宝宝喝点暖的」不合适。
+   */
+  const take = (marks) => {
+    const m = new RegExp(`[${marks}]([^#＃~～@＠]*)`).exec(body);
+    if (!m) return "";
+    body = body.replace(m[0], "");
+    return m[1].trim();
+  };
+  const note = take("~～").slice(0, 60);
+  const remark = take("#＃").slice(0, 50);
   const at = body.search(/[@＠]/);
   if (at >= 0) {
     store = body.slice(at + 1).trim();
@@ -288,7 +295,7 @@ export function parseOrderSpec(text) {
     items.push({ name, qty, specs: specs.filter(Boolean) });
     if (items.length >= MAX_ITEMS) break;
   }
-  return { items, store, remark };
+  return { items, store, remark, note };
 }
 
 /* ================= 位置 ================= */
@@ -661,6 +668,7 @@ async function draftAt(config, shop, spec, loc, scope) {
     privilege: num(preview?.privilegeMoney),
     coupons: Array.isArray(preview?.couponCodeList) ? preview.couponCodeList : [],
     remark: spec.remark ?? "",
+    note: spec.note ?? "",
     missed,
     missingItems,
   };
