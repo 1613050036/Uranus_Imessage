@@ -403,31 +403,71 @@ export function nameScore(want, got) {
 }
 
 /** 挑一家店。写了门店词先按词查，查不到再退回「离这儿最近的」。 */
-export async function findShop(config, loc, storeHint, scope) {
+/** 一单最多换几家店试。再远就不算「附近」了。 */
+const MAX_SHOPS = 3;
+
+/**
+ * 附近营业中的店，近的在前，最多 MAX_SHOPS 家。写了门店词就只回按词查到的那几家。
+ *
+ * 实测附近八家里七家「打烊中」也照样列出来，而且按距离排 —— 最近那家往往打烊了。
+ * 有 workStatus 就只挑营业中的；一家营业的都没有就直说，别给人点一杯取不到的。
+ */
+export async function findShops(config, loc, storeHint, scope) {
   const base = { longitude: loc.lon, latitude: loc.lat };
   let list = [];
   if (storeHint) list = asList(await callLuckin(config, "queryShopList", { ...base, deptName: storeHint }, scope));
   if (!list.length) list = asList(await callLuckin(config, "queryShopList", base, scope));
-  /*
-   * 实测附近八家里七家「打烊中」也照样列出来，而且按距离排 —— 最近那家往往打烊了。
-   * 有 workStatus 就只挑营业中的；一家营业的都没有就直说，别给人点一杯取不到的。
-   */
   const all = list.filter((s) => s?.deptId != null);
-  const open = all.filter((s) => !s.workStatus || /营业/.test(String(s.workStatus)));
-  const shop = open[0];
-  if (!shop) {
+  const open = all
+    .filter((s) => !s.workStatus || /营业/.test(String(s.workStatus)))
+    .sort((a, b) => (num(a.distance) ?? 0) - (num(b.distance) ?? 0));
+  if (!open.length) {
     throw new LuckinError(all.length ? "附近的瑞幸现在都打烊了" : "附近没查到瑞幸门店");
   }
-  return {
+  return open.slice(0, storeHint ? 1 : MAX_SHOPS).map((shop) => ({
     deptId: shop.deptId,
     name: String(shop.deptName ?? shop.shopName ?? `门店 ${shop.deptId}`),
     address: String(shop.address ?? shop.deptAddress ?? ""),
-  };
+    distance: num(shop.distance),
+  }));
+}
+
+/** 最近那一家营业中的店。 */
+export async function findShop(config, loc, storeHint, scope) {
+  return (await findShops(config, loc, storeHint, scope))[0];
 }
 
 /** 搜一个关键词，返回商品列表（原样，字段见文件头）。 */
 export async function searchProducts(config, deptId, query, scope) {
   return asList(await callLuckin(config, "searchProductForMcp", { deptId, query }, scope));
+}
+
+/**
+ * 在一家店里找一款饮品，找不到返回 null。
+ *
+ * **`fallback: true` 的不算**：瑞幸的搜索是推荐式的，这家店没有这款时不回空，而是回几款
+ * 「你可能想要」并打上 fallback（实测搜「厚乳拿铁」「酱香拿铁」回的都是生椰拿铁、小黄油拿铁）。
+ * 以前没认这个标记，要么把人要的换成了别的，要么说缺货。
+ *
+ * 名字里带了括号（模型照菜单抄的「生椰拿铁（原创）」）或者对不上时，去掉括号再搜一次。
+ */
+async function findProduct(config, deptId, name, scope) {
+  const pick = (found) =>
+    found
+      .filter((p) => p?.productId != null && p?.skuCode && !p.fallback)
+      .map((p) => ({ p, s: nameScore(name, p.productName ?? p.name) }))
+      .sort((x, y) => y.s - x.s)[0];
+  /*
+   * 对不太上就当没有 —— 宁可说没找到，也不给人点一杯别的。
+   * 门槛 35：实测这家店不卖厚乳拿铁时，搜「厚乳拿铁」回的是生椰拿铁，两个只共用「拿铁」
+   * 两个字（25 分），门槛低了就会把人要的厚乳换成生椰。
+   */
+  let best = pick(await searchProducts(config, deptId, name, scope));
+  const bare = name.replace(/[（(][^）)]*[）)]/g, "").trim();
+  if ((!best || best.s < 35) && bare && bare !== name) {
+    best = pick(await searchProducts(config, deptId, bare, scope));
+  }
+  return best && best.s >= 35 ? best.p : null;
 }
 
 /** 已选规格拼成一串（「冰 / 大杯 / 少甜」）。 */
@@ -527,25 +567,52 @@ async function applySpecs(config, deptId, product, specs, qty, scope) {
  * @returns {Promise<object>} 存进 luckinstore 的那份订单草稿（还没下单）
  */
 export async function draftOrder(config, spec, loc, scope = "瑞幸") {
-  const shop = await findShop(config, loc, spec.store, scope);
-  const lines = [];
-  const missed = [];
-  for (const item of spec.items) {
-    const found = await searchProducts(config, shop.deptId, item.name, scope);
-    const best = found
-      .filter((p) => p?.productId != null && p?.skuCode)
-      .map((p) => ({ p, s: nameScore(item.name, p.productName ?? p.name) }))
-      .sort((x, y) => y.s - x.s)[0];
-    /*
-     * 对不太上就当没有 —— 宁可说没找到，也不给人点一杯别的。
-     * 门槛 35：实测这家店不卖厚乳拿铁时，搜「厚乳拿铁」回的是生椰拿铁，两个只共用「拿铁」
-     * 两个字（25 分），门槛低了就会把人要的厚乳换成生椰。
-     */
-    if (!best || best.s < 35) {
-      missed.push(`没找到「${item.name}」`);
+  /*
+   * 每家店的货不一样（小程序里那家有、最近这家没有很常见），而且同一款也会某家售罄。
+   * 所以近的先试，缺了哪款、或者算价时说售罄，就换下一家营业中的（最多 MAX_SHOPS 家）。
+   * 都配不齐就用配得最全的那家，缺的告诉角色。点名了门店（@XX）的只试那一家。
+   */
+  const shops = await findShops(config, loc, spec.store, scope);
+  let best = null;
+  let lastErr = null;
+  for (const shop of shops) {
+    let draft;
+    try {
+      draft = await draftAt(config, shop, spec, loc, scope);
+    } catch (e) {
+      if (!(e instanceof LuckinError)) throw e;
+      lastErr = e;
+      logDebug(scope, `${shop.name} 配不了：${e.message}`);
       continue;
     }
-    const { product, missed: m } = await applySpecs(config, shop.deptId, best.p, item.specs, item.qty, scope);
+    if (!best || draft.lines.length > best.lines.length) best = draft;
+    if (!draft.missingItems) break;
+    logDebug(scope, `${shop.name} 缺 ${draft.missingItems} 款，换下一家试试`);
+  }
+  // 几家都试过还是没有：多半是季节限定已经下架，说清楚，别让角色跟人说「缺货」
+  const tried = shops.length > 1 ? `附近 ${shops.length} 家店都没有` : "这家店没有";
+  const plain = (t) => t.replace(/^没找到「(.+)」$/, `${tried}「$1」（可能是季节限定已经下架，或者名字和菜单上的不一样）`);
+  if (!best) throw new LuckinError(plain(String(lastErr?.message ?? "一杯都没配出来")));
+  best.missed = best.missed.map(plain);
+  if (best.deptId !== shops[0].deptId) {
+    best.missed.unshift(`最近的${shops[0].name}没有，换到了${best.shopName}（远一点）`);
+  }
+  return best;
+}
+
+/** 在一家店里把整单配好、算价。一款都配不出来或者算价报售罄时抛 LuckinError。 */
+async function draftAt(config, shop, spec, loc, scope) {
+  const lines = [];
+  const missed = [];
+  let missingItems = 0;
+  for (const item of spec.items) {
+    const found = await findProduct(config, shop.deptId, item.name, scope);
+    if (!found) {
+      missed.push(`没找到「${item.name}」`);
+      missingItems += 1;
+      continue;
+    }
+    const { product, missed: m } = await applySpecs(config, shop.deptId, found, item.specs, item.qty, scope);
     if (m.length) missed.push(`「${item.name}」没有 ${m.join("、")} 这个选项`);
     lines.push({
       productId: product.productId,
@@ -559,7 +626,16 @@ export async function draftOrder(config, spec, loc, scope = "瑞幸") {
   if (!lines.length) throw new LuckinError(missed.join("；") || "一杯都没配出来");
 
   const productList = lines.map((l) => ({ amount: l.qty, productId: l.productId, skuCode: l.skuCode }));
-  const preview = await callLuckin(config, "previewOrder", { deptId: shop.deptId, productList }, scope);
+  let preview;
+  try {
+    preview = await callLuckin(config, "previewOrder", { deptId: shop.deptId, productList }, scope);
+  } catch (e) {
+    // 售罄 / 库存不足 / 不可售：这家不行，让外面换下一家
+    if (/售罄|缺货|库存|不可售|已下架/.test(String(e?.message))) {
+      throw new LuckinError(`${shop.name}：${String(e.message).replace(/^previewOrder 失败：/, "")}`);
+    }
+    throw e;
+  }
 
   // previewOrder 回显的商品名和规格更准（到手价也在里面），有就用它的
   const info = Array.isArray(preview?.productInfoList) ? preview.productInfoList : [];
@@ -586,6 +662,7 @@ export async function draftOrder(config, spec, loc, scope = "瑞幸") {
     coupons: Array.isArray(preview?.couponCodeList) ? preview.couponCodeList : [],
     remark: spec.remark ?? "",
     missed,
+    missingItems,
   };
 }
 
@@ -678,6 +755,7 @@ export async function autoMenuText(config, loc, scope = "瑞幸") {
     for (const p of r.value) {
       const name = p?.productName ?? p?.name;
       const key = String(p?.skuCode ?? name ?? "");
+      // fallback 是「这家没有你搜的，给你推荐别的」，同样是真在卖的，照收；只是别重复
       if (!name || seen.has(key) || rows.length >= MENU_MAX) continue;
       seen.add(key);
       rows.push(`- ${name} ${money(p.estimatePrice ?? p.initialPrice)}`);
