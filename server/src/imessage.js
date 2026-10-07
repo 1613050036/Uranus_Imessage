@@ -5832,7 +5832,8 @@ async function sendOrderPart(runner, space, part, ctx) {
     "",
     "",
     `[系统提示:${b.label}订单卡片已发出：${linesText(order.lines)}，实付 ${luckinMoney(order.total)}${fee}，` +
-      `${order.orderType === 2 ? "外送，" : ""}${order.shopName}，等{{user}}点回应确认${extra}]`
+      `${order.orderType === 2 ? `外送到「${order.shopAddress}」，` : ""}${order.shopName}，等{{user}}点回应确认${extra}。` +
+      `提醒{{user}}先看看${order.orderType === 2 ? "送餐地址对不对" : "这家店是不是离自己最近、方便去取的那家"}，确认没问题再点，免得下错单]`
   );
   return true;
 }
