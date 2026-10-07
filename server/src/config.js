@@ -1870,6 +1870,8 @@ function normalizeMcd(input) {
   return {
     enabled: Boolean(input?.enabled),
     mode: input?.mode === "pickup" ? "pickup" : "delivery",
+    // 自动领券：配单 / 查菜单前把麦麦省里能领的券领进账号（不花钱，6 小时一次），默认开
+    autoCoupon: input?.autoCoupon === undefined ? true : Boolean(input.autoCoupon),
     // 外送送到麦当劳账号里的哪个地址。空着 = 按「你」里的常用地址猜（mcd.js:pickAddress）
     addressId: str(input?.addressId).slice(0, 80),
     menu: input?.menu === undefined ? true : Boolean(input.menu),

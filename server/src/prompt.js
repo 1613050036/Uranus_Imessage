@@ -279,6 +279,12 @@ function formatBlock(entry, fill, role, config, sent, orders = {}) {
        *  - 没传（主动消息这类）：按 luckinWanted 判，不带菜单。
        */
       const full = luckin ? luckin.mode === "full" : (mcd ? mcdWanted : luckinWanted)(sent);
+      // 刚下过单：不带菜单和完整说明，只带「刚点了什么、怎么取消」那一句
+      if (luckin?.mode === "done" && luckin.extra) {
+        marks.push(`<${tag}>${luckin.extra}</${tag}>`);
+        kinds.push(child.kind);
+        continue;
+      }
       text = full
         ? text
             .replace(/\{\{\s*(?:瑞幸|麦当劳)菜单变量\s*\}\}/g, luckin?.extra ?? "")

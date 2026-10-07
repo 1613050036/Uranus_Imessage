@@ -612,6 +612,12 @@ export async function placeOrder(config, draft, scope = "瑞幸") {
   };
 }
 
+/** 取消一单（cancelOrder）。 */
+export async function cancelLuckinOrder(config, orderId, scope = "瑞幸") {
+  await callLuckin(config, "cancelOrder", { orderId: String(orderId) }, scope);
+  logInfo(scope, `取消了瑞幸订单 ${orderId}`);
+}
+
 /**
  * 在订单详情里找取餐码。字段名文档里没写死，按名字认：takeMealCode / pickupCode /
  * takeCode 这一类，递归找第一个。

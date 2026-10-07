@@ -189,6 +189,8 @@ const MEDIA_TAG = new RegExp(
     "[[［]\\s*(?:music|song|音乐|歌曲|点歌)\\s*[:：]\\s*(?<music>[^\\]］]{1,120}?)\\s*[\\]］]",
     "[[［]\\s*(?:share_location|location|位置|定位|共享位置)\\s*[:：]\\s*(?<location>[^\\]］]{1,160}?)\\s*[\\]］]",
     "[[［]\\s*(?:reaction|react|tapback|回应|贴纸)\\s*[:：]\\s*(?<react>[^\\]］]{1,80}?)\\s*[\\]］]",
+    // 取消订单：[取消订单] / [取消订单:瑞幸]，排在瑞幸 / 麦当劳前面免得被当成点一样叫「取消订单」的东西
+    "[[［]\\s*(?:取消订单|cancel_order)\\s*(?:[:：]\\s*(?<cancelOrder>[^\\]］]{0,20}?))?\\s*[\\]］]",
     // 瑞幸两条，菜单那条得排前面，不然 `[瑞幸菜单:拿铁]` 会被当成「点一杯叫 菜单:拿铁 的咖啡」
     "[[［]\\s*(?:瑞幸菜单|luckin_menu)\\s*[:：]\\s*(?<luckinMenu>[^\\]］]{1,120}?)\\s*[\\]］]",
     "[[［]\\s*(?:瑞幸咖啡|瑞幸|luckin)\\s*[:：]\\s*(?<luckin>[^\\]］]{1,300}?)\\s*[\\]］]",
@@ -296,6 +298,9 @@ export function splitMedia(text) {
       const isLL = /^-?\d{1,3}(?:\.\d+)?\s*[,，]\s*-?\d{1,3}(?:\.\d+)?$/.test(tail);
       const name = (isLL ? body.slice(0, at) : body).trim();
       if (name) parts.push({ kind: "location", text: name, ll: isLL ? tail : "" });
+    } else if (m[0] && /^[[［]\s*(?:取消订单|cancel_order)/i.test(m[0])) {
+      // 不写品牌就是「最近那一单」，交给 imessage.js:cancelOrderPart 找
+      parts.push({ kind: "cancel_order", text: String(g.cancelOrder ?? "").trim() });
     } else if (g.luckinMenu !== undefined) {
       // 「先看菜单」在 imessage.js:luckinMenuRound 里消费，到这儿还剩的（第二次回复里
       // 又写了一遍、或者开关关着）一律吞掉，不当文字发出去
@@ -413,7 +418,8 @@ export function stripMediaTags(text, currency) {
         p.kind !== "vote" &&
         p.kind !== "poll_add" &&
         p.kind !== "luckin" &&
-        p.kind !== "mcd"
+        p.kind !== "mcd" &&
+        p.kind !== "cancel_order"
     )
     .map((p) => {
       if (p.kind === "transfer") return transferAsText(p, currency);

@@ -128,6 +128,7 @@ import {
   draftOrder,
   linesText,
   autoMenuText,
+  cancelLuckinOrder,
   brandReady,
   luckinWanted,
   money as luckinMoney,
@@ -137,7 +138,7 @@ import {
   resolveLocation,
 } from "./luckin.js";
 import { findOrder, putOrder, readOrders } from "./luckinstore.js";
-import { autoMcdMenuText, draftMcdOrder, mcdWanted, placeMcdOrder } from "./mcd.js";
+import { autoMcdMenuText, cancelMcdOrder, draftMcdOrder, mcdWanted, placeMcdOrder } from "./mcd.js";
 import { orderLogo } from "./orderlogos.js";
 import { parseSearchQueries, runSearch, stripSearchTags } from "./websearch.js";
 import {
@@ -5605,6 +5606,7 @@ const ORDER_STATE_LABEL = {
   ready: "待取餐",
   expired: "已失效",
   failed: "下单失败",
+  cancelled: "已取消",
 };
 
 /**
@@ -5619,6 +5621,7 @@ const ORDER_BRANDS = {
     what: "喝的",
     draft: (config, spec, loc, scope) => draftOrder(config, spec, loc, scope),
     place: (config, draft, scope) => placeOrder(config, draft, scope),
+    cancel: (config, orderId, scope) => cancelLuckinOrder(config, orderId, scope),
     menu: (config, loc, role, scope) => autoMenuText(config, loc, scope),
     wanted: (history) => luckinWanted(history),
     // 瑞幸没有收货地址，一定要知道人在哪儿才能找店
@@ -5629,12 +5632,18 @@ const ORDER_BRANDS = {
     app: "麦当劳",
     what: "吃的",
     draft: (config, spec, loc, scope, role, user) =>
-      draftMcdOrder(config, spec, { addressId: role?.mcd?.addressId, addressHint: user?.address }, scope),
+      draftMcdOrder(
+        config,
+        spec,
+        { addressId: role?.mcd?.addressId, addressHint: user?.address, claim: role?.mcd?.autoCoupon !== false },
+        scope
+      ),
     place: (config, draft, scope) => placeMcdOrder(config, draft, scope),
+    cancel: (config, orderId, scope) => cancelMcdOrder(config, orderId, scope),
     menu: (config, loc, role, scope, user) =>
       autoMcdMenuText(
         config,
-        { addressId: role?.mcd?.addressId, addressHint: user?.address },
+        { addressId: role?.mcd?.addressId, addressHint: user?.address, claim: role?.mcd?.autoCoupon !== false },
         role?.mcd?.mode === "pickup" ? "到店" : "外送",
         scope
       ),
@@ -5735,7 +5744,13 @@ async function orderPromptState(brand, runner, config, role, peer, history, scop
   }
   const doneAt = Number(last?.orderedAt ?? last?.updatedAt ?? 0);
   if (["ordered", "ready"].includes(last?.state) && Date.now() - doneAt < ORDER_DONE_MS) {
-    return { mode: "done" };
+    // 点完就不带菜单了，只留一句：对方要退的话角色得知道怎么写
+    return {
+      mode: "done",
+      extra:
+        `你刚给对方下了一单${b.label}（${linesText(last.lines)}，${luckinMoney(last.total)}）。` +
+        `对方说不要了、点错了，就写 [取消订单:${b.label}] 帮对方取消。`,
+    };
   }
   if (!b.wanted(history)) return { mode: "short" };
   if (sw.menu === false || !brandReady(config, brand)) return { mode: "full" };
@@ -5947,13 +5962,73 @@ async function claimOrderOnReact(getConfig, runner, role, space, spaceId, peer, 
     key,
     "",
     "",
-    `[系统提示:{{user}}确认了${b.label}订单，已下单（订单号 ${paid.orderId || "未知"}），实付 ${luckinMoney(hit.total)}，${how}${memo}]`
+    `[系统提示:{{user}}确认了${b.label}订单，已下单（订单号 ${paid.orderId || "未知"}），实付 ${luckinMoney(hit.total)}，${how}${memo}。` +
+      `{{user}}要是不想要了，写 [取消订单:${b.label}] 就能取消]`
   );
 
   // 取餐码：只有瑞幸有查订单的接口
   if (brand === "luckin" && role.luckin.pickupNotify && paid.orderId) {
     armLuckinPoll(getConfig, runner, roleKey, ordered, space, spaceId, peer);
   }
+  return true;
+}
+
+/**
+ * 执行一个 `[取消订单]` / `[取消订单:瑞幸]`：取消这段对话里最近那一单已下的单。
+ *
+ * 只取消「已下单」「待取餐」的（还没确认的卡片不用取消，不点就不会下）；取消成功把卡片
+ * 改成「已取消」。取不取消得了由那家说了算（做好了、送出去了的一般取消不了），失败原话
+ * 交给角色。
+ *
+ * @returns {Promise<boolean>} 取消掉了没有
+ */
+async function cancelOrderPart(runner, space, part, ctx) {
+  const role = ctx?.role;
+  const key = peerKeyOf(ctx?.peer ?? "");
+  const want = /麦当劳|mcd/i.test(part.text) ? "mcd" : /瑞幸|luckin/i.test(part.text) ? "luckin" : "";
+  const roleKey = memoryKeyFor(role);
+  const mine = readOrders(roleKey).filter(
+    (o) =>
+      o?.peerKey === key &&
+      o.orderId &&
+      ["ordered", "ready"].includes(o.state) &&
+      (!want || brandOf(o) === want) &&
+      role?.[brandOf(o)]?.enabled
+  );
+  const hit = mine.sort((a, b) => Number(b.orderedAt ?? 0) - Number(a.orderedAt ?? 0))[0];
+  const scope = scopeOf(runner, hit ? ORDER_BRANDS[brandOf(hit)].label : "点单");
+  if (!hit) {
+    logInfo(scope, `[取消订单${part.text ? `:${part.text}` : ""}]：这段对话里没有能取消的单`);
+    noteReaction(runner, key, "", "", "[系统提示:你想取消订单，但这段对话里没有已下单、还能取消的单]");
+    return false;
+  }
+  const b = ORDER_BRANDS[brandOf(hit)];
+  try {
+    await b.cancel(ctx.config, hit.orderId, scope);
+  } catch (e) {
+    const why = String(e?.message ?? e);
+    logWarn(scope, `${b.label}订单 ${hit.orderId} 取消失败`, e);
+    noteReaction(runner, key, "", "", `[系统提示:${b.label}那一单没取消掉：${why}]`);
+    return false;
+  }
+  const next = { ...hit, state: "cancelled" };
+  putOrder(roleKey, next);
+  if (runner.mode === "cloud") {
+    await updateLayoutCard({
+      projectId: runner.projectId,
+      projectSecret: runner.projectSecret,
+      session: next,
+      appName: next.appName,
+      layout: orderLayout(next),
+      what: `${b.label}订单卡片（改成「已取消」）`,
+      scope,
+    });
+  }
+  // 取消了就别再查取餐码了
+  const poll = runner.luckinPoll?.get(`${roleKey}::${hit.messageGuid}`);
+  if (poll) clearTimeout(poll);
+  runner.luckinPoll?.delete(`${roleKey}::${hit.messageGuid}`);
+  noteReaction(runner, key, "", "", `[系统提示:${b.label}那一单（${linesText(hit.lines)}）已经取消了]`);
   return true;
 }
 
@@ -6697,6 +6772,7 @@ async function sendBubbles(runner, space, chat, text, ctx = {}) {
       else if (part.kind === "location") ok = await sendLocationPart(runner, space, part, ctx);
       else if (part.kind === "transfer") ok = await sendTransferPart(runner, space, part, ctx);
       else if (part.kind === "luckin" || part.kind === "mcd") ok = await sendOrderPart(runner, space, part, ctx);
+      else if (part.kind === "cancel_order") ok = await cancelOrderPart(runner, space, part, ctx);
       else if (part.kind === "poll") ok = await sendPollPart(runner, space, part, ctx);
       else ok = await sendImagePart(runner, space, part, ctx);
       // 语音退化成文字时也算发出去了一条（sendVoicePart 里已经发过）
@@ -6734,6 +6810,7 @@ const KIND_NAMES = {
   transfer: "转账卡片",
   luckin: "瑞幸订单",
   mcd: "麦当劳订单",
+  cancel_order: "取消订单",
   react: "emoji 回应",
   undo: "撤回",
   vote: "投票",

@@ -128,6 +128,8 @@ export function RoleOrderFields({ role, onGoto }) {
       <p className="text-meta leading-relaxed text-ink-faint">
         角色只负责挑：配好单发一张「待确认」的订单卡片，<strong className="text-ink-soft">你给卡片点个回应才真的下单</strong>
         ，然后收到付款方式（瑞幸是微信付款二维码，麦当劳是付款链接）。不点就永远不会下单。
+        瑞幸算价时会自动用上你账号里最划算的券；麦当劳可以自动领券、用券。下了单想退，跟角色说一声它会帮你取消。
+        <br />
         角色想给店里留话会写成「#备注」，备注一定写在卡片上；那家的下单接口收备注的话也会写进订单，
         收不了的话角色会告诉你，到时候自己跟店员说。订单卡片只有云端（Photon）线路能发；
         本地 Mac 模式只发一句文字报价，不下单。
@@ -271,6 +273,17 @@ export function RoleOrderFields({ role, onGoto }) {
             </Field>
 
             <McdAddressPicker token={mcdToken} value={md.addressId ?? ""} onChange={(v) => setMd({ addressId: v })} />
+
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-ui text-ink">自动领券</span>
+                <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                  配单前先把麦麦省里能领的券一键领进你的账号（不花钱，6 小时最多一次）。这家店能用的券会列给角色，
+                  角色照券名点就是用券。
+                </span>
+              </span>
+              <Switch checked={md.autoCoupon !== false} onChange={(v) => setMd({ autoCoupon: v })} label="自动领券" />
+            </label>
 
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
