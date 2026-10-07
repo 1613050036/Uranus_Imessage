@@ -1339,7 +1339,7 @@ app.post("/api/mcp/test", async (req, res) => {
 });
 
 /**
- * 点单分区的「测试连接」：拿界面上填的 token（可能还没保存）连一次瑞幸 / 麦当劳的
+ * 角色配置「点单」那栏的「测试连接」：拿界面上填的 token（可能还没保存）连一次瑞幸 / 麦当劳的
  * 官方 MCP，握手 + 列工具。token 不落盘也不进日志。
  */
 app.post("/api/order/test", async (req, res) => {

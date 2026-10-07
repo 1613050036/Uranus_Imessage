@@ -9,7 +9,6 @@ import {
   MessageSquareText,
   MessagesSquare,
   Server,
-  ShoppingBag,
   Settings2,
   SlidersHorizontal,
   Smartphone,
@@ -300,14 +299,6 @@ export const NAV = [
         ],
       },
     ],
-  },
-  {
-    id: "order",
-    label: "点单",
-    icon: ShoppingBag,
-    // 瑞幸 / 麦当劳的 token 和「哪些角色能替你点」，见 panels/order.jsx
-    desc: "让角色帮你点瑞幸和麦当劳：填各家的 token，挑哪些角色能点。角色只负责挑，下单和付钱都要你自己点确认。",
-    anchors: ["瑞幸", "麦当劳"],
   },
   {
     id: "chat",

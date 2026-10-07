@@ -34,7 +34,6 @@ import { PresetPanel } from "./panels/preset.jsx";
 import { RolePanel } from "./panels/role.jsx";
 import { TheaterPanel } from "./panels/theater.jsx";
 import { PhonePanel } from "./panels/phone.jsx";
-import { OrderPanel } from "./panels/order.jsx";
 import { SetupButton, SetupWizard, useAutoOpenSetup } from "./panels/setup.jsx";
 import { GlobalSearch } from "./search.jsx";
 import { UserPanel } from "./panels/user.jsx";
@@ -682,7 +681,6 @@ export function AppShell() {
                   {tab === "memories" && <MemoriesPanel onGoto={goto} />}
                   {tab === "theater" && <TheaterPanel />}
                   {tab === "phone" && <PhonePanel />}
-                  {tab === "order" && <OrderPanel onGoto={goto} />}
                   {tab === "instagram" && <InstagramPanel onGoto={goto} />}
                   {tab === "chat" && (
                     <>

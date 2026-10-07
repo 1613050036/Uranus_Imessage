@@ -43,7 +43,7 @@ import { netCodes, whyNetwork } from "./net.js";
 /** 瑞幸官方的点单 MCP 服务器。 */
 export const LUCKIN_MCP_URL = "https://gwmcp.lkcoffee.com/order/user/mcp";
 
-/** 麦当劳中国官方的点单 MCP 服务器。点单链路还没接，点单分区的「测试连接」先用它。 */
+/** 麦当劳中国官方的点单 MCP 服务器。点单链路还没接，角色配置「点单」那栏的「测试连接」先用它。 */
 export const MCD_MCP_URL = "https://mcp.mcd.cn";
 
 /** 单次工具调用最多等多久（秒）。发消息那条路在等它。 */
@@ -67,7 +67,7 @@ export function luckinReady(config) {
 
 function serverOf(config) {
   const token = String(config?.luckinApi?.token ?? "").trim();
-  if (!token) throw new LuckinError("还没填瑞幸的 token（设置 → 瑞幸）");
+  if (!token) throw new LuckinError("还没填瑞幸的 token（角色配置 → 点单）");
   return {
     // 连接池按 id 认连接、按签名判要不要重连 —— token 换了签名就变，自动重连
     id: "__luckin__",

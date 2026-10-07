@@ -136,6 +136,7 @@ import {
   resolveLocation,
 } from "./luckin.js";
 import { findOrder, putOrder } from "./luckinstore.js";
+import { orderLogo } from "./orderlogos.js";
 import { parseSearchQueries, runSearch, stripSearchTags, stripXmlBlocks } from "./websearch.js";
 import {
   injectToolPrompt,
@@ -5617,6 +5618,9 @@ const luckinAppName = (name) => String(name ?? "").trim() || "瑞幸咖啡";
  *   subcaption         生椰拿铁 大杯/少冰 ×1
  *   trailingCaption    待确认 / 已下单 · 待支付 / 待取餐 …
  *   trailingSubcaption 门店名（查到取餐码之后换成取餐码）
+ *
+ * 上面那张图是瑞幸的 logo（orderlogos.js）。proto 要求 image 和 imageTitle 一起给，
+ * imageTitle 和顶层 appName 用同一个值，卡片上下不会写两样。
  */
 function luckinLayout(order) {
   const label = LUCKIN_STATE_LABEL[order.state] ?? order.state;
@@ -5627,6 +5631,8 @@ function luckinLayout(order) {
     subcaption: items.slice(0, 120),
     trailingCaption: label,
     ...(tail ? { trailingSubcaption: String(tail).slice(0, 60) } : {}),
+    image: orderLogo("luckin"),
+    imageTitle: luckinAppName(order.appName),
     summary: `瑞幸订单 ${luckinMoney(order.total)} · ${items}（${label}）`.slice(0, 300),
   };
 }
@@ -5678,7 +5684,7 @@ async function sendLuckinPart(runner, space, part, ctx) {
     logInfo(scope, `这个角色没开「瑞幸点单」，跳过这条：[瑞幸:${part.text}]`);
     return false;
   }
-  if (!luckinReady(config)) return fail("还没填瑞幸的 token（设置 → 瑞幸）");
+  if (!luckinReady(config)) return fail("还没填瑞幸的 token（角色配置 → 点单）");
   const spec = parseOrderSpec(part.text);
   if (!spec.items.length) return fail(`「${part.text}」里认不出要点什么`);
 
@@ -5713,7 +5719,7 @@ async function sendLuckinPart(runner, space, part, ctx) {
     projectSecret: runner.projectSecret,
     chatGuid: ctx?.spaceId ?? "",
     appName,
-    layout: luckinLayout(order),
+    layout: luckinLayout({ ...order, appName }),
     what: "瑞幸订单卡片",
     scope,
   });

@@ -30,6 +30,7 @@ import { WORKER } from "../edition.js";
 import { offlineMediaUrl, uploadOfflineAvatar } from "../offlinemedia.js";
 import { SaveBar, useSection } from "../section.jsx";
 import { RoleMcpFields } from "./mcp.jsx";
+import { RoleOrderFields } from "./order.jsx";
 import { api, useConfig } from "../store.jsx";
 import { Button, Card, Field, Fold, Modal, NumberField, Switch, inputCls } from "../ui.jsx";
 import {
@@ -3094,143 +3095,6 @@ function RoleTransferFields({ role }) {
           hint="从卡片发出去那一刻算起。默认 120 分钟；最多 1440（一整天）—— 再久那笔转账早翻出上下文了，提起来角色自己也接不上"
           onChange={(v) => updateRole(role.id, { transfer: { ...tr, remindMinutes: v } })}
         />
-      )}
-    </div>
-  );
-}
-
-/**
- * 瑞幸点单（服务端 luckin.js）。
- *
- * 开关在角色上，token 是全局的（config.luckinApi）—— 和联网搜索的密钥同一个理由：
- * 角色文件会被原样拷进不含密钥的备份。
- *
- * 默认关：开着就意味着这个角色能替你下真单。最后一步要你给订单卡片贴个回应才会下，
- * 但该不该让一个角色碰你的瑞幸账号，只能你自己定。
- */
-function RoleLuckinFields({ role, onGoto }) {
-  const { config, updateRole } = useConfig();
-  const openGate = usePresetGate(role);
-  const lk = role.luckin ?? {};
-  const token = config.luckinApi?.token ?? "";
-  const set = (patch) => updateRole(role.id, { luckin: { ...lk, ...patch } });
-
-  return (
-    <div className="grid grid-cols-1 gap-6">
-      <label className="flex items-start justify-between gap-4">
-        <span className="min-w-0">
-          <span className="block text-ui text-ink">瑞幸点单</span>
-          <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-            模型写
-            <code className="mx-1 bg-sunken px-1">[瑞幸:生椰拿铁|大杯|少冰]</code>
-            时，去离你最近的瑞幸门店配好这一单、算好价，发一张「待确认」的订单卡片。
-            你<strong className="text-ink-soft">给卡片点一下回应</strong>
-            才会真的下单，然后收到一张微信付款二维码，扫码付完到店取。不点就永远不会下单。
-            <br />
-            订单卡片只有云端（Photon）线路能发；本地 Mac 模式只会发一句文字报价，不下单。
-          </span>
-        </span>
-        <Switch
-          checked={Boolean(lk.enabled)}
-          onChange={(v) => {
-            set({ enabled: v });
-            if (v) openGate("luckin");
-          }}
-          label="启用瑞幸点单"
-        />
-      </label>
-
-      {lk.enabled && (
-        <div className="grid grid-cols-1 gap-6">
-          {!token.trim() && (
-            <p className="border-l-2 border-warn py-1.5 pl-3 text-meta leading-relaxed text-warn">
-              还没填瑞幸的 token，去
-              <button
-                type="button"
-                className="mx-1 underline decoration-line underline-offset-2"
-                onClick={() => onGoto?.("order")}
-              >
-                点单
-              </button>
-              里填（所有角色共用一个）。
-            </p>
-          )}
-
-          <p className="text-meta leading-relaxed text-ink-faint">
-            找哪家店：你在对话里发过位置就按那个位置；没发过就按
-            <button
-              type="button"
-              className="mx-1 underline decoration-line underline-offset-2 hover:text-ink"
-              onClick={() => onGoto?.("user")}
-            >
-              「你」
-            </button>
-            里填的常用地址。模型写了
-            <code className="mx-1 bg-sunken px-1">@门店名</code>
-            就按名字挑。
-            <br />
-            提示词在
-            <button
-              type="button"
-              className="mx-1 underline decoration-line underline-offset-2 hover:text-ink"
-              onClick={() => onGoto?.("preset")}
-            >
-              预设 → 消息格式与功能 → 瑞幸点单
-            </button>
-            里改。那条完整说明<strong className="text-ink-soft">只在你最近几句聊到咖啡时才注入</strong>
-            ，平时只带一句话，不白烧 token。
-          </p>
-
-          <label className="flex items-start justify-between gap-4">
-            <span className="min-w-0">
-              <span className="block text-ui text-ink">先看菜单</span>
-              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-                允许模型先写
-                <code className="mx-1 bg-sunken px-1">[瑞幸菜单:拿铁|美式]</code>
-                查附近门店的商品和价格，看完再点。那一趟你看不见。
-                <strong className="text-ink-soft">每查一次要多问模型一轮</strong>
-                ，那一轮的花费翻倍，所以默认关 —— 关着时模型按记得的口味直接点。
-              </span>
-            </span>
-            <Switch checked={Boolean(lk.menu)} onChange={(v) => set({ menu: v })} label="先看菜单" />
-          </label>
-
-          <label className="flex items-start justify-between gap-4">
-            <span className="min-w-0">
-              <span className="block text-ui text-ink">取餐码提醒</span>
-              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-                下单后每分钟查一次订单，查到取餐码就把卡片改成「待取餐」、让角色告诉你。
-                查到那一刻会起一轮回复（花 token）；最多查 45 分钟，重启就不查了。
-              </span>
-            </span>
-            <Switch
-              checked={Boolean(lk.pickupNotify)}
-              onChange={(v) => set({ pickupNotify: v })}
-              label="取餐码提醒"
-            />
-          </label>
-
-          <NumberField
-            label="多久内确认算数"
-            value={lk.confirmMinutes ?? 30}
-            min={1}
-            max={240}
-            step={5}
-            suffix="分钟"
-            hint="从订单卡片发出去那一刻算起。超了再点回应不会下单，卡片改成「已失效」—— 隔久了价格和券都不作数"
-            onChange={(v) => set({ confirmMinutes: v })}
-          />
-
-          <Field label="卡片上方那行小字" hint="空着就是「瑞幸咖啡」">
-            <input
-              className={inputCls}
-              value={lk.appName ?? ""}
-              maxLength={40}
-              onChange={(e) => set({ appName: e.target.value })}
-              placeholder="瑞幸咖啡"
-            />
-          </Field>
-        </div>
       )}
     </div>
   );
@@ -6419,11 +6283,11 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
         </Fold>
 
         <Fold
-          title="瑞幸点单"
-          desc="写 [瑞幸:生椰拿铁|大杯|少冰] 去最近的门店配单、发订单卡片，贴个回应才下单"
+          title="点单"
+          desc="让角色帮你点瑞幸、麦当劳：token 在这儿填，角色只负责挑，下单要你给订单卡片点回应"
           badge={onOff(role.luckin?.enabled)}
         >
-          <RoleLuckinFields role={role} onGoto={onGoto} />
+          <RoleOrderFields role={role} onGoto={onGoto} />
         </Fold>
 
         {/*
