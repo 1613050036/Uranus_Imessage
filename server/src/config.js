@@ -1272,6 +1272,8 @@ function normalizeRole(input, id, legacy) {
     // 瑞幸点单：开关 + 先看菜单 + 取餐码提醒 + 确认时限。token 是全局的（config.luckinApi），
     // 见下面那个函数和 luckin.js
     luckin: normalizeLuckin(input?.luckin),
+    // 麦当劳点单：开关 + 默认外送还是到店 + 自动带菜单 + 确认时限，见 mcd.js
+    mcd: normalizeMcd(input?.mcd),
     // 消息回应、消息特效：开关 + 白名单。两条都是「勾了才能用」，
     // 一个都没勾就整条不进提示词（省 token），见下面那两个函数
     reactSend: normalizeReactSend(input?.reactSend),
@@ -1855,6 +1857,20 @@ function normalizeLuckin(input) {
     enabled: Boolean(input?.enabled),
     menu: input?.menu === undefined ? true : Boolean(input.menu),
     pickupNotify: Boolean(input?.pickupNotify),
+    confirmMinutes: clampInt(input?.confirmMinutes, 30, 1, 240),
+    appName: str(input?.appName).slice(0, 40),
+  };
+}
+
+/**
+ * 麦当劳点单（mcd.js）。和瑞幸同一套，多一个 mode：默认外送（送到对方麦当劳账号里的
+ * 地址）还是到店。麦当劳没有查订单的接口，所以没有取餐码提醒。默认关，理由同瑞幸。
+ */
+function normalizeMcd(input) {
+  return {
+    enabled: Boolean(input?.enabled),
+    mode: input?.mode === "pickup" ? "pickup" : "delivery",
+    menu: input?.menu === undefined ? true : Boolean(input.menu),
     confirmMinutes: clampInt(input?.confirmMinutes, 30, 1, 240),
     appName: str(input?.appName).slice(0, 40),
   };

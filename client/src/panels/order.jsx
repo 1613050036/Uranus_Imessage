@@ -68,6 +68,8 @@ export function RoleOrderFields({ role, onGoto }) {
   const openGate = usePresetGate(role);
   const lk = role.luckin ?? {};
   const set = (patch) => updateRole(role.id, { luckin: { ...lk, ...patch } });
+  const md = role.mcd ?? {};
+  const setMd = (patch) => updateRole(role.id, { mcd: { ...md, ...patch } });
   const luckinToken = config.luckinApi?.token ?? "";
   const mcdToken = config.mcdApi?.token ?? "";
 
@@ -75,7 +77,9 @@ export function RoleOrderFields({ role, onGoto }) {
     <div className="grid grid-cols-1 gap-8">
       <p className="text-meta leading-relaxed text-ink-faint">
         角色只负责挑：配好单发一张「待确认」的订单卡片，<strong className="text-ink-soft">你给卡片点个回应才真的下单</strong>
-        ，然后收到微信付款二维码。不点就永远不会下单。订单卡片只有云端（Photon）线路能发；
+        ，然后收到付款方式（瑞幸是微信付款二维码，麦当劳是付款链接）。不点就永远不会下单。
+        角色想给店里留话会写成「#备注」，备注一定写在卡片上；那家的下单接口收备注的话也会写进订单，
+        收不了的话角色会告诉你，到时候自己跟店员说。订单卡片只有云端（Photon）线路能发；
         本地 Mac 模式只发一句文字报价，不下单。
         <br />
         找店按你在对话里发的位置，没发过就按
@@ -174,19 +178,80 @@ export function RoleOrderFields({ role, onGoto }) {
 
       {/* ── 麦当劳 ── */}
       <div className="grid grid-cols-1 gap-6 border-t border-line pt-6">
-        <div>
-          <p className="text-ui text-ink">麦当劳</p>
-          <p className="mt-0.5 text-meta leading-relaxed text-ink-faint">
-            点单链路还没接上（下一步做），现在可以先把 token 填好、测一下能不能连上。
-          </p>
-        </div>
+        <label className="flex items-start justify-between gap-4">
+          <span className="min-w-0">
+            <span className="block text-ui text-ink">麦当劳</span>
+            <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+              模型写
+              <code className="mx-1 bg-sunken px-1">[麦当劳:巨无霸套餐+麦辣鸡翅×2]</code>
+              时配单算价。外送送到你麦当劳账号里存的地址；到店先找你在麦当劳 App 里收藏的门店，没有收藏就按位置找附近的。
+              麦当劳没有查订单的接口，所以没有取餐码提醒。
+            </span>
+          </span>
+          <Switch
+            checked={Boolean(md.enabled)}
+            onChange={(v) => {
+              setMd({ enabled: v });
+              if (v) openGate("mcd");
+            }}
+            label="这个角色能帮你点麦当劳"
+          />
+        </label>
         <TokenField
           label="麦当劳 token"
           hint="在麦当劳 MCP 开放平台 open.mcd.cn/mcp 申请，每个人自己的"
           value={mcdToken}
           onChange={(v) => updateMcdApi({ token: v })}
+          warn={md.enabled}
         />
         <TestButton brand="mcd" token={mcdToken} />
+
+        {md.enabled && (
+          <div className="grid grid-cols-1 gap-6 border-t border-line pt-5">
+            <Field label="默认怎么拿" hint="角色没写 @外送 / @到店 时按这个">
+              <select
+                className={inputCls}
+                value={md.mode === "pickup" ? "pickup" : "delivery"}
+                onChange={(e) => setMd({ mode: e.target.value })}
+              >
+                <option value="delivery">外送（送到麦当劳账号里的地址）</option>
+                <option value="pickup">到店自取</option>
+              </select>
+            </Field>
+
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-ui text-ink">自动带上菜单</span>
+                <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                  你聊到吃的、又没有进行中的订单时，先查一次那家店这个时段能点的（早餐 / 午餐 / 夜宵会换）放进提示词。
+                  点完单就不再带了。同一家店 30 分钟内用缓存。
+                </span>
+              </span>
+              <Switch checked={md.menu !== false} onChange={(v) => setMd({ menu: v })} label="自动带上麦当劳菜单" />
+            </label>
+
+            <NumberField
+              label="多久内确认算数"
+              value={md.confirmMinutes ?? 30}
+              min={1}
+              max={240}
+              step={5}
+              suffix="分钟"
+              hint="超了再点回应不会下单，卡片改成「已失效」"
+              onChange={(v) => setMd({ confirmMinutes: v })}
+            />
+
+            <Field label="卡片上方那行小字" hint="空着就是「麦当劳」">
+              <input
+                className={inputCls}
+                value={md.appName ?? ""}
+                maxLength={40}
+                onChange={(e) => setMd({ appName: e.target.value })}
+                placeholder="麦当劳"
+              />
+            </Field>
+          </div>
+        )}
       </div>
     </div>
   );

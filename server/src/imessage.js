@@ -127,8 +127,8 @@ import { findTransfer, putTransfer, readTransfers } from "./transferstore.js";
 import {
   draftOrder,
   linesText,
-  luckinReady,
   autoMenuText,
+  brandReady,
   luckinWanted,
   money as luckinMoney,
   orderStatus,
@@ -137,6 +137,7 @@ import {
   resolveLocation,
 } from "./luckin.js";
 import { findOrder, putOrder, readOrders } from "./luckinstore.js";
+import { autoMcdMenuText, draftMcdOrder, mcdWanted, placeMcdOrder } from "./mcd.js";
 import { orderLogo } from "./orderlogos.js";
 import { parseSearchQueries, runSearch, stripSearchTags } from "./websearch.js";
 import {
@@ -3327,8 +3328,9 @@ async function handleTurn(
 
   // 提示词组装：预设的条目顺序 + 世界书 + 裁剪过的上文，见 prompt.js。
   // 天气单独传 —— 它只进这一份，不进 history
-  // 瑞幸那条子条目这轮给什么（菜单要在调模型之前查好，见 luckinPromptState）
-  const luckin = await luckinPromptState(
+  // 瑞幸那条子条目这轮给什么（菜单要在调模型之前查好，见 orderPromptState）
+  const luckin = await orderPromptState(
+    "luckin",
     runner,
     freshConfig,
     freshRole,
@@ -3336,13 +3338,22 @@ async function handleTurn(
     runner.history.get(sessionId) ?? [],
     scopeOf(runner, "瑞幸")
   );
+  const mcd = await orderPromptState(
+    "mcd",
+    runner,
+    freshConfig,
+    freshRole,
+    peer,
+    runner.history.get(sessionId) ?? [],
+    scopeOf(runner, "麦当劳")
+  );
   const built = await buildPrompt(
     freshConfig,
     freshRole,
     user,
     runner.history.get(sessionId) ?? [],
     weatherNote,
-    { luckin }
+    { luckin, mcd }
   );
   const { params, preset, worldInfo } = built;
   // buildPrompt 裁剪过上文，把结果写回内存 —— 以前是 buildMessages 里做的
@@ -5585,10 +5596,10 @@ async function claimTransferOnReact(runner, role, message, scope) {
   return { amount: hit.amount, note: hit.note, currency: hit.currency };
 }
 
-/* ================= 瑞幸点单（见 luckin.js） ================= */
+/* ================= 点单：瑞幸 / 麦当劳（见 luckin.js、mcd.js） ================= */
 
 /** 卡片右上角那行状态字。 */
-const LUCKIN_STATE_LABEL = {
+const ORDER_STATE_LABEL = {
   pending: "待确认",
   ordered: "已下单 · 待支付",
   ready: "待取餐",
@@ -5596,32 +5607,69 @@ const LUCKIN_STATE_LABEL = {
   failed: "下单失败",
 };
 
+/**
+ * 两家的差别都收在这张表里，下面发卡、确认、注入提示词是同一套代码。
+ *
+ * 订单记录上的 `brand` 指回这里；1.14.0 早期存的瑞幸订单没有这个字段，按 luckin 算。
+ */
+const ORDER_BRANDS = {
+  luckin: {
+    label: "瑞幸",
+    app: "瑞幸咖啡",
+    what: "喝的",
+    draft: (config, spec, loc, scope) => draftOrder(config, spec, loc, scope),
+    place: (config, draft, scope) => placeOrder(config, draft, scope),
+    menu: (config, loc, role, scope) => autoMenuText(config, loc, scope),
+    wanted: (history) => luckinWanted(history),
+    // 瑞幸没有收货地址，一定要知道人在哪儿才能找店
+    needsLoc: true,
+  },
+  mcd: {
+    label: "麦当劳",
+    app: "麦当劳",
+    what: "吃的",
+    draft: (config, spec, loc, scope) => draftMcdOrder(config, spec, loc, scope),
+    place: (config, draft, scope) => placeMcdOrder(config, draft, scope),
+    menu: (config, loc, role, scope) =>
+      autoMcdMenuText(config, loc, role?.mcd?.mode === "pickup" ? "到店" : "外送", scope),
+    wanted: (history) => mcdWanted(history),
+    // 外送用账号里的地址、到店先看收藏的门店，位置只是兜底
+    needsLoc: false,
+  },
+};
+
+const brandOf = (order) => (order?.brand === "mcd" ? "mcd" : "luckin");
+
 /** 订单卡片上方那行小字，空着兜底。和转账一样，发和改要算出同一个值。 */
-const luckinAppName = (name) => String(name ?? "").trim() || "瑞幸咖啡";
+const orderAppName = (brand, name) => String(name ?? "").trim() || ORDER_BRANDS[brand].app;
 
 /**
  * 一单拼成 MiniAppLayout。槽位和转账卡片一样是苹果钉死的，只决定往哪个槽放什么：
  *
- *   caption            瑞幸 ¥16.90        实付
- *   subcaption         生椰拿铁 大杯/少冰 ×1
+ *   caption            瑞幸 ¥16.90 / 麦当劳 ¥38.50
+ *   subcaption         生椰拿铁 大杯/少冰 ×1 · 备注：不要吸管
  *   trailingCaption    待确认 / 已下单 · 待支付 / 待取餐 …
- *   trailingSubcaption 门店名（查到取餐码之后换成取餐码）
+ *   trailingSubcaption 门店名（外送写「外送 · 门店」；查到取餐码之后换成取餐码）
  *
- * 上面那张图是瑞幸的 logo（orderlogos.js）。proto 要求 image 和 imageTitle 一起给，
+ * 上面那张图是品牌 logo（orderlogos.js）。proto 要求 image 和 imageTitle 一起给，
  * imageTitle 和顶层 appName 用同一个值，卡片上下不会写两样。
  */
-function luckinLayout(order) {
-  const label = LUCKIN_STATE_LABEL[order.state] ?? order.state;
+function orderLayout(order) {
+  const brand = brandOf(order);
+  const b = ORDER_BRANDS[brand];
+  const label = ORDER_STATE_LABEL[order.state] ?? order.state;
   const items = linesText(order.lines);
-  const tail = order.pickupCode ? `取餐码 ${order.pickupCode}` : order.shopName;
+  const memo = order.remark ? ` · 备注：${order.remark}` : "";
+  const where = order.orderType === 2 ? `外送 · ${order.shopName}` : order.shopName;
+  const tail = order.pickupCode ? `取餐码 ${order.pickupCode}` : where;
   return {
-    caption: `瑞幸 ${luckinMoney(order.total)}`,
-    subcaption: items.slice(0, 120),
+    caption: `${b.label} ${luckinMoney(order.total)}`,
+    subcaption: `${items}${memo}`.slice(0, 160),
     trailingCaption: label,
     ...(tail ? { trailingSubcaption: String(tail).slice(0, 60) } : {}),
-    image: orderLogo("luckin"),
-    imageTitle: luckinAppName(order.appName),
-    summary: `瑞幸订单 ${luckinMoney(order.total)} · ${items}（${label}）`.slice(0, 300),
+    image: orderLogo(brand),
+    imageTitle: orderAppName(brand, order.appName),
+    summary: `${b.label}订单 ${luckinMoney(order.total)} · ${items}${memo}（${label}）`.slice(0, 300),
   };
 }
 
@@ -5647,115 +5695,122 @@ function notePeerLocation(runner, peer, text) {
 }
 
 /** 下完单多久之内算「刚点过」，这段时间里不再带菜单和完整说明。 */
-const LUCKIN_DONE_MS = 3 * 3600_000;
+const ORDER_DONE_MS = 3 * 3600_000;
 
 /**
- * 这一轮瑞幸那条子条目该注入什么（交给 prompt.js:formatBlock）。
+ * 这一轮某一家那条子条目该注入什么（交给 prompt.js:formatBlock）。
  *
  *  - 这段对话有一张还在等确认的订单卡片 → 完整说明 + 那一单（对方说「换成热的」时角色能改）；
  *  - 刚下过单（3 小时内）→ 只给一句话：点完就不注入了；
- *  - 聊到咖啡 → 完整说明，开了「自动带上菜单」就先查附近门店的菜单一起放进去；
+ *  - 聊到了 → 完整说明，开了「自动带上菜单」就先查菜单一起放进去；
  *  - 都不是 → 一句话。
  *
  * 查菜单失败不拦这一轮，当没菜单。
  *
- * @returns {Promise<{mode:"full"|"short"|"done", extra?:string}|undefined>} 没开瑞幸返回 undefined
+ * @returns {Promise<{mode:"full"|"short"|"done", extra?:string}|undefined>} 没开这家返回 undefined
  */
-async function luckinPromptState(runner, config, role, peer, history, scope) {
-  if (!role?.luckin?.enabled) return undefined;
+async function orderPromptState(brand, runner, config, role, peer, history, scope) {
+  const b = ORDER_BRANDS[brand];
+  const sw = role?.[brand];
+  if (!sw?.enabled) return undefined;
   const key = peerKeyOf(peer);
-  const mine = readOrders(memoryKeyFor(role)).filter((o) => o?.peerKey === key);
+  const mine = readOrders(memoryKeyFor(role)).filter((o) => o?.peerKey === key && brandOf(o) === brand);
   const last = mine[mine.length - 1];
   if (last?.state === "pending") {
-    const mins = clampInt(role.luckin.confirmMinutes, 30, 1, 240);
+    const mins = clampInt(sw.confirmMinutes, 30, 1, 240);
     if (Date.now() - Number(last.createdAt ?? 0) <= mins * 60_000) {
       return {
         mode: "full",
         extra:
-          `现在有一张还没确认的订单：${linesText(last.lines)}，${luckinMoney(last.total)}，${last.shopName}。` +
-          "对方要改的话重新写一个 [瑞幸:…]，新卡片会替代这张。",
+          `现在有一张还没确认的${b.label}订单：${linesText(last.lines)}，${luckinMoney(last.total)}，${last.shopName}` +
+          `${last.remark ? `，备注「${last.remark}」` : ""}。对方要改的话重新写一个 [${b.label}:…]，新卡片会替代这张。`,
       };
     }
   }
   const doneAt = Number(last?.orderedAt ?? last?.updatedAt ?? 0);
-  if (["ordered", "ready"].includes(last?.state) && Date.now() - doneAt < LUCKIN_DONE_MS) {
+  if (["ordered", "ready"].includes(last?.state) && Date.now() - doneAt < ORDER_DONE_MS) {
     return { mode: "done" };
   }
-  if (!luckinWanted(history)) return { mode: "short" };
-  if (!role.luckin.menu || !luckinReady(config)) return { mode: "full" };
+  if (!b.wanted(history)) return { mode: "short" };
+  if (sw.menu === false || !brandReady(config, brand)) return { mode: "full" };
   const loc = await luckinLocation(runner, { peer, config, role }, scope);
-  if (!loc) return { mode: "full", extra: "（不知道对方在哪儿，查不了附近门店的菜单。）" };
+  if (!loc && b.needsLoc) return { mode: "full", extra: "（不知道对方在哪儿，查不了附近门店的菜单。）" };
   try {
-    return { mode: "full", extra: await autoMenuText(config, loc, scope) };
+    return { mode: "full", extra: await b.menu(config, loc, role, scope) };
   } catch (e) {
-    logWarn(scope, "瑞幸菜单没查到，这轮不带菜单", e);
+    logWarn(scope, `${b.label}菜单没查到，这轮不带菜单`, e);
     return { mode: "full" };
   }
 }
 
 /**
- * 执行一个 `[瑞幸:…]`：查店、配单、算价，发一张「待确认」的订单卡片。
+ * 执行一个 `[瑞幸:…]` / `[麦当劳:…]`：配单、算价，发一张「待确认」的订单卡片。
  *
- * 闸：角色开关、token、位置。自定义卡片只有云端（Photon）能发，本地 Mac 模式退化成
- * 一句文字报给对方看，**不下单**（那边没有「贴 emoji 确认」这条路）。
+ * 闸：角色开关、token、位置（瑞幸必须有）。自定义卡片只有云端（Photon）能发，本地 Mac
+ * 模式退化成一句文字报给对方看，**不下单**（那边没有「贴 emoji 确认」这条路）。
  *
  * 哪一步失败都不发卡片，给角色攒一句系统提示说清原因，让它自己跟对方解释 ——
  * 「门店打烊了」「没有这款」这种话由角色说出来比一张报错卡片自然。
  *
  * @returns {Promise<boolean>} 发出去了没有
  */
-async function sendLuckinPart(runner, space, part, ctx) {
-  const scope = scopeOf(runner, "瑞幸");
+async function sendOrderPart(runner, space, part, ctx) {
+  const brand = part.kind === "mcd" ? "mcd" : "luckin";
+  const b = ORDER_BRANDS[brand];
+  const scope = scopeOf(runner, b.label);
   const role = ctx?.role;
   const config = ctx?.config;
   const key = peerKeyOf(ctx?.peer ?? "");
   const fail = (why) => {
     logWarn(scope, `这一单没配成：${why}`);
-    noteReaction(runner, key, "", "", `[系统提示:你想给{{user}}点的瑞幸没配成：${why}]`);
+    noteReaction(runner, key, "", "", `[系统提示:你想给{{user}}点的${b.label}没配成：${why}]`);
     return false;
   };
 
-  if (!role?.luckin?.enabled) {
-    logInfo(scope, `这个角色没开「瑞幸点单」，跳过这条：[瑞幸:${part.text}]`);
+  if (!role?.[brand]?.enabled) {
+    logInfo(scope, `这个角色没开「${b.label}点单」，跳过这条：[${b.label}:${part.text}]`);
     return false;
   }
-  if (!luckinReady(config)) return fail("还没填瑞幸的 token（角色配置 → 点单）");
+  if (!brandReady(config, brand)) return fail(`还没填${b.label}的 token（角色配置 → 点单）`);
   const spec = parseOrderSpec(part.text);
   if (!spec.items.length) return fail(`「${part.text}」里认不出要点什么`);
+  // 麦当劳：没写 @外送 / @到店 就按角色上选的默认方式
+  if (brand === "mcd" && !spec.store) spec.store = role.mcd.mode === "pickup" ? "到店" : "外送";
 
   const loc = await luckinLocation(runner, ctx, scope);
-  if (!loc) return fail("不知道{{user}}在哪儿 —— 让{{user}}发个位置，或者在「你」的设置里填地址");
+  if (!loc && b.needsLoc) return fail("不知道{{user}}在哪儿 —— 让{{user}}发个位置，或者在「你」的设置里填地址");
 
   let draft;
   try {
-    draft = await draftOrder(config, spec, loc, scope);
+    draft = await b.draft(config, spec, loc, scope);
   } catch (e) {
     return fail(String(e?.message ?? e));
   }
-  const order = { ...draft, state: "pending", createdAt: Date.now(), peerKey: key };
+  const order = { ...draft, brand, state: "pending", createdAt: Date.now(), peerKey: key };
   logInfo(
     scope,
-    `配好一单：${linesText(order.lines)}，${luckinMoney(order.total)}，${order.shopName}（按${loc.from}找的店）`
+    `配好一单：${linesText(order.lines)}，${luckinMoney(order.total)}，${order.shopName}` +
+      `${order.remark ? `，备注「${order.remark}」` : ""}${loc ? `（按${loc.from}）` : ""}`
   );
 
   if (runner.mode !== "cloud") {
     noteSent(
       runner,
       ctx,
-      await space.send(`瑞幸 ${luckinMoney(order.total)}：${linesText(order.lines)}（${order.shopName}）`)
+      await space.send(`${b.label} ${luckinMoney(order.total)}：${linesText(order.lines)}（${order.shopName}）`)
     );
     noteReaction(runner, key, "", "", "[系统提示:本地模式发不了订单卡片，这一单只是报给{{user}}看，没有下单]");
     return true;
   }
 
-  const appName = luckinAppName(role.luckin.appName);
+  const appName = orderAppName(brand, role[brand].appName);
   const session = await sendLayoutCard({
     projectId: runner.projectId,
     projectSecret: runner.projectSecret,
     chatGuid: ctx?.spaceId ?? "",
     appName,
-    layout: luckinLayout({ ...order, appName }),
-    what: "瑞幸订单卡片",
+    layout: orderLayout({ ...order, appName }),
+    what: `${b.label}订单卡片`,
     scope,
   });
   if (!session) return fail("订单卡片没发出去（看控制台日志）");
@@ -5764,13 +5819,14 @@ async function sendLuckinPart(runner, space, part, ctx) {
   }
 
   const extra = order.missed.length ? `；${order.missed.join("；")}` : "";
+  const fee = order.delivery ? `（含配送费 ${luckinMoney(order.delivery)}）` : "";
   noteReaction(
     runner,
     key,
     "",
     "",
-    `[系统提示:瑞幸订单卡片已发出：${linesText(order.lines)}，实付 ${luckinMoney(order.total)}，` +
-      `${order.shopName}，等{{user}}点回应确认${extra}]`
+    `[系统提示:${b.label}订单卡片已发出：${linesText(order.lines)}，实付 ${luckinMoney(order.total)}${fee}，` +
+      `${order.orderType === 2 ? "外送，" : ""}${order.shopName}，等{{user}}点回应确认${extra}]`
   );
   return true;
 }
@@ -5780,22 +5836,29 @@ const LUCKIN_POLL_MS = 60_000;
 const LUCKIN_POLL_MAX = 45;
 
 /**
- * 对方给一张订单卡片贴了 emoji → 下单、改卡片、发付款码。
+ * 对方给一张订单卡片贴了 emoji → 下单、改卡片、发付款方式。
  *
  * 和收转账同一个位置拦（reactSend 那道闸之前，理由见 claimTransferOnReact）。
  * 超过角色上配的确认时限就不下单、卡片改成「已失效」—— 隔久了价格和券都不作数。
  *
+ * 付款：瑞幸给的是 `weixin://` 扫码链接，iMessage 里点不开，发它托管的二维码图；
+ * 麦当劳给的是 https 的 H5 付款页，发成链接卡片，点开就能付。
+ *
  * @returns {Promise<boolean>} 这个 emoji 是不是冲着订单卡片来的（是的话调用方别再往下走）
  */
-async function claimLuckinOnReact(getConfig, runner, role, space, spaceId, peer, message, scope) {
-  if (!role?.luckin?.enabled || runner.mode !== "cloud") return false;
+async function claimOrderOnReact(getConfig, runner, role, space, spaceId, peer, message) {
+  if (runner.mode !== "cloud") return false;
   const target = message?.content?.target;
   const guid = String(target?.parentId ?? target?.id ?? "").trim();
   const roleKey = memoryKeyFor(role);
   const hit = guid ? findOrder(roleKey, guid) : null;
   if (!hit) return false;
+  const brand = brandOf(hit);
+  const b = ORDER_BRANDS[brand];
+  const scope = scopeOf(runner, b.label);
+  if (!role?.[brand]?.enabled) return false;
   if (hit.state !== "pending") {
-    logDebug(scope, `这张订单卡片已经是「${LUCKIN_STATE_LABEL[hit.state] ?? hit.state}」了，不重复处理`);
+    logDebug(scope, `这张订单卡片已经是「${ORDER_STATE_LABEL[hit.state] ?? hit.state}」了，不重复处理`);
     return true;
   }
 
@@ -5807,17 +5870,23 @@ async function claimLuckinOnReact(getConfig, runner, role, space, spaceId, peer,
       projectSecret: runner.projectSecret,
       session: next,
       appName: next.appName,
-      layout: luckinLayout(next),
-      what: `瑞幸订单卡片（改成「${LUCKIN_STATE_LABEL[next.state]}」）`,
+      layout: orderLayout(next),
+      what: `${b.label}订单卡片（改成「${ORDER_STATE_LABEL[next.state]}」）`,
       scope,
     });
   };
 
-  const mins = clampInt(role.luckin.confirmMinutes, 30, 1, 240);
+  const mins = clampInt(role[brand].confirmMinutes, 30, 1, 240);
   if (Date.now() - Number(hit.createdAt ?? 0) > mins * 60_000) {
     await update({ ...hit, state: "expired" });
     logInfo(scope, `订单卡片超过 ${mins} 分钟才确认，按失效处理，没下单`);
-    noteReaction(runner, key, "", "", "[系统提示:{{user}}确认得太晚，那张瑞幸订单已失效、没下单，要喝的话得重新点]");
+    noteReaction(
+      runner,
+      key,
+      "",
+      "",
+      `[系统提示:{{user}}确认得太晚，那张${b.label}订单已失效、没下单，要${b.what}的话得重新点]`
+    );
     return true;
   }
 
@@ -5825,49 +5894,57 @@ async function claimLuckinOnReact(getConfig, runner, role, space, spaceId, peer,
   putOrder(roleKey, { ...hit, state: "ordered" });
   let paid;
   try {
-    paid = await placeOrder(getConfig(), hit, scope);
+    paid = await b.place(getConfig(), hit, scope);
   } catch (e) {
     const why = String(e?.message ?? e);
     await update({ ...hit, state: "failed" });
-    logWarn(scope, "瑞幸下单失败", e);
-    noteReaction(runner, key, "", "", `[系统提示:{{user}}确认了瑞幸订单，但下单失败：${why}]`);
+    logWarn(scope, `${b.label}下单失败`, e);
+    noteReaction(runner, key, "", "", `[系统提示:{{user}}确认了${b.label}订单，但下单失败：${why}]`);
     return true;
   }
   const ordered = { ...hit, state: "ordered", orderId: paid.orderId, orderedAt: Date.now() };
   await update(ordered);
 
-  /*
-   * 付款码。瑞幸给的 payOrderUrl 是 `weixin://` 扫码支付链接，iMessage 里点不开、
-   * 手机浏览器也跳不进微信付款，只能用微信扫 —— 所以发它托管的那张二维码图。
-   * 拿不到图就让对方去瑞幸 App 的订单里付。
-   */
-  let qrSent = false;
-  if (paid.qrUrl) {
-    try {
-      const res = await fetch(paid.qrUrl, { signal: AbortSignal.timeout(10_000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      const mimeType = res.headers.get("content-type")?.split(";")[0] || "image/png";
-      const { attachment } = await import("spectrum-ts");
-      await space.send(
-        attachment(buf, { mimeType, name: `瑞幸付款码${mimeType.includes("jpeg") ? ".jpg" : ".png"}` })
-      );
-      qrSent = true;
-    } catch (e) {
-      logWarn(scope, "付款二维码没发出去", e);
+  let how;
+  if (brand === "mcd") {
+    const sent = paid.payUrl
+      ? await sendLinkCard(runner, space, paid.payUrl, { spaceId, peer }, scope)
+      : false;
+    how = sent ? "付款链接已经发给{{user}}，点开就能付" : "付款链接没发出去，让{{user}}去麦当劳 App 的订单里付";
+  } else {
+    let qrSent = false;
+    if (paid.qrUrl) {
+      try {
+        const res = await fetch(paid.qrUrl, { signal: AbortSignal.timeout(10_000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        const mimeType = res.headers.get("content-type")?.split(";")[0] || "image/png";
+        const { attachment } = await import("spectrum-ts");
+        await space.send(
+          attachment(buf, { mimeType, name: `瑞幸付款码${mimeType.includes("jpeg") ? ".jpg" : ".png"}` })
+        );
+        qrSent = true;
+      } catch (e) {
+        logWarn(scope, "付款二维码没发出去", e);
+      }
     }
+    how = qrSent ? "付款二维码已经发给{{user}}，用微信扫码付" : "付款码没发出去，让{{user}}去瑞幸 App 的订单里付";
   }
+  const memo = hit.remark
+    ? paid.remarkSent
+      ? `，备注「${hit.remark}」已经写进订单`
+      : `，备注「${hit.remark}」${b.label}的下单接口收不了，只在卡片上，需要的话让{{user}}自己跟店员说`
+    : "";
   noteReaction(
     runner,
     key,
     "",
     "",
-    `[系统提示:{{user}}确认了瑞幸订单，已下单（订单号 ${paid.orderId || "未知"}），实付 ${luckinMoney(hit.total)}，` +
-      (qrSent ? "付款二维码已经发给{{user}}，用微信扫码付" : "付款码没发出去，让{{user}}去瑞幸 App 的订单里付") +
-      "]"
+    `[系统提示:{{user}}确认了${b.label}订单，已下单（订单号 ${paid.orderId || "未知"}），实付 ${luckinMoney(hit.total)}，${how}${memo}]`
   );
 
-  if (role.luckin.pickupNotify && paid.orderId) {
+  // 取餐码：只有瑞幸有查订单的接口
+  if (brand === "luckin" && role.luckin.pickupNotify && paid.orderId) {
     armLuckinPoll(getConfig, runner, roleKey, ordered, space, spaceId, peer);
   }
   return true;
@@ -5896,7 +5973,7 @@ function armLuckinPoll(getConfig, runner, roleKey, order, space, spaceId, peer) 
           projectSecret: runner.projectSecret,
           session: next,
           appName: next.appName,
-          layout: luckinLayout(next),
+          layout: orderLayout(next),
           what: "瑞幸订单卡片（取餐码）",
           scope,
         });
@@ -6612,7 +6689,7 @@ async function sendBubbles(runner, space, chat, text, ctx = {}) {
       else if (part.kind === "music") ok = await sendMusicPart(runner, space, part, ctx);
       else if (part.kind === "location") ok = await sendLocationPart(runner, space, part, ctx);
       else if (part.kind === "transfer") ok = await sendTransferPart(runner, space, part, ctx);
-      else if (part.kind === "luckin") ok = await sendLuckinPart(runner, space, part, ctx);
+      else if (part.kind === "luckin" || part.kind === "mcd") ok = await sendOrderPart(runner, space, part, ctx);
       else if (part.kind === "poll") ok = await sendPollPart(runner, space, part, ctx);
       else ok = await sendImagePart(runner, space, part, ctx);
       // 语音退化成文字时也算发出去了一条（sendVoicePart 里已经发过）
@@ -6649,6 +6726,7 @@ const KIND_NAMES = {
   location: "位置",
   transfer: "转账卡片",
   luckin: "瑞幸订单",
+  mcd: "麦当劳订单",
   react: "emoji 回应",
   undo: "撤回",
   vote: "投票",
@@ -7519,21 +7597,10 @@ async function startRunner(getConfig, project, meta, retries = 0) {
                * 就当场起一轮，见下面那个分叉。
                */
               /*
-               * 瑞幸订单卡片：贴 emoji 就是确认下单。和收款一样拦在 reactSend 那道闸
-               * 之前，结果攒成系统提示等下条消息一起送（见 claimLuckinOnReact）。
+               * 订单卡片（瑞幸 / 麦当劳）：贴 emoji 就是确认下单。和收款一样拦在 reactSend 那道闸
+               * 之前，结果攒成系统提示等下条消息一起送（见 claimOrderOnReact）。
                */
-              if (
-                await claimLuckinOnReact(
-                  getConfig,
-                  runner,
-                  who,
-                  space,
-                  spaceId,
-                  peer,
-                  message,
-                  scopeOf(runner, "瑞幸")
-                )
-              ) {
+              if (await claimOrderOnReact(getConfig, runner, who, space, spaceId, peer, message)) {
                 continue;
               }
 

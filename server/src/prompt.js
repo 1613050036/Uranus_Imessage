@@ -26,6 +26,7 @@
  */
 
 import { LUCKIN_SHORT_HINT, luckinWanted } from "./luckin.js";
+import { MCD_SHORT_HINT, mcdWanted } from "./mcd.js";
 import { applyVars, resolveEndpoint, resolveUser } from "./config.js";
 import { listEmojiTags } from "./emoji.js";
 import { stripEnvPrefix } from "./env.js";
@@ -230,7 +231,7 @@ function effectListText(keys) {
  * ROLE_GATED_CHILDREN 里，由下面 spyText 单独处理 —— 两条腿都关就整条跳过，
  * 只开一条腿时还要把另一条腿那几行删掉（见那个函数的注释）。
  */
-function formatBlock(entry, fill, role, config, sent, luckin) {
+function formatBlock(entry, fill, role, config, sent, orders = {}) {
   const lines = [];
   const intro = fill(entry?.content ?? "");
   if (intro) lines.push(intro);
@@ -268,20 +269,22 @@ function formatBlock(entry, fill, role, config, sent, luckin) {
      * 瑞幸：完整说明只在这几句聊到咖啡时才给，平时换成一句话（luckin.js:luckinWanted）。
      * 用户要的省 token —— 完整那段两百来字，多数轮次根本用不上。
      */
-    if (child.kind === "luckin") {
+    if (child.kind === "luckin" || child.kind === "mcd") {
+      const mcd = child.kind === "mcd";
+      const luckin = orders[child.kind];
       /*
        * luckin 是 imessage.js:luckinPromptState 算好的这一轮该给什么：
        *  - mode "full"：完整说明，{{瑞幸菜单变量}} 换成菜单或进行中的那一单；
        *  - mode "short" / "done"：只给一句话（没聊咖啡 / 刚点完就不注入了）；
        *  - 没传（主动消息这类）：按 luckinWanted 判，不带菜单。
        */
-      const full = luckin ? luckin.mode === "full" : luckinWanted(sent);
+      const full = luckin ? luckin.mode === "full" : (mcd ? mcdWanted : luckinWanted)(sent);
       text = full
         ? text
-            .replace(/\{\{\s*瑞幸菜单变量\s*\}\}/g, luckin?.extra ?? "")
+            .replace(/\{\{\s*(?:瑞幸|麦当劳)菜单变量\s*\}\}/g, luckin?.extra ?? "")
             .replace(/\n{2,}/g, "\n")
             .trim()
-        : LUCKIN_SHORT_HINT;
+        : mcd ? MCD_SHORT_HINT : LUCKIN_SHORT_HINT;
     }
     if (child.kind === "react") {
       const list = Array.isArray(role?.reactSend?.emojis) ? role.reactSend.emojis : [];
@@ -878,7 +881,7 @@ export async function buildPrompt(config, role, user, history, weatherNote = "",
          * 标记，然后被原样打进剧情正文里。
          */
         if (offline) break;
-        parts.push({ role: "system", content: formatBlock(entry, fill, role, config, sent, opts?.luckin) });
+        parts.push({ role: "system", content: formatBlock(entry, fill, role, config, sent, { luckin: opts?.luckin, mcd: opts?.mcd }) });
         break;
       case "context": {
         const woven = weaveDepths(sent, world.depths);

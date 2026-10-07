@@ -762,6 +762,11 @@ export function callServerTool(server, name, args) {
   return withClient(server, (c) => c.callTool(name, args));
 }
 
+/** 同上，列这台服务器的工具（带 inputSchema）。连接池里有缓存，不会每次都真去问。 */
+export function listServerTools(server) {
+  return withClient(server, (c) => c.listTools());
+}
+
 /** 服务器在日志和提示词里叫什么。 */
 export function serverLabel(s) {
   return s?.name || s?.url || s?.command || s?.id || "MCP";

@@ -36,7 +36,7 @@
  * payOrderUrl …）以瑞幸开放平台的文档为准，读的时候都留了兜底。
  */
 
-import { callServerTool } from "./mcp.js";
+import { callServerTool, listServerTools } from "./mcp.js";
 import { logDebug, logInfo, logWarn } from "./logs.js";
 import { netCodes, whyNetwork } from "./net.js";
 
@@ -60,22 +60,9 @@ export class LuckinError extends Error {}
 
 /* ================= 调用 ================= */
 
-/** 有没有配 token。 */
+/** 有没有配瑞幸的 token。 */
 export function luckinReady(config) {
-  return Boolean(String(config?.luckinApi?.token ?? "").trim());
-}
-
-function serverOf(config) {
-  const token = String(config?.luckinApi?.token ?? "").trim();
-  if (!token) throw new LuckinError("还没填瑞幸的 token（角色配置 → 点单）");
-  return {
-    // 连接池按 id 认连接、按签名判要不要重连 —— token 换了签名就变，自动重连
-    id: "__luckin__",
-    transport: "http",
-    url: LUCKIN_MCP_URL,
-    headers: [{ name: "Authorization", value: `Bearer ${token}` }],
-    timeout: CALL_TIMEOUT_S,
-  };
+  return brandReady(config, "luckin");
 }
 
 /**
@@ -151,14 +138,44 @@ export function unwrapResult(result, tool) {
   return body;
 }
 
+/** 两家的连接信息。麦当劳的点单链路在 mcd.js，调用和解信封共用这里这一套。 */
+const BRANDS = {
+  luckin: { label: "瑞幸", url: LUCKIN_MCP_URL, key: "luckinApi", expiry: "（token 可能过期了，瑞幸的 token 大约一个月失效）" },
+  mcd: { label: "麦当劳", url: MCD_MCP_URL, key: "mcdApi", expiry: "（token 可能失效了，去 open.mcd.cn/mcp 重新申请）" },
+};
+
+/** 这家有没有配 token。 */
+export function brandReady(config, brand) {
+  return Boolean(String(config?.[BRANDS[brand].key]?.token ?? "").trim());
+}
+
+function serverOf(config, brand = "luckin") {
+  const b = BRANDS[brand];
+  const token = String(config?.[b.key]?.token ?? "").trim();
+  if (!token) throw new LuckinError(`还没填${b.label}的 token（角色配置 → 点单）`);
+  return {
+    // 连接池按 id 认连接、按签名判要不要重连 —— token 换了签名就变，自动重连
+    id: `__${brand}__`,
+    transport: "http",
+    url: b.url,
+    headers: [{ name: "Authorization", value: `Bearer ${token}` }],
+    timeout: CALL_TIMEOUT_S,
+  };
+}
+
 /** 调一个瑞幸工具，返回剥好的 data。 */
-export async function callLuckin(config, tool, args, scope = "瑞幸") {
+export function callLuckin(config, tool, args, scope = "瑞幸") {
+  return callBrand(config, "luckin", tool, args, scope);
+}
+
+/** 调某一家的某个工具，返回剥好的 data。 */
+export async function callBrand(config, brand, tool, args, scope) {
   const startedAt = Date.now();
-  const server = serverOf(config);
+  const server = serverOf(config, brand);
   const fail = (e) => {
     // 网络层的错只有一句 fetch failed，真原因在 cause 里；服务器回的错（带 HTTP 码）原样用
     const msg = netCodes(e).length ? whyNetwork(e) : String(e?.message ?? e);
-    const hint = /401|403|鉴权/.test(msg) ? "（token 可能过期了，瑞幸的 token 大约一个月失效）" : "";
+    const hint = /401|403|鉴权/.test(msg) ? BRANDS[brand].expiry : "";
     return new LuckinError(`${tool} 调不通：${msg}${hint}`);
   };
   let result;
@@ -168,7 +185,7 @@ export async function callLuckin(config, tool, args, scope = "瑞幸") {
     /*
      * 网络层没连上（连接被重置、连不上）就再试一次 —— 实测这台机器到瑞幸的第一个
      * 连接偶尔会被重置，紧接着再连就好。**下单那一步不重试**：连接断在半路时
-     * 瑞幸那边可能已经下了，再调一次就是两单。服务器明确回了错（没有网络错误码）也不重试。
+     * 对方那边可能已经下了，再调一次就是两单。服务器明确回了错（没有网络错误码）也不重试。
      */
     if (/create[-_]?order/i.test(tool) || !netCodes(first).length) throw fail(first);
     logDebug(scope, `${tool} 第一次没连上（${netCodes(first)[0]}），再试一次`);
@@ -187,8 +204,29 @@ export async function callLuckin(config, tool, args, scope = "瑞幸") {
   return data;
 }
 
+/**
+ * 下单工具的入参里有没有「备注」这一项，有的话叫什么。
+ *
+ * 两家的文档里都没写死备注字段（SullyOS 那边也没用过），所以按下单工具自己报的
+ * inputSchema 找：名字像 remark / note / comment / memo，或者描述里写着「备注」的
+ * 那个字符串字段。找不到返回空串 —— 备注就只写在卡片上，不进订单。
+ */
+export async function remarkField(config, brand, tool, scope) {
+  try {
+    const tools = await listServerTools(serverOf(config, brand));
+    const props = tools.find((t) => t?.name === tool)?.inputSchema?.properties ?? {};
+    for (const [k, v] of Object.entries(props)) {
+      if (v?.type && v.type !== "string") continue;
+      if (/remark|note|comment|memo|message|备注/i.test(k) || /备注|留言/.test(String(v?.description ?? ""))) return k;
+    }
+  } catch (e) {
+    logDebug(scope, `查不到 ${tool} 的参数表，备注只写在卡片上：${String(e?.message ?? e)}`);
+  }
+  return "";
+}
+
 /** 返回里的列表可能直接是数组，也可能包在 list / data / records 里。 */
-function asList(data) {
+export function asList(data) {
   if (Array.isArray(data)) return data;
   for (const k of ["list", "data", "records", "shopList", "productList", "items"]) {
     if (Array.isArray(data?.[k])) return data[k];
@@ -196,7 +234,7 @@ function asList(data) {
   return [];
 }
 
-const num = (v) => {
+export const num = (v) => {
   const n = typeof v === "string" ? parseFloat(v) : v;
   return Number.isFinite(n) ? n : null;
 };
@@ -213,11 +251,18 @@ export const money = (v) => {
  *
  * 数量认 `×2` `x2` `*2` 三种写法，写在名字后面。认不出名字的那一杯丢掉。
  *
- * @returns {{items: {name:string, qty:number, specs:string[]}[], store:string}}
+ * @returns {{items: {name:string, qty:number, specs:string[]}[], store:string, remark:string}}
  */
 export function parseOrderSpec(text) {
   let body = String(text ?? "").trim();
   let store = "";
+  let remark = "";
+  // `#` 后面是备注，写在最后：`生椰拿铁|大杯@万象城#不要吸管`
+  const hash = body.search(/[#＃]/);
+  if (hash >= 0) {
+    remark = body.slice(hash + 1).trim().slice(0, 50);
+    body = body.slice(0, hash);
+  }
   const at = body.search(/[@＠]/);
   if (at >= 0) {
     store = body.slice(at + 1).trim();
@@ -234,7 +279,7 @@ export function parseOrderSpec(text) {
     items.push({ name, qty, specs: specs.filter(Boolean) });
     if (items.length >= MAX_ITEMS) break;
   }
-  return { items, store };
+  return { items, store, remark };
 }
 
 /* ================= 位置 ================= */
@@ -336,7 +381,7 @@ export async function resolveLocation(shared, address, scope = "瑞幸") {
 /* ================= 门店 / 商品 ================= */
 
 /** 名字像不像：完全一样 > 包含 > 共用字数。 */
-function nameScore(want, got) {
+export function nameScore(want, got) {
   const a = String(want ?? "").replace(/\s+/g, "").toLowerCase();
   const b = String(got ?? "").replace(/\s+/g, "").toLowerCase();
   if (!a || !b) return 0;
@@ -488,6 +533,7 @@ export async function draftOrder(config, spec, loc, scope = "瑞幸") {
     original: num(preview?.totalInitialPrice),
     privilege: num(preview?.privilegeMoney),
     coupons: Array.isArray(preview?.couponCodeList) ? preview.couponCodeList : [],
+    remark: spec.remark ?? "",
     missed,
   };
 }
@@ -501,11 +547,15 @@ export async function placeOrder(config, draft, scope = "瑞幸") {
     latitude: draft.lat,
     ...(draft.coupons?.length ? { couponCodeList: draft.coupons } : {}),
   };
+  const field = draft.remark ? await remarkField(config, "luckin", "createOrder", scope) : "";
+  if (field) args[field] = draft.remark;
+  else if (draft.remark) logInfo(scope, `瑞幸的下单接口没有备注这一项，「${draft.remark}」只写在卡片上`);
   const r = await callLuckin(config, "createOrder", args, scope);
   const orderId = String(r?.orderIdStr ?? r?.orderId ?? "");
   logInfo(scope, `瑞幸下单成功，订单号 ${orderId || "（没给）"}`);
   return {
     orderId,
+    remarkSent: Boolean(field),
     payUrl: String(r?.payOrderUrl ?? ""),
     qrUrl: String(r?.payOrderQrCodeUrl ?? ""),
   };

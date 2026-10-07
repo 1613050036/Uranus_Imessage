@@ -6285,7 +6285,7 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
         <Fold
           title="点单"
           desc="让角色帮你点瑞幸、麦当劳：token 在这儿填，角色只负责挑，下单要你给订单卡片点回应"
-          badge={onOff(role.luckin?.enabled)}
+          badge={onOff(role.luckin?.enabled || role.mcd?.enabled)}
         >
           <RoleOrderFields role={role} onGoto={onGoto} />
         </Fold>

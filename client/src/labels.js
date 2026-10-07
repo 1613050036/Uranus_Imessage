@@ -400,7 +400,7 @@ export const ENTRY_KIND_HINTS = {
   user: "对这个角色生效的那条用户人设，注入 <User>",
   world: "这一轮命中的世界书条目，注入 <World_Info>",
   format:
-    "怎么分气泡，以及语音 / 表情包 / 图片 / 链接卡片 / 分享位置 / 转账 / 瑞幸点单 / 投票 / 联网搜索 / 已读不回 / 引用回复 / 消息撤回 / 消息回应 / 消息特效 / Instagram / 小红书 / 查岗那四条 二十个子条目",
+    "怎么分气泡，以及语音 / 表情包 / 图片 / 链接卡片 / 分享位置 / 转账 / 瑞幸点单 / 麦当劳点单 / 投票 / 联网搜索 / 已读不回 / 引用回复 / 消息撤回 / 消息回应 / 消息特效 / Instagram / 小红书 / 查岗那四条 二十一个子条目",
   context: "这条会话的上文，夹在 <Chat_History> 之间（条数受角色的「上下文限制」约束）",
   memory:
     "四个变量：{{近N天记忆}}、{{回忆起来的记忆}}、{{备忘录}}、{{近N天日记}}，各自包在 XML 标签里。哪个都受角色那三个开关约束，全关就整条不产出",
@@ -410,7 +410,7 @@ export const ENTRY_KIND_HINTS = {
     "只有线下预设有这一条。要模型在正文之后另给四条「我接下来可以怎么做」，注入 <User_Choices>。还得角色那边的「用户选项」开着才生效",
 };
 
-/** 「消息格式与功能」的二十个子条目。和 server/src/preset.js:FORMAT_CHILD_KINDS 对齐。 */
+/** 「消息格式与功能」的二十一个子条目。和 server/src/preset.js:FORMAT_CHILD_KINDS 对齐。 */
 export const FORMAT_CHILD_KINDS = [
   "voice",
   "sticker",
@@ -419,6 +419,7 @@ export const FORMAT_CHILD_KINDS = [
   "location",
   "transfer",
   "luckin",
+  "mcd",
   "poll",
   "search",
   "leaveOnRead",
@@ -443,6 +444,7 @@ export const FORMAT_CHILD_LABELS = {
   location: "分享位置",
   transfer: "转账",
   luckin: "瑞幸点单",
+  mcd: "麦当劳点单",
   poll: "投票",
   search: "联网搜索",
   leaveOnRead: "已读不回",
@@ -473,6 +475,7 @@ export const FORMAT_CHILD_TAGS = {
   location: "share_location",
   transfer: "转账",
   luckin: "瑞幸点单",
+  mcd: "麦当劳点单",
   poll: "投票",
   search: "联网搜索",
   leaveOnRead: "leave_on_read",
@@ -493,7 +496,7 @@ export const FORMAT_CHILD_TAGS = {
  * 发送链路还没接的子条目：开了也只是让模型输出标记，标记会被当普通文字
  * 原样发给对方。界面上要标出来，见 panels/preset.jsx。
  *
- * 现在**一条都没有** —— 二十条的链路全接上了。
+ * 现在**一条都没有** —— 二十一条的链路全接上了。
  * 留着这个数组是因为以后还可能先写提示词、后接链路。
  */
 export const FORMAT_CHILD_UNWIRED = [];
@@ -525,6 +528,7 @@ export const ROLE_GATED_CHILDREN = {
   location: "locationSend",
   transfer: "transfer",
   luckin: "luckin",
+  mcd: "mcd",
   poll: "poll",
   react: "reactSend",
   effect: "effectSend",
