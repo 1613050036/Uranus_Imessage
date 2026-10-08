@@ -112,6 +112,27 @@ await ok("对方没登记 → 报错，而且把两边的号都列出来", () =>
   assert.match(g.errors[0].detail, /开通线路/);
 });
 
+await ok("提示里「两个号发错了」要排在「Apple ID 邮箱」前面", () => {
+  /*
+   * 这条钉的是**顺序**，不是有没有。实机上第一版把邮箱写成了头号原因，
+   * 而那个人根本没用邮箱 —— 她手里有两个 +86，iMessage 挑了没登记的那个。
+   * 这种人对着「检查号码对不对」只会看到一串正常的号，怎么查都查不出来。
+   * 所以双卡/两个号那句必须在前面，邮箱退成附注。
+   */
+  const g = buildPeerGuard(["+8613900000001"]);
+  g.checkPeersRegistered(getConfig, runner, [
+    { phoneNumber: "+8613800138000", assignedPhoneNumber: "+14155901577" },
+  ]);
+  const d = g.errors[0].detail;
+  assert.match(d, /双卡|两个号/);
+  assert.ok(
+    d.search(/双卡|两个号/) < d.indexOf("Apple ID 邮箱"),
+    "「两个号发错了」必须排在「Apple ID 邮箱」前面"
+  );
+  // 旧对话可能还钉在旧地址上，这句不能丢
+  assert.match(d, /新开一个对话/);
+});
+
 await ok("对方就是登记的那个号 → 闭嘴", () => {
   const g = buildPeerGuard(["+8613800138000"]);
   g.checkPeersRegistered(getConfig, runner, [
