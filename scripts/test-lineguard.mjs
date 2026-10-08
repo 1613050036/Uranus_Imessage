@@ -334,6 +334,86 @@ await ok("本地 Mac 模式不参与比较（它没有项目凭据这回事）",
   assert.equal(g.errors.length, 0);
 });
 
+
+/* ================= 同一个号登记在两个项目（跨项目比对） ================= */
+
+/**
+ * noteLineOwner 带模块级状态（lineOwners 表），所以每个用例重建一份作用域。
+ * `runners` 换成假的 Map —— 真的那张表是桥接自己的。
+ */
+function buildOwnerGuard(liveRunnerIds = ["p1", "p2"]) {
+  const errors = [];
+  const src = [
+    "const lineOwners = new Map();",
+    extractFn("peerKeyOf"),
+    extractFn("noteLineOwner"),
+    "return noteLineOwner;",
+  ].join("\n");
+  const make = new Function("runners", "scopeOf", "logError", src);
+  const fn = make(
+    new Map(liveRunnerIds.map((id) => [id, {}])),
+    () => "投递·测试",
+    (_s, m, d) => errors.push({ message: m, detail: d })
+  );
+  return { note: fn, errors };
+}
+
+const R = (id, label) => ({ projectRefId: id, label });
+
+await ok("两个项目登记了同一个号 → 后到的那个喊出来", () => {
+  const g = buildOwnerGuard();
+  const users1 = [{ phoneNumber: "+8613800138000", assignedPhoneNumber: "+14155901577" }];
+  const users2 = [{ phoneNumber: "+8613800138000", assignedPhoneNumber: "+16282893877" }];
+  g.note(R("p1", "陆恩"), users1, "+14155901577");
+  assert.equal(g.errors.length, 0, "只有一个项目时不该喊");
+  g.note(R("p2", "Anne"), users2, "+16282893877");
+  assert.equal(g.errors.length, 1);
+  assert.match(g.errors[0].message, /在 2 个项目里都登记了/);
+  assert.match(g.errors[0].message, /陆恩/);
+  assert.match(g.errors[0].message, /Anne/);
+  // 两条线路号都要列出来，机主才知道是哪两条在抢
+  assert.match(g.errors[0].detail, /\+14155901577/);
+  assert.match(g.errors[0].detail, /\+16282893877/);
+  assert.match(g.errors[0].detail, /时好时坏/);
+});
+
+await ok("两个项目各用各的号 → 一个字都不说", () => {
+  const g = buildOwnerGuard();
+  g.note(R("p1", "陆恩"), [{ phoneNumber: "+8613800138001", assignedPhoneNumber: "+14155901577" }], "+14155901577");
+  g.note(R("p2", "Anne"), [{ phoneNumber: "+8613800138002", assignedPhoneNumber: "+16282893877" }], "+16282893877");
+  assert.equal(g.errors.length, 0);
+});
+
+await ok("号码格式不同但同一个号 → 照样算冲突", () => {
+  const g = buildOwnerGuard();
+  g.note(R("p1", "陆恩"), [{ phoneNumber: "+86 138 0013 8000", assignedPhoneNumber: "+14155901577" }], "+14155901577");
+  g.note(R("p2", "Anne"), [{ phoneNumber: "+8613800138000", assignedPhoneNumber: "+16282893877" }], "+16282893877");
+  assert.equal(g.errors.length, 1);
+});
+
+await ok("另一个项目已经停掉了 → 不该拿它来报冲突", () => {
+  const g = buildOwnerGuard(["p2"]); // p1 已经不在 runners 里了
+  g.note(R("p1", "陆恩"), [{ phoneNumber: "+8613800138000", assignedPhoneNumber: "+14155901577" }], "+14155901577");
+  g.note(R("p2", "Anne"), [{ phoneNumber: "+8613800138000", assignedPhoneNumber: "+16282893877" }], "+16282893877");
+  assert.equal(g.errors.length, 0);
+});
+
+await ok("名单没查成 / 线路号为空 → 不记也不喊", () => {
+  const g = buildOwnerGuard();
+  g.note(R("p1", "陆恩"), null, "+14155901577");
+  g.note(R("p2", "Anne"), [{ phoneNumber: "+8613800138000", assignedPhoneNumber: "+16282893877" }], "");
+  assert.equal(g.errors.length, 0);
+});
+
+await ok("同一条线路重复预检（重连）→ 不该自己跟自己报冲突", () => {
+  const g = buildOwnerGuard();
+  const u = [{ phoneNumber: "+8613800138000", assignedPhoneNumber: "+14155901577" }];
+  g.note(R("p1", "陆恩"), u, "+14155901577");
+  g.note(R("p1", "陆恩"), u, "+14155901577");
+  g.note(R("p1", "陆恩"), u, "+14155901577");
+  assert.equal(g.errors.length, 0);
+});
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`
 ${passed} 项通过`);
