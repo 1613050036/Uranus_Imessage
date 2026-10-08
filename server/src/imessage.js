@@ -15,6 +15,7 @@ import {
 import { watchChatBackground } from "./chatbg.js";
 import { normalizeForHistory, splitBubbles, sleep } from "./delay.js";
 import { checkLineRegistered, watchDelivery } from "./delivery.js";
+import { checkLineOwnership } from "./photon.js";
 import {
   chatWithFallback,
   describeImage,
@@ -7971,6 +7972,30 @@ async function startRunner(getConfig, project, meta, retries = 0) {
       label: scopeOf(runner, "投递"),
       linePhone: project.linePhone ?? "",
     });
+
+    /*
+     * 再核对一次：配置里这个线路号码现在还归不归这个项目。
+     *
+     * 上面那道在**共享线路上等于没有** —— 它走 gRPC 的 isIMessageAvailable，
+     * 而共享线路对这个调用永远回「Target is a Photon-managed shared line」，
+     * 只落一条 debug 就跳过（真机日志里那句就是）。这一道走管理 REST API，
+     * 不受那条限制，查的也是另一件事：号码归属，而不是 iMessage 激活状态。
+     *
+     * 它堵的是实机撞到过的那一类：线路被 Photon 换掉 / 登记失效 / 手动填线路
+     * 时打错一位 —— 三种都表现为「对方发过去一点反应都没有、控制台一行日志
+     * 都不会有、重启没用」，因为消息压根没进程序。详见 photon.js 那边的注释。
+     *
+     * 同样不 await、同样自己兜住异常：预检失败不该影响这条连接。
+     */
+    if (runner.mode === "cloud") {
+      void checkLineOwnership({
+        projectId: runner.projectId,
+        projectSecret: runner.projectSecret,
+        label: scopeOf(runner, "投递"),
+        myPhone: project.myPhone ?? "",
+        linePhone: project.linePhone ?? "",
+      }).catch((e) => logDebug(scope, "核对线路归属出错", e));
+    }
 
     // 重启前排着的主动消息接着数 —— 这一步就是「关机不清计时器」
     rehydrateProactive(getConfig, runner);
