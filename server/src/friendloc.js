@@ -189,22 +189,29 @@ export function watchFriendLocations({ projectId, projectSecret, label, interval
       fails += 1;
       const msg = `问位置失败：${String(e?.message ?? e)}`;
       /*
-       * `Target not allowed for this project` 要单独说一句。
+       * `Target not allowed for this project` 要单独说一句，但**话不能说满**。
        *
-       * 它不是「位置接口坏了」，是**共享线路的白名单把这个地址挡了**，而那道
-       * 闸进出两个方向同一道 —— 也就是说对方发过来的消息同样收不到，而且入站
-       * 方向是彻底的沉默（消息在 Photon 那头就被丢了，我们这边一条日志都没有）。
+       * 这句是 Photon 在项目这一层拒绝（注意是 for this *project*，不是
+       * 针对某个地址），而我们从这儿看不到它到底卡在哪一条：套餐/用量、
+       * 这条共享线路的策略、还是这个目标地址。
        *
-       * 实机上这句英文在屏幕上躺了好几天没人认出来，大家都当它是定位功能的小毛病，
-       * 而真正的病是「这个号根本聊不了天」。所以这里必须把话挑明，并且指向
-       * imessage.js:checkPeersRegistered 那条写全了修法的日志。
+       * 这里曾经写死成「白名单把这个地址挡了，所以对方发过来的消息同样收不到」。
+       * 那个说法在实机上**站不住**：同一台机器上「聊天对象在不在登记名单里」
+       * 那道检查（imessage.js:checkPeersRegistered）一声没吭，也就是说对方的号
+       * 其实在名单里。照着那句话去排查，等于把人往「让对方换个号发」这条死路上带。
+       *
+       * 所以这里只说能证明的两件事：这不是定位功能自己的毛病，以及它是项目级的，
+       * 该去 Photon 后台看。入站收不收得到由入站那边自己说（那边真有判据），
+       * 这里不替它下结论。
        */
       const blocked = /target not allowed for this project/i.test(String(e?.message ?? ""));
       const why = blocked
-        ? `\n这不是定位的毛病 —— Photon 说这个地址不在项目的白名单里。` +
-          `白名单进出两个方向同一道：对方发过来的消息同样收不到，而且那个方向是` +
-          `彻底的沉默（消息在 Photon 那头就被丢了，控制台不会有任何记录）。` +
-          `往上翻「聊天对象 … 不在这个项目的登记名单里」那条，修法写在那儿。`
+        ? `\n这不是定位功能自己的毛病 —— Photon 是在**项目**这一层拒绝的` +
+          `（原话是 for this project，不是针对某个号码）。\n` +
+          `从这儿看不出具体卡在哪一条，去 Photon 后台对着看：套餐有没有到期/扣款失败、` +
+          `当天的消息量和新会话数有没有撞上限、这条共享线路还在不在。\n` +
+          `注意：这条**不代表**聊天一定也收不到 —— 那件事由「聊天对象 … 不在登记名单里」` +
+          `那条判，它没出现就说明对方的号是在名单里的。两者别混着看。`
         : "";
       if (fails === 1) logWarn(scope, `${msg}（到点会接着问，恢复前不再重复报）`, why || undefined);
       else logDebug(scope, `${msg}（连着第 ${fails} 次）`);
