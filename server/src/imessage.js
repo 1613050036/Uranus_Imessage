@@ -7546,6 +7546,78 @@ function stopLocWatcher(runner) {
 }
 
 /**
+ * 核对一遍：这个角色一直在聊的那个人，在不在项目的登记名单里。
+ *
+ * ── 为什么线路归属查完了还得再查这一道 ──
+ *
+ * 共享线路的白名单是**按地址**管的，而且进出两个方向同一道闸：项目里登记过
+ * 的地址才能和这条线路通话。线路归属（checkLineOwnership）证明的只是「这条
+ * 号码归你」，证明不了「正在跟你说话的那个人被允许」—— 实机上就撞到过线路
+ * 归属完全正常、对方发过来却一条都收不到。
+ *
+ * 出站那边早有证据，只是没人往这上面想：位置推送问对方在哪时，Photon 回的是
+ * `Target not allowed for this project`（见 friendloc.js:getEach）。同一道闸
+ * 在入站方向的表现是**彻底的沉默** —— 消息在 Photon 那头就被丢了，压根不进
+ * `instance.messages`，所以我们这边连一条日志都不会有，桥接还一直显示
+ * 「已连接，等消息中」，重启一百次也一样。这个函数就是把那份沉默翻出来。
+ *
+ * 查的是**存档里记着的对方地址**：刚启动时还没人说过话，`runner.lastSpace`
+ * 是空的，而存档里那个正是「上次好好聊着的那个人」—— 恰恰是要核对的对象。
+ *
+ * 比对号码时忽略格式差异（空格、横线、括号），只看数字；邮箱按小写比。
+ * 不然「登记的是 +86 138 0013 8000、存档里是 +8613800138000」会被误报成
+ * 没登记 —— 误报比不报更糟，机主会去改一个本来就对的号。
+ *
+ * @param {object[] | null} users checkLineOwnership 给回来的登记用户表，null = 没查成
+ */
+function checkPeersRegistered(getConfig, runner, users) {
+  if (!Array.isArray(users) || runner.stopped) return;
+
+  const role = currentRole(getConfig(), runner);
+  if (!role) return;
+
+  const scope = scopeOf(runner, "投递");
+  const allowed = new Set(users.map((u) => peerKeyOf(u?.phoneNumber)).filter(Boolean));
+  /*
+   * 两边都过一道 peerKeyOf 再比。
+   *
+   * `locPeersOf` 给回来的本来就是 peerKey，这里再归一一次是**有意的冗余**：
+   * peerKeyOf 幂等，重复调不花钱，但它把「这个函数要求调用方先归一」这条
+   * 隐式约定变成了本地保证。漏归一的后果是「+86 138 0013 8000」和
+   * 「+8613800138000」被判成两个人，然后冤枉一个本来就对的号 —— 这种误报
+   * 比不报更糟，机主会照着去改一个没坏的地方。
+   *
+   * 线路号码本身不进这个比较：它在名单里是以 assignedPhoneNumber 的身份，
+   * 不是「对方」。
+   */
+  const peers = [...locPeersOf(runner, role)]
+    .map((p) => peerKeyOf(p))
+    .filter((p) => p && !allowed.has(p));
+  if (!peers.length) return;
+
+  /*
+   * 名单是空的时候不喊「对方没登记」—— 那种情况下真正的问题是「这个项目一个
+   * 用户都没有」，checkLineOwnership 已经在那条路上说过了，这里再喊一遍只会
+   * 把人往错的方向带。
+   */
+  if (!allowed.size) return;
+
+  logError(
+    scope,
+    `聊天对象 ${peers.join("、")} 不在这个项目的登记名单里 —— 他发过来的消息我们收不到`,
+    `共享线路的白名单进出两个方向都管：只有在项目里登记过的地址才能和这条线路通话。\n` +
+      `这个项目现在登记着：${[...allowed].join("、")}\n` +
+      `所以对方发过来的消息 Photon 在它那头就丢了，我们这边一条日志都不会有，` +
+      `桥接却还显示「已连接」—— 重启没有用，坏的不是连接。\n` +
+      `两种修法，挑一种：\n` +
+      `  ① 让对方用**已登记的那个号**发（最常见的原因是对方 iPhone 的 iMessage ` +
+      `发信地址变成了 Apple ID 邮箱：设置 → 信息 → 发送与接收 → 「开始新对话时发送自」选手机号）；\n` +
+      `  ② 把对方这个地址也在项目里登记一次（「iMessage → 项目」填他的号码点「开通线路」），` +
+      `注意共享线路给每个登记用户分的线路号可能不一样，到时候要发给他自己那条。`
+  );
+}
+
+/**
  * 这个角色在跟谁聊 —— 位置只推给这些人，归一成 peerKey。
  *
  * **必须过滤**：「查找」列出来的是所有给线路那个 Apple ID 共享位置的人，
@@ -7994,7 +8066,9 @@ async function startRunner(getConfig, project, meta, retries = 0) {
         label: scopeOf(runner, "投递"),
         myPhone: project.myPhone ?? "",
         linePhone: project.linePhone ?? "",
-      }).catch((e) => logDebug(scope, "核对线路归属出错", e));
+      })
+        .then((users) => checkPeersRegistered(getConfig, runner, users))
+        .catch((e) => logDebug(scope, "核对线路归属出错", e));
     }
 
     // 重启前排着的主动消息接着数 —— 这一步就是「关机不清计时器」

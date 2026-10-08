@@ -121,16 +121,18 @@ export async function findSharedUser({ projectId, projectSecret, phoneNumber }) 
  * @param {string} opts.label 日志 scope
  * @param {string} opts.myPhone 配置里登记用的那个号（可能是空的，手填线路那条路不写它）
  * @param {string} opts.linePhone 配置里存的线路号码
+ * @returns {Promise<object[] | null>} 查成了就给登记用户表（调用方拿去核对聊天对象，
+ *          见 imessage.js:checkPeersRegistered），没查成给 null
  */
 export async function checkLineOwnership({ projectId, projectSecret, label, myPhone, linePhone }) {
-  if (!projectId || !projectSecret || !linePhone) return;
+  if (!projectId || !projectSecret || !linePhone) return null;
 
   let got;
   try {
     got = await fetchSharedUsers({ projectId, projectSecret });
   } catch (e) {
     logDebug(label, `核对线路归属时出错，跳过这次预检：${String(e?.message ?? e)}`);
-    return;
+    return null;
   }
 
   if (!got.ok) {
@@ -142,10 +144,10 @@ export async function checkLineOwnership({ projectId, projectSecret, label, myPh
         `Project ID / Project Secret 对不上了，多半是 Secret 被轮换过。\n` +
           `去 Photon 后台重新取一份，填回「iMessage → 项目」里保存。`
       );
-      return;
+      return null;
     }
     logDebug(label, `没能核对线路 ${linePhone} 的归属（${got.error}），跳过这次预检`);
-    return;
+    return null;
   }
 
   const owner = got.users.find((u) => u?.assignedPhoneNumber === linePhone);
@@ -155,7 +157,7 @@ export async function checkLineOwnership({ projectId, projectSecret, label, myPh
       `预检：线路 ${linePhone} 归这个项目，登记号 ${owner.phoneNumber}` +
         `${myPhone && myPhone !== owner.phoneNumber ? `（注意：配置里 myPhone 填的是 ${myPhone}，对不上）` : ""}`
     );
-    return;
+    return got.users;
   }
 
   /*
@@ -183,6 +185,7 @@ export async function checkLineOwnership({ projectId, projectSecret, label, myPh
       `（在此之前桥接会一直显示「已连接」，但一条消息都收不到：` +
       `没登记的号码发给共享线路，Photon 在它那头就丢了。）`
   );
+  return got.users;
 }
 
 /**
