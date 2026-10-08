@@ -9256,6 +9256,66 @@ async function stopRunner(runner) {
  *
  * @returns {Promise<{started:string[], stopped:string[], restarted:string[], kept:string[]}>}
  */
+/**
+ * 两个角色的项目接成了会互相打架的样子 —— 上线前先喊一声。
+ *
+ * 这两种接法在界面上都填得出来，而且填的时候一点不像错的，坏起来却是
+ * **时好时坏**：同一个对话里第一条发得出去，一分钟后就 `Target not allowed
+ * for this project`；已读回执、打字指示器、位置推送跟着一起被拒。实机日志里
+ * 就是这个样子，查了很久才看出两个角色的凭据有问题。
+ *
+ *  ① **两个角色共用同一个 Photon 项目（projectId 相同）。**
+ *     每个角色会各开一条 Spectrum 连接订阅**同一个项目**的事件流，于是同一条
+ *     入站消息两个角色都收得到、都要回；而共享线路是按「登记用户」分配线路的，
+ *     到底从哪条线路发出去就成了掷骰子。要两个角色就要两个项目。
+ *
+ *  ② **同一个手机号登记在两个项目里。**
+ *     Photon 那边一个号对应一条分配线路，两个项目都拿它登记，路由往哪边走是
+ *     未定义的。想让两个角色同时在线，得用两个不同的号各登记一次。
+ *
+ * 只看本地配置，不出网 —— 这两件事光看配置就能断定，不需要问 Photon。
+ * 本地 Mac 模式没有项目凭据这回事，`projectReady` 已经把它们挡在外面了。
+ *
+ * 每次 syncBridges 都会跑，所以只在**真有冲突**时打日志；没冲突一个字都不说。
+ */
+function warnProjectConflicts(projects) {
+  const group = (pick) => {
+    const m = new Map();
+    for (const p of projects ?? []) {
+      if ((p?.mode ?? "cloud") === "local") continue;
+      const k = String(pick(p) ?? "").trim();
+      if (!k) continue;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(p.id);
+    }
+    return [...m.entries()].filter(([, ids]) => ids.length > 1);
+  };
+
+  for (const [pid, ids] of group((p) => p.projectId)) {
+    logError(
+      "配置",
+      `有 ${ids.length} 个角色共用同一个 Photon 项目（${String(pid).slice(0, 8)}…）—— 它们会互相抢消息`,
+      `每个角色都会单独连一次、订阅的却是同一个项目的事件流，所以同一条消息两边都收到、都要回；\n` +
+        `而共享线路是按登记用户分配线路的，到底从哪条线路发出去是不确定的。\n` +
+        `症状是时好时坏：同一个对话里有的消息发得出去，有的回 Target not allowed for this project，\n` +
+        `已读回执、打字指示器、位置推送也会跟着一起被拒。\n` +
+        `修法：一个角色一个 Photon 项目。去 Photon 后台另开一个项目，把其中一个角色换成新的 ` +
+        `Project ID / Secret，再用一个**没被占用的**手机号登记一次。`
+    );
+  }
+
+  for (const [phone, ids] of group((p) => p.myPhone)) {
+    logError(
+      "配置",
+      `手机号 ${phone} 在 ${ids.length} 个项目里都登记了 —— Photon 不知道该把消息路由给谁`,
+      `Photon 那边一个号对应一条分配线路，两个项目都拿它登记，走哪边是未定义的。\n` +
+        `症状同上：时好时坏，发着发着就 Target not allowed for this project。\n` +
+        `修法：一个号只在一个项目里登记。想让两个角色同时在线，就得准备两个不同的手机号，` +
+        `各自在自己的项目里登记一次，各用各分到的线路号。`
+    );
+  }
+}
+
 export async function syncBridges(getConfig) {
   const config = getConfig();
   const projects = config.projects ?? [];
@@ -9289,6 +9349,8 @@ export async function syncBridges(getConfig) {
   for (const { from, to } of followLineChange(lines, (msg) => logWarn("配置", msg))) {
     logInfo("配置", `线路号换了，会话存档 ${from} 已跟着改名为 ${to}`);
   }
+
+  warnProjectConflicts([...want.values()].map((w) => w.project));
 
   const result = { started: [], stopped: [], restarted: [], kept: [] };
 

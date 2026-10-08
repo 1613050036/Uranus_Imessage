@@ -276,5 +276,64 @@ await ok("没填线路号码 → 一次网都不出", async () => {
   }
 });
 
+
+
+/* ================= 两个角色的项目打架 ================= */
+
+function buildConflictGuard() {
+  const errors = [];
+  const make = new Function("logError", extractFn("warnProjectConflicts") + "return warnProjectConflicts;");
+  return { warn: make((_s, m, d) => errors.push({ message: m, detail: d })), errors };
+}
+
+await ok("两个角色共用一个 Photon 项目 → 报错", () => {
+  const g = buildConflictGuard();
+  g.warn([
+    { id: "a", mode: "cloud", projectId: "6c5279b5aaaa", myPhone: "+8613800138001" },
+    { id: "b", mode: "cloud", projectId: "6c5279b5aaaa", myPhone: "+8613800138002" },
+  ]);
+  assert.equal(g.errors.length, 1);
+  assert.match(g.errors[0].message, /共用同一个 Photon 项目/);
+  assert.match(g.errors[0].detail, /一个角色一个 Photon 项目/);
+});
+
+await ok("同一个号登记在两个项目 → 报错", () => {
+  const g = buildConflictGuard();
+  g.warn([
+    { id: "a", mode: "cloud", projectId: "aaaa", myPhone: "+8613800138000" },
+    { id: "b", mode: "cloud", projectId: "bbbb", myPhone: "+8613800138000" },
+  ]);
+  assert.equal(g.errors.length, 1);
+  assert.match(g.errors[0].message, /在 2 个项目里都登记了/);
+});
+
+await ok("两个角色各自独立 → 一个字都不说", () => {
+  const g = buildConflictGuard();
+  g.warn([
+    { id: "a", mode: "cloud", projectId: "aaaa", myPhone: "+8613800138001" },
+    { id: "b", mode: "cloud", projectId: "bbbb", myPhone: "+8613800138002" },
+  ]);
+  assert.equal(g.errors.length, 0);
+});
+
+await ok("myPhone 都是空的 → 不能把「空」当成同一个号", () => {
+  const g = buildConflictGuard();
+  g.warn([
+    { id: "a", mode: "cloud", projectId: "aaaa", myPhone: "" },
+    { id: "b", mode: "cloud", projectId: "bbbb", myPhone: "" },
+  ]);
+  assert.equal(g.errors.length, 0);
+});
+
+await ok("本地 Mac 模式不参与比较（它没有项目凭据这回事）", () => {
+  const g = buildConflictGuard();
+  g.warn([
+    { id: "a", mode: "local", projectId: "", myPhone: "+8613800138000" },
+    { id: "b", mode: "local", projectId: "", myPhone: "+8613800138000" },
+  ]);
+  assert.equal(g.errors.length, 0);
+});
+
 fs.rmSync(TMP, { recursive: true, force: true });
-console.log(`\n${passed} 项通过`);
+console.log(`
+${passed} 项通过`);
