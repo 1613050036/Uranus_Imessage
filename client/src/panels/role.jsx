@@ -32,7 +32,7 @@ import { SaveBar, useSection } from "../section.jsx";
 import { RoleMcpFields } from "./mcp.jsx";
 import { RoleOrderFields } from "./order.jsx";
 import { api, useConfig } from "../store.jsx";
-import { Button, Card, Field, Fold, Modal, NumberField, Switch, inputCls } from "../ui.jsx";
+import { Button, Card, Field, Fold, Modal, NumberField, ResultNote, Switch, inputCls } from "../ui.jsx";
 import {
   Brain,
   Check,
@@ -2578,6 +2578,635 @@ function RoleReminderFields({ role, onGoto }) {
             去「提醒」看列表和默认提前量
           </Button>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 「测试连接」：手机上那个 phyphox 连不连得上，顺手把实验里的 buffer 名列出来。
+ *
+ * 为什么非要列名字：那几个名字跟着实验走（换个实验就全变了），而下面三个
+ * 输入框填的正是它们。填错了的表现是「一直没反应」，光看界面看不出错在哪。
+ * 所以测完直接把手机上真实的名字摆出来，还给一个「照这个填」的按钮。
+ */
+function DollTestButton({ doll, updateDollApi }) {
+  const [state, setState] = useState(null);
+  const host = String(doll.host ?? "").trim();
+  const run = async () => {
+    setState({ busy: true });
+    try {
+      const r = await api("/api/doll/test", {
+        method: "POST",
+        body: { host, magnitude: doll.magnitude, time: doll.time, cover: doll.cover },
+      });
+      setState({ ok: true, info: r });
+    } catch (e) {
+      setState({ ok: false, msg: String(e?.message ?? e) });
+    }
+  };
+
+  const info = state?.ok ? state.info : null;
+  // 实验里能读的那几个 buffer：export 那几组是作者挑过的，比 buffers 全表有用
+  const names = info
+    ? [...new Set((info.exports ?? []).flatMap((s) => (s.sources ?? []).map((x) => x.buffer)))]
+    : [];
+
+  return (
+    <div className="grid grid-cols-1 gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="outline" onClick={run} disabled={state?.busy || !host}>
+          {state?.busy ? "连接中…" : "测试连接"}
+        </Button>
+        {info?.guess?.magnitude && info.guess.magnitude !== doll.magnitude && (
+          <Button
+            variant="outline"
+            onClick={() =>
+              updateDollApi({
+                magnitude: info.guess.magnitude,
+                time: info.guess.time || doll.time,
+                cover: info.guess.cover || doll.cover,
+              })
+            }
+          >
+            照手机上的填
+          </Button>
+        )}
+      </div>
+      {state && !state.busy && (
+        <ResultNote
+          state={state.ok ? "ok" : "fail"}
+          message={
+            state.ok
+              ? `连上了：${info.title || "（没名字的实验）"}${
+                  info.sample
+                    ? info.sample.measuring
+                      ? `，正在测量，这一刻 ${info.sample.value ?? "—"}${
+                          info.sample.cover == null ? "" : `（遮挡 ${info.sample.cover}）`
+                        }`
+                      : "，但实验停着 —— 去 phyphox 里点一下播放"
+                    : ""
+                }${info.sampleError ? `；那几个 buffer 名读不出东西：${info.sampleError}` : ""}`
+              : state.msg
+          }
+        />
+      )}
+      {names.length > 0 && (
+        <p className="text-meta leading-relaxed text-ink-faint">
+          这个实验里能读的：
+          {names.map((n) => (
+            <code key={n} className="mx-1 bg-sunken px-1">
+              {n}
+            </code>
+          ))}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 「校准」：连着读几秒，报这几秒里的峰值和均值。
+ *
+ * 那两个阈值跟手机型号、玩偶厚度、放的姿势都有关，纸上定不出来。用法是测
+ * **两次**：玩偶放着不动测一次看均值（噪声底），抱着测一次看峰值，然后把
+ * 「抱起来算几」填在两者之间。所以这里把两个数都报出来，并且给一个
+ * 「照这个填」—— 按刚测到的峰值取六成当「抱起来」，那个比例是经验值，
+ * 真要紧的是用户能看到自己的数。
+ */
+function DollCalibrateButton({ doll, updateDollApi }) {
+  const [state, setState] = useState(null);
+  const host = String(doll.host ?? "").trim();
+  const ready = host && String(doll.magnitude ?? "").trim() && String(doll.time ?? "").trim();
+  const run = async () => {
+    setState({ busy: true });
+    try {
+      const r = await api("/api/doll/calibrate", {
+        method: "POST",
+        body: {
+          host,
+          magnitude: doll.magnitude,
+          time: doll.time,
+          cover: doll.cover,
+          seconds: 6,
+          intervalMs: doll.intervalMs,
+        },
+      });
+      setState({ ok: true, info: r });
+    } catch (e) {
+      setState({ ok: false, msg: String(e?.message ?? e) });
+    }
+  };
+  const info = state?.ok ? state.info : null;
+
+  return (
+    <div className="grid grid-cols-1 gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="outline" onClick={run} disabled={state?.busy || !ready}>
+          {state?.busy ? "读着…（6 秒）" : "校准：读 6 秒"}
+        </Button>
+        {info && (
+          <Button
+            variant="outline"
+            onClick={() =>
+              updateDollApi({
+                // 峰值的六成当「抱起来」，噪声底的三倍当「还抱着」（至少 0.1）
+                start: Math.max(0.2, Number((info.peak * 0.6).toFixed(2))),
+                hold: Math.max(0.1, Number((info.avg * 3).toFixed(2))),
+              })
+            }
+          >
+            照这次测的填
+          </Button>
+        )}
+      </div>
+      {state && !state.busy && (
+        <ResultNote
+          state={state.ok ? "ok" : "fail"}
+          message={
+            state.ok
+              ? `${info.samples} 个样本：峰值 ${info.peak}、均值 ${info.avg}${
+                  info.cover ? `，遮挡 ${info.cover.min}~${info.cover.max}` : ""
+                }`
+              : state.msg
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * 推送模式那一块：手机按我们生成的实验文件，自己定时 POST 过来。
+ *
+ * 为什么要有这个模式：拉模式要求后端摸得到手机所在的网，**挂在 VPS 上就不
+ * 成立了**（VPS 在机房、手机在家里的路由器后面），小手机（Cloudflare）更不
+ * 可能。推过来的话后端在哪都行。
+ *
+ * 为什么实验文件由后端生成：「往外 POST」只能写在实验文件的 network 块里，
+ * 而 phyphox 官方的网页编辑器不支持网络连接、只能手写 XML —— 让用户照着
+ * wiki 自己搓一份还要把地址和密钥填对，等于劝退。
+ */
+function DollPushFields({ doll, updateDollApi }) {
+  const url = String(doll.pushUrl ?? "").trim();
+  const secret = String(doll.pushSecret ?? "").trim();
+  const ready = url && secret;
+  // 地址 + 固定路径，拼出手机实际要打的那一条，照着贴给用户看
+  const full = ready ? `${url.replace(/\/+$/, "")}/doll/hug` : "";
+
+  return (
+    <>
+      <div>
+        <p className="text-ui text-ink">手机那头（所有角色共用）</p>
+        <p className="mt-0.5 text-meta leading-relaxed text-ink-faint">
+          手机主动把数据推过来，所以
+          <strong className="text-ink-soft">后端在哪都行</strong>
+          —— VPS、小手机、或者家里电脑挂个内网穿透都成，不要求和手机同一个 WiFi。
+          <br />
+          代价是手机上要装一个
+          <strong className="text-ink-soft">我们生成的实验文件</strong>
+          （phyphox 自带的那些实验里没有「往外发数据」这一段，那只能写在实验里）。
+          下面填好地址、生成密钥，然后点「下载实验文件」。
+        </p>
+      </div>
+
+      <Field
+        label="手机要连的地址"
+        hint="这台后端在公网上的地址，填到域名或端口为止就行，后面那段路径我们自己补。VPS 直接填它的地址，小手机填 Worker 的域名"
+      >
+        <input
+          className={inputCls}
+          value={doll.pushUrl ?? ""}
+          onChange={(e) => updateDollApi({ pushUrl: e.target.value })}
+          placeholder="https://chat.example.com"
+        />
+      </Field>
+
+      <Field
+        label="推送密钥"
+        hint="这个口子不走控制台登录（phyphox 带不了登录态，也不支持自定义请求头），全靠这串字符认。空着 = 这条腿不通，外面打过来一律 404"
+      >
+        <div className="flex gap-2">
+          <input
+            className={inputCls}
+            value={doll.pushSecret ?? ""}
+            onChange={(e) => updateDollApi({ pushSecret: e.target.value })}
+            placeholder="点右边生成一串"
+          />
+          <Button
+            variant="outline"
+            onClick={() =>
+              updateDollApi({
+                // crypto.randomUUID 去掉横杠，32 位十六进制，够用而且好复制
+                pushSecret: (crypto.randomUUID?.() ?? `${Math.random()}${Math.random()}`).replaceAll("-", ""),
+              })
+            }
+          >
+            生成
+          </Button>
+        </div>
+      </Field>
+
+      {full && (
+        <p className="text-meta leading-relaxed text-ink-faint">
+          手机会往这儿打：
+          <code className="mx-1 bg-sunken px-1">{full}</code>
+          <br />
+          这条路径<strong className="text-ink-soft">不经过控制台登录</strong>
+          ，所以它暴露在公网上 —— 密钥不对的一律挡掉，功能没开时连 404 都不多说一句。
+        </p>
+      )}
+
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+        <NumberField
+          label="采样率"
+          hint="手机每秒采多少个点。20 足够认出抱起来那一下；调高只是更费电和流量"
+          value={doll.pushRate ?? 20}
+          min={5}
+          max={100}
+          step={5}
+          suffix="Hz"
+          onChange={(v) => updateDollApi({ pushRate: v })}
+        />
+        <NumberField
+          label="多久推一次"
+          hint="这就是反应延迟：抱完最多等这么久角色才开口。调小更灵敏但更费电"
+          value={doll.pushInterval ?? 2}
+          min={1}
+          max={30}
+          step={1}
+          suffix="秒"
+          onChange={(v) => updateDollApi({ pushInterval: v })}
+        />
+      </div>
+
+      <label className="flex items-start justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-ui text-ink">顺带采接近传感器</span>
+          <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+            抱着不动的时候加速度几乎是 0，光看加速度会以为已经放下了；加上这个，
+            「被捂着」就算还抱着，时长准得多。没有这个传感器的机器会自动跳过。
+          </span>
+        </span>
+        <Switch
+          // 推模式下不填 buffer 名，用「填没填」当开关（拉模式那边填的就是名字）
+          checked={Boolean(String(doll.cover ?? "").trim())}
+          onChange={(v) => updateDollApi({ cover: v ? "prox" : "" })}
+          label="顺带采接近传感器"
+        />
+      </label>
+
+      <div className="grid grid-cols-1 gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            disabled={!ready}
+            onClick={() => {
+              // 直接让浏览器去下载：这个接口回的是文件流，不是 JSON
+              window.location.href = "/api/doll/experiment";
+            }}
+          >
+            下载实验文件
+          </Button>
+          {!ready && <span className="text-meta text-ink-faint">先把地址和密钥填上</span>}
+        </div>
+        <p className="text-meta leading-relaxed text-ink-faint">
+          <strong className="text-warn">这个文件里带着上面那串密钥</strong>
+          ，等于一把钥匙，别发给别人。改了地址、密钥、采样率之后要
+          <strong className="text-ink-soft">重新下一份</strong>
+          （那几样是写死在文件里的）。
+          <br />
+          装到手机上：把文件发给自己（微信/邮件/AirDrop 都行）→ 在手机上点开 →
+          选「用 phyphox 打开」。phyphox 会弹一个提示告诉你这个实验要联网、发到哪儿，确认就行。
+          <br />
+          打开之后<strong className="text-ink-soft">按一下播放键</strong>
+          才开始推。推模式下这边没法替你按 —— 后端联系不上手机，那正是用这个模式的原因。
+        </p>
+      </div>
+    </>
+  );
+}
+
+/**
+ * 「共感娃娃」那一段：角色这边只有开关、文案和冷却，手机那头（地址、buffer
+ * 名、判定阈值）在全局的 dollApi 上、所有角色共用。
+ *
+ * 为什么这么分：文案是「这个角色该怎么被告知这件事」，一人一份才有意义；
+ * 手机那部是用户自己的设备，每个角色填一遍的话换个 WiFi 得改 N 处
+ * （和查岗那边的 SMTP 凭据一个道理）。
+ */
+function RoleHugFields({ role }) {
+  const { updateRole, updateDollApi, config } = useConfig();
+  const hug = role.hug ?? {};
+  const doll = config.dollApi ?? {};
+  const set = (patch) => updateRole(role.id, { hug: { ...hug, ...patch } });
+
+  return (
+    <div className="grid grid-cols-1 gap-6">
+      <p className="text-meta leading-relaxed text-ink-faint">
+        把手机塞进玩偶里，抱一下，角色那边就收到一句你看不见的系统提示
+        （默认是「{"{{user}}"}抱了一下共感娃娃，你感受到了」），然后它按人设来回应你 ——
+        和到点的提醒走的是同一条路，所以不看主动消息那个开关，也不管勿扰时段。
+        <br />
+        传感器用的是手机上的
+        <strong className="text-ink-soft"> phyphox </strong>
+        （免费，App Store / Play 商店都有）：拿它读加速度，由后端认出
+        「抱起来 → 抱着 → 放下」这一整段。
+        <strong className="text-ink-soft">不用浏览器、不用装证书、也不用买硬件。</strong>
+        <br />
+        两种接法下面可以选：后端在你自己电脑上就让
+        <strong className="text-ink-soft">后端去读手机</strong>
+        （最省事，手机上不用装东西）；后端在 VPS 或小手机上就让
+        <strong className="text-ink-soft">手机推给后端</strong>
+        （不要求同一个网）。
+      </p>
+
+      <label className="flex items-start justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-ui text-ink">让这个角色感知拥抱</span>
+          <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+            开了之后，每次抱都会让它起一轮主动发言，发到你最近和它说话的那个聊天里
+            （还没说过话的话这边会在日志里提一句，先聊一句就有了）。
+            <br />
+            线下模式、提示词协助模式开着的时候不打扰，那几次会攒起来，下一次一起说。
+          </span>
+        </span>
+        <Switch checked={Boolean(hug.enabled)} onChange={(v) => set({ enabled: v })} label="启用共感娃娃" />
+      </label>
+
+      {hug.enabled && (
+        <>
+          <Field
+            label="那句系统提示"
+            hint="留空 = 用默认那句。{{user}} 照旧由系统替换；{{时长}} 抱了多久、{{力度}}「轻轻」或「用力」（中间那档是空的）、{{次数}} 冷却期里攒下的几次。不想要哪个就把它删掉"
+          >
+            <textarea
+              className={`${inputCls} min-h-[5rem] font-mono text-xs leading-relaxed`}
+              value={hug.template ?? ""}
+              onChange={(e) => set({ template: e.target.value })}
+              placeholder="[系统提示:{{user}}{{力度}}抱了一下共感娃娃，你感受到了，抱了{{时长}}{{次数}}]"
+            />
+          </Field>
+
+          <NumberField
+            label="冷却"
+            hint="一次拥抱就是一整轮模型调用，揉着玩偶玩会连出好几次。冷却期内的不另起一轮，只攒成 {{次数}} 等下次一起说。0 = 抱几下响几下"
+            value={hug.cooldownMinutes ?? 10}
+            min={0}
+            max={1440}
+            step={1}
+            suffix="分钟"
+            onChange={(v) => set({ cooldownMinutes: v })}
+          />
+
+          {/*
+            手机那头单独一块、带上分隔线：这一摊是「你那部手机」的事，和上面
+            三栏不是一个东西，而且所有角色共用一份 —— 不说清楚的话，用户在
+            第二个角色这儿看到已经填好的地址会以为是串了。
+          */}
+          <div className="grid grid-cols-1 gap-5 border-t border-line pt-5">
+            <Field
+              label="哪一头主动"
+              hint="决定了手机和后端谁去找谁。装在自己电脑上就用「后端去读手机」，挂在 VPS、或者用小手机（Cloudflare）就只能用「手机推给后端」"
+            >
+              <select
+                className={inputCls}
+                value={doll.mode === "push" ? "push" : "pull"}
+                onChange={(e) => updateDollApi({ mode: e.target.value })}
+              >
+                <option value="pull">后端去读手机（要在同一个 WiFi 下，手机上不用装东西）</option>
+                <option value="push">手机推给后端（后端在哪都行，手机上要装一个实验文件）</option>
+              </select>
+            </Field>
+
+            {doll.mode === "push" ? (
+              <DollPushFields doll={doll} updateDollApi={updateDollApi} />
+            ) : (
+              <>
+            <div>
+              <p className="text-ui text-ink">手机那头（所有角色共用）</p>
+              <p className="mt-0.5 text-meta leading-relaxed text-ink-faint">
+                在手机上装
+                <strong className="text-ink-soft"> phyphox </strong>
+                → 打开
+                <strong className="text-ink-soft">「Acceleration without g」</strong>
+                （简中「无重力加速度」、繁中「不含重力之加速度」，在「原始传感器」那一组的第一个）
+                → 右上角菜单里选「允许远程访问」→ 把它显示的那个地址填到下面。
+                <br />
+                <strong className="text-ink-soft">别选「向心加速度」</strong>
+                ——那是力学分类下的教学实验，算的是角速度，不是手机自己在怎么动。
+                <br />
+                手机和这台电脑得在
+                <strong className="text-ink-soft">同一个 WiFi</strong>
+                下，phyphox 得<strong className="text-ink-soft">开在前台</strong>
+                （切后台、下拉通知栏都会中断测量）。屏幕不用管——远程访问开着的时候
+                phyphox 自己会保持常亮。建议插着电，这么跑挺费电。
+                <br />
+                iPhone 塞进玩偶里容易被压着误触，用
+                <strong className="text-ink-soft">「引导式访问」</strong>
+                治：设置 → 辅助功能 → 引导式访问打开，然后在 phyphox 里连按三下侧边键，
+                左下角「选项」里把<strong className="text-ink-soft">「触摸」关掉</strong>
+                ，整块屏幕就不吃触摸了，也退不出这个 App。进去之前先点一下播放
+                （或者靠下面那个「替我按开始」远程点）。
+                <br />
+                <strong className="text-warn">那个远程接口没有密码</strong>
+                ，同一个网里谁都能读你手机的传感器 —— 别在公共 WiFi 上开着。
+              </p>
+            </div>
+
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-ui text-ink">连手机</span>
+                <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                  关了就整条腿不通，所有角色都收不到拥抱（不用一个个去关）。
+                </span>
+              </span>
+              <Switch
+                checked={Boolean(doll.enabled)}
+                onChange={(v) => updateDollApi({ enabled: v })}
+                label="连手机上的 phyphox"
+              />
+            </label>
+
+            <Field
+              label="手机地址"
+              hint="phyphox 开了远程访问之后自己显示的那个。安卓一般带 :8080，iPhone 默认是 80（不写端口就行）"
+            >
+              <input
+                className={inputCls}
+                value={doll.host ?? ""}
+                onChange={(e) => updateDollApi({ host: e.target.value })}
+                placeholder="192.168.1.23:8080"
+              />
+            </Field>
+
+            <DollTestButton doll={doll} updateDollApi={updateDollApi} />
+
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+              <Field label="幅值 buffer" hint="加速度的绝对值那一列。「Acceleration without g」里叫 acc">
+                <input
+                  className={inputCls}
+                  value={doll.magnitude ?? ""}
+                  onChange={(e) => updateDollApi({ magnitude: e.target.value })}
+                  placeholder="acc"
+                />
+              </Field>
+              <Field label="时间轴 buffer" hint="和幅值配对的那一列时间，叫 acc_time。靠它增量取数，填错会一直没反应">
+                <input
+                  className={inputCls}
+                  value={doll.time ?? ""}
+                  onChange={(e) => updateDollApi({ time: e.target.value })}
+                  placeholder="acc_time"
+                />
+              </Field>
+            </div>
+
+            <Field
+              label="遮挡 buffer（可留空）"
+              hint="接近或光线传感器那一列。抱着不动的时候加速度几乎是 0，光看加速度会以为已经放下了；填了这个，「被捂着」就算还抱着，时长准得多。要用得在 phyphox 里开一个同时采加速度和接近/光线的实验"
+            >
+              <input
+                className={inputCls}
+                value={doll.cover ?? ""}
+                onChange={(e) => updateDollApi({ cover: e.target.value })}
+                placeholder="prox"
+              />
+            </Field>
+
+            {String(doll.cover ?? "").trim() && (
+              <NumberField
+                label="低于这个数算被捂着"
+                hint="接近传感器近了是 0（单位厘米），光线传感器暗了也接近 0（单位勒克斯，室内几百）。按你填的那个传感器来"
+                value={doll.coverBelow ?? 5}
+                min={0}
+                max={200000}
+                step={1}
+                onChange={(v) => updateDollApi({ coverBelow: v })}
+              />
+            )}
+
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+              <NumberField
+                label="多久读一次"
+                hint="phyphox 那个服务器是单线程的，太密只会让它变慢。400 毫秒够认出抱起来那一下"
+                value={doll.intervalMs ?? 400}
+                min={200}
+                max={3000}
+                step={50}
+                suffix="毫秒"
+                onChange={(v) => updateDollApi({ intervalMs: v })}
+              />
+              <label className="flex items-start justify-between gap-4">
+                <span className="min-w-0">
+                  <span className="block text-ui text-ink">实验停着就替我按开始</span>
+                  <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                    phyphox 开着但没点播放时，这边替你点一下（半分钟最多试一次）。
+                  </span>
+                </span>
+                <Switch
+                  checked={doll.autoStart !== false}
+                  onChange={(v) => updateDollApi({ autoStart: v })}
+                  label="实验停着时自动开始测量"
+                />
+              </label>
+            </div>
+              </>
+            )}
+
+            <div>
+              <p className="text-ui text-ink">怎么算一次拥抱</p>
+              <p className="mt-0.5 text-meta leading-relaxed text-ink-faint">
+                默认值是按「手机塞在玩偶里、人把玩偶抱起来」估的，不一定合你那只。
+                {doll.mode === "push" ? (
+                  <>
+                    调法：手机上打开那个实验，底下就是一张实时波形图 ——
+                    <strong className="text-ink-soft">放着不动</strong>看基线有多高，
+                    <strong className="text-ink-soft">抱一下</strong>看峰值冲到多少。
+                    「抱起来」填在两者之间，「还抱着」填得比基线高一点。
+                  </>
+                ) : (
+                  <>
+                    调法：把玩偶
+                    <strong className="text-ink-soft">放着不动</strong>
+                    校准一次，看<strong className="text-ink-soft">均值</strong>（那是噪声底）；
+                    <strong className="text-ink-soft">抱着</strong>
+                    再校准一次，看<strong className="text-ink-soft">峰值</strong>。
+                    「抱起来」填在两者之间，「还抱着」填得比噪声底高一点。
+                  </>
+                )}
+              </p>
+            </div>
+
+            {/*
+              校准按钮是「连着读几秒」，只有拉模式做得到 —— 推模式下后端没法
+              主动问手机要数据。那边改成看手机上那张实时波形图（生成的实验
+              文件里就带着一张），效果一样直观。
+            */}
+            {doll.mode !== "push" && <DollCalibrateButton doll={doll} updateDollApi={updateDollApi} />}
+
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+              <NumberField
+                label="抱起来算几"
+                hint="超过这个数才算一次拥抱开始（m/s²）。随手碰到桌子一般到不了 2"
+                value={doll.start ?? 2}
+                min={0.05}
+                max={100}
+                step={0.1}
+                onChange={(v) => updateDollApi({ start: v })}
+              />
+              <NumberField
+                label="还抱着算几"
+                hint="高于这个数就算「还抱着」（m/s²）。最容易要调的一个：太低会被桌子的振动骗着一直抱着，太高会把安安静静抱着当成已经放下"
+                value={doll.hold ?? 0.25}
+                min={0.01}
+                max={100}
+                step={0.05}
+                onChange={(v) => updateDollApi({ hold: v })}
+              />
+              <NumberField
+                label="安静多久算放下"
+                hint="短了会把「抱着换个姿势」切成两次拥抱"
+                value={doll.quietMs ?? 4000}
+                min={500}
+                max={60000}
+                step={500}
+                suffix="毫秒"
+                onChange={(v) => updateDollApi({ quietMs: v })}
+              />
+              <NumberField
+                label="不到这么久不算抱"
+                hint="防误触的主力：搬玩偶、它从沙发上滑下来都是一下一下的。0 = 碰一下也算"
+                value={doll.minHoldMs ?? 1500}
+                min={0}
+                max={60000}
+                step={100}
+                suffix="毫秒"
+                onChange={(v) => updateDollApi({ minHoldMs: v })}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+              <NumberField
+                label="低于这个算「轻轻」"
+                hint="峰值低于它，那句话里的 {{力度}} 就是「轻轻」（m/s²）"
+                value={doll.soft ?? 4}
+                min={0.05}
+                max={100}
+                step={0.5}
+                onChange={(v) => updateDollApi({ soft: v })}
+              />
+              <NumberField
+                label="高于这个算「用力」"
+                hint="两者之间是中间档，那时候 {{力度}} 是空的（「抱了一下」比「普通地抱了一下」像人话）"
+                value={doll.firm ?? 10}
+                min={0.05}
+                max={1000}
+                step={0.5}
+                onChange={(v) => updateDollApi({ firm: v })}
+              />
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -6377,6 +7006,19 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
           badge={onOff(role.reminder?.enabled)}
         >
           <RoleReminderFields role={role} onGoto={onGoto} />
+        </Fold>
+
+        {/*
+          共感娃娃挨着定时提醒放：两栏都是「不等对方开口、由一件外面的事
+          把角色推出来说话」的功能，走的也是同一条路（runProactiveTurn 的
+          override）。用户在这儿一眼能看完「角色会在什么时候自己冒出来」。
+        */}
+        <Fold
+          title="共感娃娃"
+          desc="手机塞玩偶里抱一下，角色就收到「{{user}}抱了一下共感娃娃」—— 传感器用手机上的 phyphox"
+          badge={onOff(role.hug?.enabled)}
+        >
+          <RoleHugFields role={role} />
         </Fold>
 
         {/*

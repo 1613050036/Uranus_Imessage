@@ -133,6 +133,15 @@ import { applyAndLog } from "./regex.js";
 import { requestRestart } from "./restart.js";
 import { appendTurn, followLineChange, readSession, recentMessages, sessionIdFor } from "./sessions.js";
 import { hasFix, hasMoved, locationHint, watchFriendLocations } from "./friendloc.js";
+// 共感娃娃：连手机上的 phyphox、认出一次拥抱、拼那句系统提示（见 doll.js 文件头）
+import {
+  createDollState,
+  feedDollSamples,
+  fetchDollSamples,
+  renderHugLine,
+  shouldTryStart,
+  startDollMeasuring,
+} from "./doll.js";
 import {
   DEVICE_NAMES,
   phonePool,
@@ -461,6 +470,19 @@ function createRunner(projectRefId) {
     reminderTimer: null,
     reminderBusy: false,
     reminderHints: new Map(),
+    /*
+     * 共感娃娃（见 doll.js）。
+     *
+     * 这里只有**按角色算**的那两笔。轮询和状态机是**整个进程一份**的
+     * （见下面那个 dollWatcher）—— 玩偶里只有一部手机，每条连接各开一条
+     * 轮询等于拿 N 倍的请求去打一个单线程的服务器。
+     *
+     * 两笔都只在内存里：「刚才被抱了」这件事过了就过了，重启之后从头听，
+     * 不该把关机期间的拥抱补发出来（和提醒相反 —— 那是用户约好的时刻，
+     * 这是一个当场的动作）。
+     */
+    hugCooldownUntil: 0, // 冷却到什么时候（角色的 hug.cooldownMinutes）
+    hugPending: 0, // 冷却期内攒下的次数，下次一起说（那句话里的 {{次数}}）
     stopped: false, // stopBridge 之后消息循环要认得出自己已经过期
     retries: 0, // 连续失败了几次，决定下次等多久（见 RETRY_DELAYS）
     retryTimer: null, // 待触发的自动重连
@@ -4609,7 +4631,11 @@ async function fireProactive(getConfig, runner, spaceId) {
 async function runProactiveTurn(getConfig, runner, slot, spaceId, override = null) {
   const config = getConfig();
   const role = currentRole(config, runner);
-  const scope = scopeOf(runner, override ? "定时提醒" : "主动消息");
+  /*
+   * override 那一路现在有两种来路（定时提醒、共感娃娃），所以日志的分类由
+   * 调用方给。没给的按「定时提醒」—— reminderInput 就没给，它是先来的那个。
+   */
+  const scope = scopeOf(runner, override ? override.scope ?? "定时提醒" : "主动消息");
   const llmScope = scopeOf(runner, "LLM");
   const space = slot.space;
   const peer = slot.peer || spaceId;
@@ -4619,7 +4645,7 @@ async function runProactiveTurn(getConfig, runner, slot, spaceId, override = nul
 
   const eps = resolveRoleEndpoints(config, role);
   if (!eps.chat) {
-    logError(scope, `这个角色的聊天 API 没配好，${override ? "提醒" : "主动消息"}发不了`);
+    logError(scope, `这个角色的聊天 API 没配好，${override ? override.label ?? "提醒" : "主动消息"}发不了`);
     return;
   }
 
@@ -5249,6 +5275,352 @@ async function reminderTick(getConfig, runner) {
   } finally {
     runner.reminderBusy = false;
   }
+}
+
+/* ================= 共感娃娃（连手机、认拥抱都在 doll.js） ================= */
+
+/**
+ * 没在听的时候隔多久回头看一眼配置。
+ *
+ * 功能没开、手机地址没填、一个角色都没开 —— 这几种情况下不该按
+ * `intervalMs` 那个频率空转，但也不能彻底不看：用户随时可能在面板上打开，
+ * 那之后最多等这么久就开始听。
+ */
+const HUG_IDLE_MS = 5_000;
+
+/**
+ * 连不上的时候，同一个原因隔多久才再说一次。
+ *
+ * 这条心跳是几百毫秒一跳的，手机一息屏就是每秒两三条「超过 3 秒没响应」——
+ * 不节流的话一夜之间日志里什么都找不着了。原因变了（从「没响应」变成
+ * 「连接被掐断」）立刻说一次，那通常意味着情况变了。
+ */
+const HUG_ERR_QUIET_MS = 60_000;
+
+/**
+ * 娃娃那条轮询，**整个进程一份**。
+ *
+ * 为什么不像提醒那样挂在 runner 上：玩偶里只有**一部**手机。按 runner 开的话，
+ * 两个角色就是两条轮询同时去打同一个地址 —— 而 phyphox 那个服务器是单线程
+ * 的（见 doll.js 文件头），请求会排队，排到后来每一跳都慢。而且两条轮询各
+ * 持一份 `since`，同一批样本会被两边各读一遍，喂进两个状态机。
+ *
+ * 所以这里是「一处听、认出来再分发」：谁开了 `role.hug.enabled` 就各收一句，
+ * 冷却仍然按角色各算（那是每个角色的性格，见 config.js:normalizeHug）。
+ */
+const dollWatcher = {
+  /*
+   * 「这条轮询开着吗」要用一个**独立的标志**，不能看 timer 是不是空的 ——
+   * 每一跳跑之前 timer 就被置回 null 了（它已经触发完了），那一瞬间进来
+   * 第二条连接的 armHug 会以为没人在跑，于是又起一条 loop，从此两条并行。
+   */
+  running: false,
+  timer: null,
+  busy: false,
+  state: createDollState(), // 状态机，见 doll.js:feedDollSamples
+  err: { why: "", at: 0 }, // 连不上时的日志节流
+};
+
+/** 整个进程的娃娃轮询日志都走这个分类（不属于哪条线路）。 */
+const HUG_SCOPE = "共感娃娃";
+
+/** 停掉娃娃轮询。停完所有连接时调（见 stopAllBridges）。 */
+function stopDollWatcher() {
+  dollWatcher.running = false;
+  if (dollWatcher.timer) clearTimeout(dollWatcher.timer);
+  dollWatcher.timer = null;
+  dollWatcher.state = createDollState();
+}
+
+/**
+ * 开起娃娃轮询。重复调用是安全的（已经在跑就什么都不做）—— 每条连接起来时
+ * 都会调一次，而它们共用这一条。
+ *
+ * 用自递归的 setTimeout 而不是 setInterval：间隔是**配置项**
+ * （`dollApi.intervalMs`），用户在面板上改完下一跳就按新的走，不用重启；
+ * 而且这样天然不会出现「上一跳还没回来下一跳就排上了」。
+ */
+function armHug(getConfig) {
+  if (dollWatcher.running) return;
+  dollWatcher.running = true;
+  const loop = async () => {
+    dollWatcher.timer = null;
+    if (!dollWatcher.running) return;
+    let wait = HUG_IDLE_MS;
+    try {
+      wait = await hugTick(getConfig);
+    } catch (e) {
+      // hugTick 自己兜了错，这儿只兜「兜错的时候又错了」
+      logError(HUG_SCOPE, "娃娃心跳出错，下一跳再看", e);
+    }
+    /*
+     * 所有连接都停了就别再排下一跳 —— 否则 Ctrl+C 之后这条定时器还在，
+     * 而它是 unref 过的，进程该退还是能退，但日志会继续刷。下次有连接
+     * 起来时 armHug 会重新把它开起来，所以这里得把标志放掉。
+     */
+    if (!dollWatcher.running || !runners.size) {
+      dollWatcher.running = false;
+      return;
+    }
+    dollWatcher.timer = setTimeout(() => void loop(), wait);
+    dollWatcher.timer.unref?.();
+  };
+  // 第一跳稍等一下：刚连上那一刻主连接还在补消息，别再叠一条轮询上去
+  dollWatcher.timer = setTimeout(() => void loop(), 3_000);
+  dollWatcher.timer.unref?.();
+}
+
+/** 现在有哪些角色在听。一个都没有就不必去打扰那部手机。 */
+function hugListeners(config) {
+  const out = [];
+  for (const runner of runners.values()) {
+    if (runner.stopped) continue;
+    const role = currentRole(config, runner);
+    if (role?.hug?.enabled) out.push({ runner, role });
+  }
+  return out;
+}
+
+/**
+ * 跑一跳：拉一把样本喂给状态机，认出来的拥抱分发给每个在听的角色。
+ *
+ * @returns {Promise<number>} 下一跳等多久（毫秒）
+ */
+async function hugTick(getConfig) {
+  if (dollWatcher.busy) return HUG_IDLE_MS;
+  const config = getConfig();
+  const api = config.dollApi ?? {};
+  const listeners = hugListeners(config);
+
+  /*
+   * 三道闸都得过：功能开着、手机地址填了、至少一个角色在听。
+   *
+   * 任一条不过就**把状态机清掉**再退 —— 不然用户关掉开关、过一会儿再打开，
+   * 中间那段时间的 `since` 还留着，第一跳会把这段时间里积的几万个样本一口气
+   * 读回来，变成一次「抱了二十分钟」。
+   */
+  if (!api.enabled || !api.host || !listeners.length || api.mode === "push") {
+    if (dollWatcher.state.since != null) dollWatcher.state = createDollState();
+    return HUG_IDLE_MS;
+  }
+
+  dollWatcher.busy = true;
+  try {
+    const state = dollWatcher.state;
+    const page = await fetchDollSamples(api.host, {
+      magnitude: api.magnitude,
+      time: api.time,
+      cover: api.cover,
+      since: state.since,
+    });
+    // 连上了就把上一次的报错清掉，下次断了会立刻说一声
+    dollWatcher.err = { why: "", at: 0 };
+
+    /*
+     * 实验停着：手机上开着 phyphox 但没点播放，或者用户自己点了停。替他按一下
+     * （节流过的，见 doll.js:shouldTryStart）。这一跳就到这儿 —— buffer 里是
+     * 上一次测量的旧数据，feedDollSamples 会把它全丢掉。
+     */
+    if (!page.measuring) {
+      feedDollSamples(state, page, api);
+      if (api.autoStart && shouldTryStart(state)) {
+        const ok = await startDollMeasuring(api.host);
+        logInfo(
+          HUG_SCOPE,
+          ok ? "手机上的实验停着，已经替你按了开始" : "手机上的实验停着，按开始没成（去 phyphox 里点一下播放）"
+        );
+      }
+      return Math.max(api.intervalMs ?? 400, 1_000);
+    }
+
+    const hugs = feedDollSamples(state, page, api);
+    /*
+     * 挨个递、不并发：每个角色都是一整轮模型调用，各自要 ensureSpace、各自
+     * 排进自己那条 chain。并发只会让几条线路同时去抢同一批资源。
+     */
+    for (const hug of hugs) {
+      for (const { runner, role } of listeners) {
+        if (runner.stopped) continue;
+        await deliverHug(getConfig, runner, role, hug);
+      }
+    }
+    return api.intervalMs ?? 400;
+  } catch (e) {
+    /*
+     * 连不上不是「出错」，是常态的一种：手机息屏、走出 WiFi、phyphox 被切到
+     * 后台。所以不 logError（那会在界面上变成一条红的），只按原因节流地
+     * logWarn 一句，而且**退到 idle 的节奏**去重试 —— 手机不在的时候没必要
+     * 每 400ms 敲一次门。
+     */
+    const why = String(e?.message ?? e);
+    const now = Date.now();
+    if (dollWatcher.err.why !== why || now - dollWatcher.err.at > HUG_ERR_QUIET_MS) {
+      logWarn(HUG_SCOPE, `连不上手机上的 phyphox：${why}`);
+      dollWatcher.err = { why, at: now };
+    }
+    return HUG_IDLE_MS;
+  } finally {
+    dollWatcher.busy = false;
+  }
+}
+
+/**
+ * 推送模式：手机自己把一包样本 POST 过来了。
+ *
+ * 和拉模式**共用同一个状态机**（dollWatcher.state）—— 两条路喂进去的都是
+ * 「一把带时间戳的样本」，所以阈值、冷却、那句话的拼法全都照旧，没有第二套
+ * 判定逻辑。两条路同时开着也不会打架：拉那边在 `mode === "push"` 时根本不跑
+ * （见 hugTick）。
+ *
+ * 由 index.js 那条 webhook 路由调（secret 已经在那边验过了）。
+ *
+ * @param {object} payload parseDollPush 的结果
+ * @returns {Promise<{hugs:number, listeners:number}>} 这包认出几次拥抱、递给了几个角色
+ */
+export async function handleDollPush(getConfig, payload) {
+  const config = getConfig();
+  const api = config.dollApi ?? {};
+  const listeners = hugListeners(config);
+  if (!listeners.length) {
+    logDebug(HUG_SCOPE, "收到一包数据，但这会儿没有角色开着共感娃娃");
+    return { hugs: 0, listeners: 0 };
+  }
+
+  /*
+   * 推模式没有 `measuring` / `session` 可问（那两样是远程接口才有的）。
+   * 能收到这包本身就说明手机在测量，所以这里直接拿 `true` 和一个固定的
+   * session 喂进去 —— 换实验这件事在推模式下表现为「对方换了实验文件」，
+   * 那会导致时间轴归零，状态机里有一条专门认它（见 feedDollSamples）。
+   */
+  const hugs = feedDollSamples(
+    dollWatcher.state,
+    { session: "push", measuring: true, samples: payload.samples, cover: payload.cover },
+    api
+  );
+  for (const hug of hugs) {
+    for (const { runner, role } of listeners) {
+      if (runner.stopped) continue;
+      await deliverHug(getConfig, runner, role, hug);
+    }
+  }
+  return { hugs: hugs.length, listeners: listeners.length };
+}
+
+/**
+ * 这一下该说给哪个会话。
+ *
+ * 拥抱不属于哪个聊天 —— 用户抱的是玩偶，不是在某条对话里点了什么。所以照
+ * 「用户自己设的提醒」那条分支走（reminderTarget 的后半段）：发到这个角色
+ * 最近说话的那个会话，一次都没记过就用这条线路手上最近那个。
+ */
+function hugTarget(role, runner, lastChat) {
+  const lc = lastChat?.[role.id];
+  if (lc?.spaceId) {
+    if (lc.projectRefId && lc.projectRefId !== runner.projectRefId) return null;
+    return { spaceId: lc.spaceId, peer: lc.peer };
+  }
+  const last = runner.lastSpace;
+  return last?.spaceId ? { spaceId: last.spaceId, peer: last.peer } : null;
+}
+
+/**
+ * 递一次拥抱：拼那句系统提示，借主动消息那条路让角色开口。
+ *
+ * 和提醒走的是同一条路（`runProactiveTurn` 带 override），所以同样**不看
+ * 主动消息的开关**，也同样无视勿扰时段 —— 用户是刚刚亲手抱了一下，这会儿
+ * 不回应才叫坏掉。
+ */
+async function deliverHug(getConfig, runner, role, hug) {
+  const scope = scopeOf(runner, "共感娃娃");
+  const api = getConfig().dollApi ?? {};
+  const cfg = role.hug ?? {};
+  const cd = (cfg.cooldownMinutes ?? 10) * 60_000;
+  const now = Date.now();
+
+  /*
+   * 冷却期内的不另起一轮，只把次数攒起来。
+   *
+   * 揉着玩偶玩会连出好几次拥抱，一次就是一整轮模型调用。攒着而不是丢掉，
+   * 是因为「这之前还抱过 5 次」本身是有信息的 —— 见 doll.js:renderHugLine
+   * 里的 `{{次数}}`。
+   */
+  if (cd && now < runner.hugCooldownUntil) {
+    runner.hugPending += 1;
+    const left = Math.max(1, Math.round((runner.hugCooldownUntil - now) / 60_000));
+    logDebug(scope, `又被抱了一下（${hugDurationLog(hug)}），冷却还有 ${left} 分钟，攒到第 ${runner.hugPending} 次`);
+    return;
+  }
+
+  // 「这个角色最近在哪说话」记在提醒那份存档里（reminder.js:noteLastChat）
+  const reminders = loadReminders();
+  const target = hugTarget(role, runner, reminders.lastChat);
+  if (!target) {
+    /*
+     * 还没有过任何对话，不知道该发到哪儿。**攒着不丢**：用户很可能是先配好
+     * 娃娃、抱着试了几下，然后才去跟角色说第一句话 —— 那几下该算数。
+     * 冷却这时候不置上（这一次压根没发出去）。
+     */
+    runner.hugPending += 1;
+    logWarn(scope, `被抱了一下，但还不知道该发到哪个聊天里（先跟角色说句话，之后就有了），攒到第 ${runner.hugPending} 次`);
+    return;
+  }
+
+  /*
+   * 线下模式 / 提示词协助模式开着时角色不在线上，这会儿不能开口 —— 和提醒
+   * 那边一个待遇，区别是**攒着不丢**：线下结束之后下一次拥抱会把这几次
+   * 一起说出来。
+   */
+  if (isOfflineOn(memoryKeyFor(role)) || isAssistOn(runner.projectRefId, target.spaceId)) {
+    runner.hugPending += 1;
+    logDebug(scope, `被抱了一下，但这会儿不在线上（线下 / 协助模式），攒到第 ${runner.hugPending} 次`);
+    return;
+  }
+
+  const slot = {
+    space: runner.lastSpace?.spaceId === target.spaceId ? runner.lastSpace.space : null,
+    peer: target.peer || target.spaceId,
+  };
+  if (!(await ensureSpace(runner, slot, target.spaceId))) return;
+
+  const times = runner.hugPending;
+  const toModel = renderHugLine(cfg.template, {
+    durationMs: hug.durationMs,
+    peak: hug.peak,
+    times,
+    opts: api,
+  });
+  if (!toModel.trim()) {
+    logWarn(scope, "那句系统提示的文案是空的，这次不发");
+    return;
+  }
+
+  /*
+   * 先记账再开口：冷却从**发之前**算起，而且先清掉攒的次数。
+   *
+   * 顺序反了的话，这一轮模型调用（十几秒）期间再被抱几下，会因为冷却还没
+   * 置上而又起一轮；次数也会被这一轮发出去的那句话重复带上。
+   */
+  runner.hugCooldownUntil = cd ? Date.now() + cd : 0;
+  runner.hugPending = 0;
+
+  logInfo(scope, `被抱了一下（${hugDurationLog(hug)}）${times ? `，连上之前攒的 ${times} 次` : ""}`);
+  await chain(
+    runner,
+    target.spaceId,
+    () =>
+      runProactiveTurn(getConfig, runner, slot, target.spaceId, {
+        toModel,
+        toHistory: "[共感娃娃被抱了一下]",
+        label: "共感娃娃",
+        scope: "共感娃娃",
+      }),
+    "共感娃娃那一轮出错"
+  );
+}
+
+/** 日志里那一小段「多久、多重」。给人排阈值用的，所以峰值要原始数字。 */
+function hugDurationLog(hug) {
+  return `${Math.round(hug.durationMs / 1000)} 秒、峰值 ${hug.peak.toFixed(2)}`;
 }
 
 /**
@@ -8165,6 +8537,13 @@ async function startRunner(getConfig, project, meta, retries = 0) {
     armReminders(getConfig, runner);
 
     /*
+     * 共感娃娃的轮询。**整个进程一份**（玩偶里只有一部手机），所以这里重复
+     * 调用是安全的，已经在跑就什么都不做。和提醒相反**不补**关机期间的 ——
+     * 拥抱是个当场的动作，开机之后把昨晚的几次补发出来只会让人莫名其妙。
+     */
+    armHug(getConfig);
+
+    /*
      * 还没人收、也还没提醒过的转账同理接着数。
      *
      * 这是「只提醒一次」跨重启成立的另一半：`reminded` 为真的那几笔在这儿被滤掉，
@@ -9238,6 +9617,10 @@ async function stopRunner(runner) {
   runner.stopped = true;
   if (runner.reminderTimer) clearInterval(runner.reminderTimer);
   runner.reminderTimer = null;
+  /*
+   * 娃娃那条轮询**不在这儿停** —— 它是整个进程一份的，别的连接可能还在听。
+   * 最后一条连接走掉时，那个循环自己看 runners.size 就退了（见 armHug）。
+   */
   // 清掉未触发的合并定时器，避免桥接停掉后还去发消息
   for (const slot of runner.pending.values()) {
     if (slot.timer) clearTimeout(slot.timer);
@@ -9514,4 +9897,6 @@ export async function stopBridge(projectRefId) {
 /** 全部停掉。 */
 export async function stopAllBridges() {
   await Promise.all([...runners.values()].map((r) => stopRunner(r)));
+  // 娃娃那条轮询是整个进程一份的，一条连接都不剩了才轮到它停
+  stopDollWatcher();
 }

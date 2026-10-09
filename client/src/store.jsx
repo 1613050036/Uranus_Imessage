@@ -1241,6 +1241,16 @@ export function ConfigProvider({ children }) {
     [updateConfig]
   );
   /**
+   * 共感娃娃那条腿（手机上 phyphox 的地址、buffer 名、判定阈值）。同样**全局一份**。
+   *
+   * 角色那边只有 role.hug（开关、那句系统提示的文案、冷却）—— 这边描述的是
+   * 「用户那部塞在玩偶里的手机」，和哪个角色在听无关，见 config.js 的 dollApi。
+   */
+  const updateDollApi = useCallback(
+    (patch) => updateConfig((c) => ({ ...c, dollApi: { ...c.dollApi, ...patch } })),
+    [updateConfig]
+  );
+  /**
    * 语音合成的凭据（MiniMax / ElevenLabs / Fish Audio / GPT-SoVITS）。同样**全局一份**。
    *
    * 角色那边只有 role.voiceSend.enabled 和音色 ID —— 音色 ID 不是密钥，
@@ -2195,6 +2205,7 @@ export function ConfigProvider({ children }) {
         updateMcdApi,
         updateMcpServers,
         updateSpyApi,
+        updateDollApi,
         updateTtsApi,
         updateStream,
         updateMemories,
