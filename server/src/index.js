@@ -308,8 +308,16 @@ app.use((req, res, next) => {
     // 控制台自己的 /api/* 不算（查手机的接口是 /api/phone/…，路径里也带 phone，
     // 以前会被误报成「快捷指令 URL 填错」）。收图口子本身设在 /api/ 下时照旧比对
     const ownApi = req.path.startsWith("/api/") && !want.startsWith("/api/");
+    /*
+     * 共感娃娃的推送口也不算。它同样是「不走控制台鉴权、secret 走查询串」的
+     * 口子，于是完美命中下面那个 `req.query.secret != null` —— 手机每推一次
+     * 就在日志里喊一句「快捷指令的 URL 路径对不上」，而那跟它一点关系都没有，
+     * 照着查只会被带到查岗那边去。
+     */
+    const ownDoll = req.path === DOLL_PUSH_PATH;
     const looksLikeShot =
       !ownApi &&
+      !ownDoll &&
       (/screenshot|phone/i.test(req.path) ||
         req.query?.secret != null ||
         req.headers["x-spy-secret"] != null);
@@ -1397,10 +1405,32 @@ app.post("/api/order/test", async (req, res) => {
  * 路径写死不跟着配置走：这个地址要抄进手机上的实验文件里（其实是我们生成的），
  * 少一处能填错的地方。
  */
+/** 「推过来但这边没收」那句话的节流状态，见下面那条路由。 */
+let dollPushQuiet = { why: "", at: 0 };
+
 app.post(DOLL_PUSH_PATH, async (req, res) => {
   const api = loadConfig()?.dollApi ?? {};
   const want = String(api.pushSecret ?? "").trim();
-  if (!api.enabled || api.mode !== "push" || !want) return res.status(404).end();
+  if (!api.enabled || api.mode !== "push" || !want) {
+    /*
+     * 回 404 是故意的（别告诉扫端口的人这儿有东西），但**日志里得说明白**：
+     * 手机那头只看得到一个 404，而 404 既可能是「地址填错了」也可能是
+     * 「功能没开」—— 不说的话用户只能对着一个没有任何线索的错误干瞪眼。
+     *
+     * 节流到一分钟一条：phyphox 是每隔两秒推一次的，不节流会把日志刷没。
+     */
+    const why = !api.enabled
+      ? "「连手机」这个总开关是关的"
+      : api.mode !== "push"
+        ? "现在是「后端去读手机」模式，没在收推送"
+        : "还没生成推送密钥";
+    const now = Date.now();
+    if (now - dollPushQuiet.at > 60_000 || dollPushQuiet.why !== why) {
+      logWarn("共感娃娃", `手机推了一包数据过来，但这边没收：${why}（它那头会显示 404）`);
+      dollPushQuiet = { why, at: now };
+    }
+    return res.status(404).end();
+  }
 
   // 密钥只能走查询串（phyphox 带不了请求头），但手工测的时候用头更顺手，两样都认
   const got = String(req.query?.secret ?? req.headers["x-doll-secret"] ?? "").trim();

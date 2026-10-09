@@ -7918,73 +7918,6 @@ function stopLocWatcher(runner) {
 }
 
 /**
- * 每条线路的「登记号」—— `projectRefId -> {phone, line, label}`。
- *
- * 由预检填（那是唯一问得到真相的地方），用来做**跨项目**的比对：本地配置里的
- * `myPhone` 经常是空的（「手动填线路号码」那条路压根不写它），拿它比会漏；
- * Photon 返回的登记号一定有。
- */
-const lineOwners = new Map();
-
-/**
- * 记下这条线路的登记号，顺便看看有没有别的项目也拿同一个号登记了。
- *
- * ── 为什么这件事要跨项目看 ──
- *
- * Photon 共享线路是「一个登记号 ↔ 一条分配线路」。同一个手机号在两个项目里
- * 各登记一次，两边各自看都完全正常（各自的预检都会说「线路归这个项目」），
- * 只有把两个项目摆在一起才看得出冲突。
- *
- * 症状是**时好时坏**，不是彻底不通：实机日志里同一个对话第一条回复发出去了、
- * 投递检查还报「已送达」，一分钟后同一个对方就 `Target not allowed for this
- * project`，已读回执、打字指示器、位置推送一起被拒。「重新绑个新项目就好了、
- * 过一会儿又坏」也是这个 —— 刚登记的那边暂时拿到路由，另一边一活动又抢回去。
- *
- * 所以这条只能在两条线路**都预检完**之后才判，而预检是各连各的、先后不定。
- * 做法是每填一次就回头扫一遍已填的，谁后到谁负责喊 —— 不用等齐，也不会漏。
- *
- * @param {object[] | null} users checkLineOwnership 给回来的登记用户表
- */
-function noteLineOwner(runner, users, linePhone) {
-  if (!Array.isArray(users) || !linePhone) return;
-  const owner = users.find((u) => u?.assignedPhoneNumber === linePhone);
-  const key = peerKeyOf(owner?.phoneNumber);
-  if (!key) return;
-
-  lineOwners.set(runner.projectRefId, { phone: key, line: linePhone, label: runner.label });
-
-  // 已经停掉的连接不算数，顺手清掉（角色解绑、换凭据之后它们还赖在表里）
-  for (const id of [...lineOwners.keys()]) {
-    if (id !== runner.projectRefId && !runners.has(id)) lineOwners.delete(id);
-  }
-
-  const clash = [...lineOwners.entries()].filter(
-    ([id, v]) => id !== runner.projectRefId && v.phone === key
-  );
-  if (!clash.length) return;
-
-  const who = [runner.label, ...clash.map(([, v]) => v.label)].filter(Boolean).join("、");
-  const linesText = [
-    `${runner.label}：线路 ${linePhone}`,
-    ...clash.map(([, v]) => `${v.label}：线路 ${v.line}`),
-  ].join("\n  ");
-
-  logError(
-    scopeOf(runner, "投递"),
-    `同一个手机号 ${owner.phoneNumber} 在 ${clash.length + 1} 个项目里都登记了（${who}）—— 它们会互相抢`,
-    `Photon 共享线路是「一个登记号 ↔ 一条分配线路」。同一个号在两个项目里各登记一次，\n` +
-      `两边各自看都正常（上面两条预检都会说「线路归这个项目」），冲突只有摆在一起才看得出来。\n` +
-      `  ${linesText}\n` +
-      `症状是**时好时坏**，不是彻底不通：同一个对话里第一条发得出去，过一会儿同一个对方就\n` +
-      `Target not allowed for this project，已读回执、打字指示器、位置推送跟着一起被拒。\n` +
-      `「重新绑个新项目就好了、过一会儿又坏」也是这个 —— 刚登记的那边暂时拿到路由，\n` +
-      `另一边一活动又抢回去。\n` +
-      `修法：一个手机号同时只养一个角色。想两个角色都在线，就准备两个不同的手机号，\n` +
-      `各自在自己的项目里登记一次，各用各分到的线路号发。`
-  );
-}
-
-/**
  * 核对一遍：这个角色一直在聊的那个人，在不在项目的登记名单里。
  *
  * ── 为什么线路归属查完了还得再查这一道 ──
@@ -8524,7 +8457,6 @@ async function startRunner(getConfig, project, meta, retries = 0) {
         linePhone: project.linePhone ?? "",
       })
         .then((users) => {
-          noteLineOwner(runner, users, project.linePhone ?? "");
           checkPeersRegistered(getConfig, runner, users);
         })
         .catch((e) => logDebug(scope, "核对线路归属出错", e));

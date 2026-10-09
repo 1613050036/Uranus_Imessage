@@ -2979,6 +2979,27 @@ function RoleHugFields({ role }) {
               </select>
             </Field>
 
+            {/*
+              「连手机」这个总开关**两种模式共用**，所以得摆在分支外头。
+              曾经把它写在拉模式那一支里，后果是推模式下根本点不到它 ——
+              dollApi.enabled 永远是假，推送口一路回 404，而界面上一切看着都
+              填好了。这种「看不见的开关卡住整条腿」最难查，别再搬回去。
+            */}
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-ui text-ink">连手机</span>
+                <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                  总开关。关了就整条腿不通，所有角色都收不到拥抱（不用一个个去关）；
+                  推送模式下关着的话，手机打过来会被当成 404。
+                </span>
+              </span>
+              <Switch
+                checked={Boolean(doll.enabled)}
+                onChange={(v) => updateDollApi({ enabled: v })}
+                label="连手机上的 phyphox"
+              />
+            </label>
+
             {doll.mode === "push" ? (
               <DollPushFields doll={doll} updateDollApi={updateDollApi} />
             ) : (
@@ -3013,20 +3034,6 @@ function RoleHugFields({ role }) {
                 ，同一个网里谁都能读你手机的传感器 —— 别在公共 WiFi 上开着。
               </p>
             </div>
-
-            <label className="flex items-start justify-between gap-4">
-              <span className="min-w-0">
-                <span className="block text-ui text-ink">连手机</span>
-                <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-                  关了就整条腿不通，所有角色都收不到拥抱（不用一个个去关）。
-                </span>
-              </span>
-              <Switch
-                checked={Boolean(doll.enabled)}
-                onChange={(v) => updateDollApi({ enabled: v })}
-                label="连手机上的 phyphox"
-              />
-            </label>
 
             <Field
               label="手机地址"
