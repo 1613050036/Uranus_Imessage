@@ -681,8 +681,23 @@ export async function installMediaHook(cdp) {
  */
 export async function callAlive(cdp) {
   await inject(cdp);
-  const text = String((await cdp.evaluate("window.__ft.text()")) ?? "");
 
+  /*
+   * ── 最可靠的信号：WebRTC 连接本身 ──
+   *
+   * 实测对方挂断之后，页面文字和媒体轨那两个判据**都没命中** —— 节点一直
+   * 跑到链接被删掉才退出。而 PeerConnection 的 `connectionState` 是协议层
+   * 的事实，不受苹果改页面影响。
+   *
+   * 注意「一条连接都没有」不等于断了：刚打开页面、还没开始建连接时就是
+   * 这个状态，当成断了会把通话掐死在接通之前。
+   */
+  const peers = await cdp.evaluate("window.__ftPeerState && window.__ftPeerState()");
+  if (peers && peers.dead > 0 && peers.live === 0) {
+    return { alive: false, why: `WebRTC 连接断了（${peers.states.join(", ")}）` };
+  }
+
+  const text = String((await cdp.evaluate("window.__ft.text()")) ?? "");
   const endWord = ENDED_WORDS.find((w) => text.includes(w));
   if (endWord) return { alive: false, why: `页面上出现了「${endWord}」` };
 

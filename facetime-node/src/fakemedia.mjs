@@ -287,6 +287,53 @@ export function buildFakeMediaShim({ avatarPath = "", label = "Uranus", beep = f
 
   md.__ftFaked = true;
 
+  /* ── 盯着 WebRTC 连接本身 ─────────────────────────────────
+   *
+   * 判断「对方挂了没有」最可靠的信号不是页面文字，是那条 PeerConnection 的
+   * 状态 —— 实测页面文字和媒体轨那两个判据都没命中（对方挂断后节点还一直
+   * 跑着，直到链接被删掉）。
+   *
+   * 包一层 RTCPeerConnection 的构造函数，把 FaceTime 建的连接留个引用。
+   * connectionState 变成 disconnected / failed / closed 就是断了，这是
+   * 协议层的事实，不受苹果改页面影响。
+   */
+  const OrigPC = window.RTCPeerConnection;
+  if (OrigPC && !OrigPC.__ftWrapped) {
+    window.__ftPeers = [];
+    const Wrapped = function (...args) {
+      const pc = new OrigPC(...args);
+      try { window.__ftPeers.push(pc); } catch {}
+      return pc;
+    };
+    Wrapped.prototype = OrigPC.prototype;
+    Wrapped.__ftWrapped = true;
+    for (const k of Object.keys(OrigPC)) {
+      try { Wrapped[k] = OrigPC[k]; } catch {}
+    }
+    window.RTCPeerConnection = Wrapped;
+    if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = Wrapped;
+  }
+
+  /**
+   * 这通电话还连着吗。
+   *
+   * @returns {{live:number, dead:number, states:string[]}}
+   *   一条连接都没有（live=0 dead=0）= 还没开始建，不能当成断了
+   */
+  window.__ftPeerState = () => {
+    const peers = window.__ftPeers || [];
+    const states = [];
+    let live = 0;
+    let dead = 0;
+    for (const pc of peers) {
+      const st = pc.connectionState || pc.iceConnectionState || "unknown";
+      states.push(st);
+      if (st === "connected" || st === "connecting" || st === "new" || st === "checking") live += 1;
+      else if (st === "disconnected" || st === "failed" || st === "closed") dead += 1;
+    }
+    return { live, dead, states };
+  };
+
   /* ── 接对方的声音 ──────────────────────────────────────────
    *
    * FaceTime 把对方的音频挂在页面的 <audio>/<video> 元素上。我们从那儿接出来
@@ -309,6 +356,24 @@ export function buildFakeMediaShim({ avatarPath = "", label = "Uranus", beep = f
     if (!el || el.__ftTapped) return false;
     const s = el.srcObject;
     if (!s || !s.getAudioTracks || !s.getAudioTracks().length) return false;
+
+    /*
+     * ── 绝对不能接自己的声音 ──
+     *
+     * FaceTime 会把**本地**的音频也挂在页面的媒体元素上（做回声消除要用）。
+     * 不挡的话，角色一开口就被自己的声音触发「对方插话了」，整句被掐掉 ——
+     * 实测第一通电话就是这样，六次打断没有一次是真人插话，表现出来是
+     * 「说话很卡、有电音」。
+     *
+     * 判据是轨的来源：我们自己造的那条音轨来自 MediaStreamDestination
+     * （label 固定是 "MediaStreamAudioDestinationNode"），而且它就在
+     * dest.stream 里 —— 直接比对象身份最准，不靠 label 猜。
+     */
+    const mine = new Set(dest.stream.getAudioTracks());
+    const tracks = s.getAudioTracks();
+    if (tracks.some((t) => mine.has(t))) return false;
+    // 兜底：label 对得上也算自己的（Chrome 某些版本会包一层新的 track 对象）
+    if (tracks.every((t) => /MediaStreamAudioDestination/i.test(t.label || ""))) return false;
 
     try {
       const src = ac.createMediaStreamSource(s);

@@ -103,7 +103,25 @@ export async function transcribe(config, role, wav) {
   };
 
   try {
-    const text = await transcribeAudio(eps.audio, eps.audioPrompt, audio);
+    /*
+     * ── 通话里**不用**角色那份「听音」提示词 ──
+     *
+     * 角色开了「结构化」模式（`role.audioModel.emotion`）的话，那份提示词会
+     * 要求模型输出六段式的分析报告：
+     *
+     *   1) 原话转写：Hi
+     *   2) 语言：英语
+     *   3) 语气/情绪：轻松友好，伴随着轻笑
+     *   …
+     *
+     * 那是给语音条用的 —— 对方发一条语音过来，角色「听」出情绪和环境是加分项。
+     * 但**通话里这整段会原样进上下文**，模型看到的不是「对方说了 Hi」而是一份
+     * 报告，于是它开始对着报告说话（实测第一通电话就是这样）。而且多生成
+     * 这六段还要多花好几秒 —— 通话最不能忍的就是这个。
+     *
+     * 所以这里写死用简洁版：只要原话。
+     */
+    const text = await transcribeAudio(eps.audio, CALL_AUDIO_PROMPT, audio);
     const clean = String(text ?? "").trim();
     logDebug(SCOPE, `听清了：${clean.slice(0, 60)}`);
     return clean;
@@ -112,6 +130,22 @@ export async function transcribe(config, role, wav) {
     return "";
   }
 }
+
+/**
+ * 通话里转写用的提示词。
+ *
+ * 和 `config.js:DEFAULT_AUDIO_PROMPT` 几乎一样，只多两条通话特有的要求：
+ *
+ *  - **没人说话就回空**。语音条那边要描述环境音（「轻微键盘声、室内安静」），
+ *    通话里不需要 —— VAD 已经切过一道了，走到这儿还没人声的多半是误触，
+ *    回一句环境描述只会让角色对着噪音搭话。
+ *  - **别加标点之外的任何东西**。
+ */
+const CALL_AUDIO_PROMPT =
+  "你是一个语音转写器，正在转写一通电话里对方说的话。\n" +
+  "直接输出原话纯文本，不要任何格式、编号、引号或说明。\n" +
+  "如果这段音频里没有人说话（只有环境音、噪音、呼吸声），只输出两个字：无声。\n" +
+  "只写你确实听到的内容，听不清就写听不清，禁止凭空推测或补全。";
 
 /**
  * 跑一轮通话：打模型，一句一句往外吐合成好的音频。

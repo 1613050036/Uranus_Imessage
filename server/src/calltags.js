@@ -201,7 +201,40 @@ export function speakableFrom(parts, sep = "$") {
     .map((p) => String(p.text ?? "").trim())
     .filter(Boolean)
     .join(" ");
-  return stripSeparator(stripCallTags(text), sep);
+  return stripSeparator(stripSpoken(stripCallTags(text)), sep);
+}
+
+/**
+ * 把所有**不该念出来**的方括号标记剥掉。
+ *
+ * `splitMedia` 只认媒体类的（语音条、图片、转账、卡片……），因为那些要切成
+ * 单独的气泡发出去。但还有一类标记它不管 —— 查岗、搜索、看菜单、查手机
+ * 那种「再问一次」的标记：它们在发短信那条路上由各自的 `*Round` 函数消费，
+ * 剥除发生在更后面。
+ *
+ * 通话这条路不走那些 Round，所以这些标记会原样留在文本里被送去合成 ——
+ * 实测 ElevenLabs 直接回 400（「Input at position 0 has empty text」，因为
+ * 它把方括号当成 speaker tag 剥掉之后什么都不剩了）。就算不报错，念出一句
+ * 「查岗实时电脑屏幕」也很出戏。
+ *
+ * 这里用一条**通用**规则而不是去 import 那五六个模块各自的剥除函数：
+ * 那样每加一个新标记就要记得在这儿也加一次，而漏掉的表现是角色突然念出
+ * 一串方括号。通用规则对「以后新增的标记」天生免疫。
+ */
+export function stripSpoken(text) {
+  return (
+    String(text ?? "")
+      /*
+       * 形如 [看菜单:瑞幸]、[search:天气]、[查岗实时电脑屏幕] 的标记。
+       *
+       * 只剥**整个方括号里不含空格**的那些 —— 真要说的话里也可能有方括号
+       * （「他发来一条[图片]」），但那种里面通常带空格或标点。这个判据不完美，
+       * 不过念错一个方括号比漏剥一个指令标记轻得多。
+       */
+      .replace(/[[［]\s*[^\s\]］]{1,40}\s*[\]］]/g, " ")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim()
+  );
 }
 
 /**

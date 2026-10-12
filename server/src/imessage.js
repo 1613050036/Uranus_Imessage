@@ -3643,6 +3643,8 @@ async function handleTurn(
         peer,
         link: meta.callInvite,
       });
+      // 接起来了的话，这一轮正文为空是正常的 —— 见下面那个判空分支
+      meta.callAnswered = ok;
       logInfo(scope, ok ? "角色接了这通电话" : "角色想接，但没接起来");
     } else {
       logInfo(scope, answer === "reject" ? "角色拒接了" : "角色没表态，当作没接");
@@ -3969,8 +3971,13 @@ async function handleTurn(
    *
    * `igDone` 那一轮也是正常的：帖子发出去了、方括号之外一个字没写，forUser
    * 本来就该是空的。那不是失败，别弹「这条没能生成正文」。
+   *
+   * 接电话那一轮同理：角色只写了 `[接受通话]`，剥掉标记之后正文本来就是空的
+   * —— 它这一轮要做的事（入会）已经做了，没什么要发短信说的。实测第一通电话
+   * 就在这儿报了「这一轮没有可发送的正文」，还给对方发了一条出错提示，
+   * 而电话其实正常接通了。
    */
-  if (!forUser.trim() && !igDone) {
+  if (!forUser.trim() && !igDone && !meta.callAnswered) {
     /*
      * 四种空回，**责任方各不相同** —— 所以每种都要点出该去动哪儿。
      *
@@ -10138,6 +10145,18 @@ export async function handleCallTurn(getConfig, { audio, kind = "said", seconds 
   if (kind === "said") {
     if (!audio?.length) throw new Error("没收到音频");
     said = await transcribe(config, role, audio);
+
+    /*
+     * 转写出来是「无声」之类的 —— VAD 误触了（咳嗽、关门、键盘声）。
+     *
+     * **什么都不做**，别为它打一轮模型：那一轮角色只会对着噪音搭话，而且
+     * 白花一次钱。实测第一通电话里有好几轮是这样的（打喷嚏、敲键盘）。
+     */
+    if (/^(无声|听不清|\[?无[人声]?\]?|silence|no speech)[。.、，,]*$/i.test(said.trim())) {
+      logDebug(scope, `这段没人说话（转写：${said.trim()}），跳过这一轮`);
+      return;
+    }
+
     if (!said) {
       /*
        * 没听清就**什么都不做**。
