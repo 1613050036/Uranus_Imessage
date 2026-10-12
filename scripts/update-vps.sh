@@ -91,8 +91,32 @@ BEFORE="$(as_owner git -C "$REPO" rev-parse HEAD)"
 as_owner git -C "$REPO" pull --ff-only
 AFTER="$(as_owner git -C "$REPO" rev-parse HEAD)"
 
-if [ "$BEFORE" = "$AFTER" ]; then
-  say "已经是最新的了，什么都不用做"
+# 代码没变也可能需要构建。
+#
+# 实测踩过：手动 git pull 拉了新代码但没跑构建，于是 client/dist 还是旧的 ——
+# 界面上看不到新功能，而这个脚本一句「已经是最新的了」就退出，把人卡在那儿。
+#
+# 所以判据不是「代码变了吗」，而是**构建产物比源码旧吗**。
+NEED_BUILD=0
+if [ "$BEFORE" != "$AFTER" ]; then
+  NEED_BUILD=1
+else
+  DIST="$REPO/client/dist/index.html"
+  if [ ! -f "$DIST" ]; then
+    NEED_BUILD=1
+    say "前端还没构建过"
+  else
+    # 源码里有谁比构建产物新
+    NEWER="$(find "$REPO/client/src" "$REPO/client/index.html" -newer "$DIST" -print -quit 2>/dev/null || true)"
+    if [ -n "$NEWER" ]; then
+      NEED_BUILD=1
+      say "前端源码比构建产物新（上次只拉了代码、没构建？）"
+    fi
+  fi
+fi
+
+if [ "$NEED_BUILD" = 0 ]; then
+  say "已经是最新的了，而且前端也构建过，什么都不用做"
   exit 0
 fi
 
