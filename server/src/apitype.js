@@ -378,6 +378,17 @@ export function toGeminiBody(body) {
   if (body?.max_tokens > 0) gen.maxOutputTokens = body.max_tokens;
   // 两个惩罚项不翻：好几个 Gemini 型号收到就 400，而它们对聊天效果几乎没影响
 
+  /*
+   * 少思考（通话那条路要的）。OpenAI 形状里是 `reasoning_effort`，原生这边
+   * 叫 `thinkingConfig.thinkingLevel`，档位名是同一套（none / minimal / low…）。
+   *
+   * 关不掉的型号会回 400 并列出它认的档位，`llm.js:rejectsThinking` 认得出
+   * 那句话、会降一档重打 —— 所以这里原样传过去就行，不在这儿猜哪个型号认哪档。
+   */
+  if (body?.reasoning_effort) {
+    gen.thinkingConfig = { thinkingLevel: body.reasoning_effort };
+  }
+
   const hasTools = Array.isArray(body?.tools) && body.tools.length > 0;
   return {
     ...(sys ? { systemInstruction: { parts: [{ text: sys }] } } : {}),

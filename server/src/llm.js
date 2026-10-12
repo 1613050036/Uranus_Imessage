@@ -342,7 +342,53 @@ export function faultAdvice(err) {
 }
 
 /** 我们会往请求体里塞的生成参数，按「被拒了就脱掉」的顺序列。 */
-const TUNABLE_FIELDS = ["temperature", "top_p", "frequency_penalty", "presence_penalty"];
+const TUNABLE_FIELDS = [
+  "temperature",
+  "top_p",
+  "frequency_penalty",
+  "presence_penalty",
+  // 「少思考」那一路塞的（见 THINKING_LADDER）。reasoning_effort 不在这张表里 ——
+  // 它有自己的降档逻辑，交给这里会直接删掉，白丢一次「换个档位试试」的机会
+  "enable_thinking",
+];
+
+/* ================= 让模型少思考 ================= */
+
+/**
+ * `reasoning_effort` 的降档梯子。
+ *
+ * ── 为什么是梯子，而不是一个值 ──
+ *
+ * 「关掉思考」这件事**各家能关到什么程度不一样，而且和文档写的不一致**：
+ *
+ *  - `none` 只在 Gemini 2.5 那一代真能关掉；
+ *  - Gemini 3 一代**关不掉**，只能压到最低档。而最低档叫什么又分版本：
+ *    3.0–3.6 的 Flash 有 `minimal`，3.7 / 3.8 的 Flash 把它去掉了，
+ *    于是文档里还列着 `minimal`、实际打过去回 400 说「valid values are
+ *    high, low, medium, none」；
+ *  - 中转站再加一层，认不认这个字段全看它自己。
+ *
+ * 所以不去维护「哪个模型支持哪些档」那张表（中转站的模型名五花八门，新模型
+ * 每周都有，而且这表一定会过期）。改成和 `rejectedParamField` 同一个路子：
+ * **先要最狠的那一档，上游嫌哪儿不对就降一档重打**，降到底就把字段脱掉。
+ *
+ * `minimal` 排在 `low` 前面是因为它更省，虽然新版 Flash 不认它 —— 不认就
+ * 自动落到 `low`，多花一个来回，但在支持它的型号上能省更多。
+ */
+const THINKING_LADDER = ["none", "minimal", "low"];
+
+/**
+ * 上游是不是在抱怨 `reasoning_effort`（或原生 Gemini 那边的 thinking_level）。
+ *
+ * 认得比 `rejectedParamField` 松一点：这个字段的报错措辞特别杂，有的只说
+ * 「valid values are …」而完全不提 unsupported。
+ */
+function rejectsThinking(status, text) {
+  if (status !== 400 && status !== 422) return false;
+  const s = String(text ?? "");
+  if (!/reasoning[_ ]?effort|thinking[_ ]?(level|budget|config)/i.test(s)) return false;
+  return /unsupported|not\s+support|unrecognized|invalid|valid\s+values|cannot|can't|不支持/i.test(s);
+}
 
 /**
  * 上游是不是在说「你发的某个生成参数我不收」，是的话返回那个字段名。
@@ -948,6 +994,29 @@ async function chatRaw(endpoint, messages, opts = {}) {
     logDebug(label, `${model} 不收生成参数，这轮温度 / Top P / 两个惩罚项都不发`);
   }
 
+  /*
+   * ── 让模型少思考（通话那条路要的） ──
+   *
+   * **不受上面 strict 那条管**。strict 说的是「温度那几个采样参数一个都不能
+   * 带」，而 `reasoning_effort` 恰恰是 Gemini 3 认的那个字段 —— 真正需要关思考
+   * 的也正是这批模型，在这儿一起挡掉就等于这个开关对它们永远无效。
+   *
+   * 两个字段：
+   *  - `reasoning_effort`：OpenAI 定的、现在各家和中转站都跟着认的那个。
+   *    从梯子最狠的一档开始要，被嫌了就降档，见 THINKING_LADDER。
+   *  - `enable_thinking`：Qwen / DeepSeek 那一路自己的开关，和上面那个
+   *    不是一回事，两个都发。中转站不认会被它点名抱怨，然后走
+   *    rejectedParamField 脱掉（它在 TUNABLE_FIELDS 里）。
+   *
+   * Claude 不在这儿管：它的 thinking 本来就要显式申请才开，我们从来不申请。
+   */
+  let thinkingStep = 0;
+  if (opts.noThinking) {
+    body.reasoning_effort = THINKING_LADDER[0];
+    body.enable_thinking = false;
+    logDebug(label, `这轮要求少思考（reasoning_effort=${body.reasoning_effort}）`);
+  }
+
   // 0 = 不限制，交给上游默认。opts.maxTokens 是「测试连接」那种场合直接指定的
   const maxTokens = opts.maxTokens ?? p.maxTokens;
   if (maxTokens > 0) body.max_tokens = maxTokens;
@@ -1104,6 +1173,26 @@ async function chatRaw(endpoint, messages, opts = {}) {
       refusalTries += 1;
       nudge();
       logWarn(label, `被内容安全拦下，换个说法重问（还能试 ${refusalLeft} 次）`, why);
+      continue;
+    }
+
+    /*
+     * 上游嫌 `reasoning_effort` 这一档不行：**降一档重打**，降到底再脱掉。
+     *
+     * 要排在下面那条通用的「脱参数」前面 —— 那条看到这个字段只会删掉它，
+     * 而很多型号（Gemini 3 一代）是「关不掉但能压到最低」，直接删等于
+     * 放着最低档不用、回到默认的满额思考。
+     */
+    if (body.reasoning_effort !== undefined && rejectsThinking(result.status, result.text)) {
+      thinkingStep += 1;
+      const next = THINKING_LADDER[thinkingStep];
+      if (next) {
+        body.reasoning_effort = next;
+        logWarn(label, `${model} 不收 reasoning_effort=${THINKING_LADDER[thinkingStep - 1]}，降到 ${next} 重打`, why);
+      } else {
+        delete body.reasoning_effort;
+        logWarn(label, `${model} 这几档思考力度都不收，这轮不管思考了（它会按自己的默认来）`, why);
+      }
       continue;
     }
 
@@ -1306,6 +1395,7 @@ export async function chatWithFallback(primary, fallback, messages, params = {},
       onDelta: opts.onDelta,
       tools: opts.tools,
       toolChoice: opts.toolChoice,
+      noThinking: opts.noThinking,
     });
     return { ...out, usedFallback: false };
   } catch (primaryError) {
@@ -1364,6 +1454,8 @@ export async function chatWithFallback(primary, fallback, messages, params = {},
         onDelta: opts.onDelta,
         tools: opts.tools,
         toolChoice: opts.toolChoice,
+        // 副 API 也要少思考 —— 换线换的是模型，不是这一轮的需求
+        noThinking: opts.noThinking,
       });
       logInfo("LLM", "副 API 顶上了，这轮由它回复");
       return { ...out, usedFallback: true };

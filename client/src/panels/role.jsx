@@ -5563,6 +5563,23 @@ export function RoleCallFields({ role, onGoto }) {
   const presets = presetsFor(config, "call");
   const staleRef = Boolean(c.presetRef) && !presets.some((p) => p.id === c.presetRef);
 
+  /*
+   * 通话世界书。和线下那栏同一套控件，只有一处语义不同：**空 = 跟着线上走**
+   * （线下空 = 一本都不挂）。所以列表里顺手标一下哪几本是线上挂着的 ——
+   * 用户勾第一本的那一刻行为就从「跟线上」切成「只用勾的」，得让他看见自己
+   * 放弃了什么。
+   */
+  const allBooks = config.worldBooks ?? [];
+  const callGlobalBooks = allBooks.filter((b) => b.global);
+  const callOwnBooks = allBooks.filter((b) => !b.global);
+  const callRefs = c.worldBookRefs ?? [];
+  const onlineRefs = role.worldBookRefs ?? [];
+  const callDeadRefs = callRefs.filter((id) => !allBooks.some((b) => b.id === id));
+  const toggleCallBook = (id) =>
+    patch({
+      worldBookRefs: callRefs.includes(id) ? callRefs.filter((x) => x !== id) : [...callRefs, id],
+    });
+
   const vs = role.voiceSend ?? {};
   const userName = resolveUser(config, role)?.name?.trim() || "用户";
 
@@ -5640,6 +5657,108 @@ export function RoleCallFields({ role, onGoto }) {
             听筒等上七八秒。这儿挑一个快的（不带 thinking 的），聊天那边照旧用好的。
             挑的那个失效了会自动退回角色的聊天 API，只在日志里记一笔。
           </p>
+
+          <label className="flex items-start justify-between gap-4">
+            <span className="min-w-0">
+              <span className="block text-ui text-ink">通话时让模型少思考</span>
+              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                实测这是通话慢的<strong className="text-ink-soft">大头</strong>：
+                一轮里模型生成了六百到两千多个 token，真正说出口的只有二三十个字
+                —— 剩下全是它在心里打草稿，于是对方举着手机等 8 到 25 秒。
+                <br />
+                开着的话会要求它用最低的思考力度。
+                <strong className="text-ink-soft">能关到什么程度各家不一样</strong>
+                ：有的能彻底关，Gemini 3 这一代关不掉、只能压到最低档，还有的压根
+                不认这个设置 —— 那几种会自动降档或者放弃，日志里会写一笔，不会因此
+                整通电话打不通。真要彻底解决就在上面挑一个本来就不思考的模型。
+                <br />
+                关掉 = 让它按自己的默认来。电话里说的是两三句口语，不是解数学题，
+                所以默认开着。
+              </span>
+            </span>
+            <Switch
+              checked={c.noThinking !== false}
+              onChange={(v) => patch({ noThinking: v })}
+              label="通话时让模型少思考"
+            />
+          </label>
+
+          {/* 通话世界书。和线下那份不同：空着 = 跟着线上走 */}
+          <div className="grid grid-cols-1 gap-3 border-t border-line pt-6">
+            <div>
+              <p className="text-ui text-ink">通话单独挂哪几本世界书</p>
+              <p className="mt-0.5 text-meta leading-relaxed text-ink-faint">
+                <strong className="text-ink-soft">一本都不勾 = 跟着线上走</strong>
+                ，也就是和发短信用同一批书。和「线下模式」那份不一样 ——
+                线下不勾就真的一本都不挂，这里不勾是「照线上来」。
+                <br />
+                勾了就只扫这里勾的这几本（加所有全局书）。
+                <strong className="text-ink-soft">这是用来提速的</strong>
+                ：实测一轮提示词 19k token，每轮模型都要重读一遍。电话里聊的那点
+                东西往往用不上全套设定，挑两三本薄的能省下可观的时间。
+                <br />
+                记忆和上下文<strong className="text-ink-soft">照旧全带</strong>
+                ，这里只管世界书。
+              </p>
+            </div>
+
+            {callOwnBooks.length === 0 && callGlobalBooks.length === 0 && (
+              <p className="text-meta leading-relaxed text-ink-faint">
+                还没有世界书。
+                <button
+                  type="button"
+                  onClick={() => onGoto?.("world")}
+                  className="ml-1 text-ink hover:underline"
+                >
+                  去「世界书」面板建一本
+                </button>
+              </p>
+            )}
+
+            {callOwnBooks.length > 0 && (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {callOwnBooks.map((b) => {
+                  const on = callRefs.includes(b.id);
+                  return (
+                    <label
+                      key={b.id}
+                      className={`flex cursor-pointer items-start gap-2.5 border px-3 py-2.5 transition-colors duration-150 ${
+                        on ? "border-ink bg-sunken" : "border-line bg-paper hover:bg-sunken"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => toggleCallBook(b.id)}
+                        className="mt-0.5 shrink-0 accent-ink"
+                      />
+                      <span className="min-w-0">
+                        <span className="block truncate text-ui text-ink">{worldBookLabel(b)}</span>
+                        <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                          {(b.entries ?? []).length} 条
+                          {b.enabled ? "" : " · 整本被关掉了"}
+                          {!callRefs.length && onlineRefs.includes(b.id) ? " · 线上挂着" : ""}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            {callGlobalBooks.length > 0 && (
+              <p className="text-meta leading-relaxed text-ink-faint">
+                另有 {callGlobalBooks.length} 本全局世界书三条路都生效：
+                {callGlobalBooks.map((b) => worldBookLabel(b)).join("、")}。
+              </p>
+            )}
+
+            {callDeadRefs.length > 0 && (
+              <p className="text-meta leading-relaxed text-warn">
+                还挂着 {callDeadRefs.length} 本已经被删掉的世界书，这些引用不起作用。
+              </p>
+            )}
+          </div>
 
           <label className="flex items-start justify-between gap-4 border-t border-line pt-6">
             <span className="min-w-0">

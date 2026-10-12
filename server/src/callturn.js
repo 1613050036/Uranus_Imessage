@@ -221,6 +221,14 @@ export async function* runCallTurn({ config, role, messages, params, signal }) {
 
   const task = chatWithFallback(endpoint, fallback, messages, params, {
     signal,
+    /*
+     * 少思考。默认开着，角色那栏能关。
+     *
+     * 这是通话延迟的**大头**：实测 gemini-3.8-flash 一轮生成 611–2212 个
+     * token，而实际说出口的只有 23–67 字 —— 剩下全是思考，一轮等 8 到 25 秒。
+     * 具体发什么字段、关不掉的型号怎么降档，见 llm.js:THINKING_LADDER。
+     */
+    noThinking: role?.call?.noThinking !== false,
     onDelta: (chunk) => {
       buffer += chunk;
       pull();

@@ -861,14 +861,23 @@ export async function buildPrompt(config, role, user, history, weatherNote = "",
   let books = [];
   if (worldEntry?.enabled) {
     /*
-     * 线下走**另一份书单**：`role.offline.worldBookRefs`（用户要的「可在线下预设内
-     * 单独配置角色线下世界书」）。
+     * 三种玩法各自的书单。手法都是传一个换掉 refs 的浅拷贝，而不是给
+     * worldBooksFor 加参数 —— 那个函数在前端 labels.js 里有一份镜像，加参数
+     * 就得两边一起改，而这里换的只是它读的那一个字段。global 的书照旧三路都生效。
      *
-     * 手法是传一个换掉 refs 的浅拷贝，而不是给 worldBooksFor 加参数 ——
-     * 那个函数在前端 labels.js 里有一份镜像，加参数就得两边一起改，
-     * 而这里换的只是它读的那一个字段。global 的书照旧对两种玩法都生效。
+     *  - **线下**：`role.offline.worldBookRefs`，**另一份书单**。空着就真的一本
+     *    都不挂 —— 剧情要的设定（房间长什么样）和聊天要的往往不是同一批。
+     *  - **通话**：`role.call.worldBookRefs`，但**空 = 跟着线上走**。通话和短信
+     *    共用同一条历史、同一个场景，默认该一样；单独挑是为了把提示词压薄
+     *    （实测一轮 19k token，模型每轮要多读好几秒）。
+     *  - 线上：角色自己那份。
      */
-    const forBooks = offline ? { ...role, worldBookRefs: role?.offline?.worldBookRefs ?? [] } : role;
+    const callBooks = mode === "call" ? (role?.call?.worldBookRefs ?? []) : [];
+    const forBooks = offline
+      ? { ...role, worldBookRefs: role?.offline?.worldBookRefs ?? [] }
+      : callBooks.length
+        ? { ...role, worldBookRefs: callBooks }
+        : role;
     books = worldBooksFor(config, forBooks);
     if (books.length) world = activate(books, sent);
   }

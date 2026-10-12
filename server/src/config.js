@@ -2219,6 +2219,35 @@ function normalizeRoleCall(input) {
     model: normalizeModelRef(input?.model),
 
     /*
+     * 通话这一轮要不要让模型少思考。默认**开**。
+     *
+     * 实测第二通电话：`gemini-3.8-flash` 每轮 `completion_tokens` 611–2212，
+     * 实际说出来的只有 23–67 字 —— 差的全是思考，一轮等 8 到 25 秒。打电话
+     * 的人不会等这个。
+     *
+     * 默认开着是因为**通话里思考几乎没有收益**：电话里说的是两三句口语，
+     * 不是解数学题。想要它多想想的话这儿关掉。
+     *
+     * 能关到什么程度各家不一样（Gemini 3 一代关不掉，只能压到最低档），
+     * 发什么字段、被拒了怎么降档都在 llm.js:THINKING_LADDER。
+     */
+    noThinking: input?.noThinking !== false,
+
+    /*
+     * 通话单独挂哪几本世界书。**空 = 跟着线上那份走**（`role.worldBookRefs`）。
+     *
+     * 和线下那份（`role.offline.worldBookRefs`）不是一个规矩，这是刻意的：
+     * 线下是「另一份书单」，空着就真的一本都不挂（剧情要的设定和聊天要的
+     * 往往不是同一批）；通话和短信共用同一条历史、同一个场景，**默认该一样**，
+     * 只有嫌 19k token 的提示词太慢时才单独挑几本薄的。
+     *
+     * global 的书两边都照旧生效，和另外两条路一致。解析在 prompt.js。
+     */
+    worldBookRefs: Array.isArray(input?.worldBookRefs)
+      ? [...new Set(input.worldBookRefs.map((r) => str(r).trim()).filter(Boolean))]
+      : [],
+
+    /*
      * 对方插话时要不要打断角色。默认**开**。
      *
      * 两个参考项目都没做打断（都是角色说话时干脆不开麦），因为误判的代价

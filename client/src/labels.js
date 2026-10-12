@@ -908,12 +908,15 @@ export function worldBooksFor(config, role) {
 }
 
 /**
- * 谁在用这本书。**三路各存各的字段，一路都不能漏。**
+ * 谁在用这本书。**四路各存各的字段，一路都不能漏。**
  *
  *  - 线上：`role.worldBookRefs`
  *  - 线下：`role.offline.worldBookRefs` —— 剧情走的是**另一份书单**
  *    （server/src/prompt.js:743 换掉的就是这个字段），线上勾了线下不算数，
  *    反过来也一样
+ *  - 通话：`role.call.worldBookRefs`。这一路的规矩和线下**不同** ——
+ *    空着是「跟着线上走」而不是「一本都不挂」。所以这儿只数真的勾了的：
+ *    跟着线上走的那些已经算在 online 那一路里了，再数一遍等于重复
  *  - 日记：`memories.diary.worldBookRefs`，**只在「不跟角色走」时才数**
  *    （`useRoleWorldBooks === false`，见 server/src/memory.js:698）。跟角色走的
  *    时候日记用的就是角色那两路，在这儿再数一遍等于把同一件事算两遍
@@ -932,6 +935,7 @@ export function worldBookUsage(config, bookId) {
   return {
     online: roles.filter((r) => has(r?.worldBookRefs)),
     offline: roles.filter((r) => has(r?.offline?.worldBookRefs)),
+    call: roles.filter((r) => has(r?.call?.worldBookRefs)),
     diary: diary.useRoleWorldBooks === false && has(diary.worldBookRefs),
   };
 }
@@ -942,10 +946,10 @@ export function worldBookBlockReason(config, book) {
   if (!(book.entries ?? []).length) return "还没有任何条目，等于没生效";
   if (!(book.entries ?? []).some((e) => e.enabled)) return "所有条目都被关掉了";
   if (!book.global) {
-    // 三路里有任意一路挂着就算生效 —— 只查线上那一路是这条提示以前的老毛病
+    // 四路里有任意一路挂着就算生效 —— 只查线上那一路是这条提示以前的老毛病
     const use = worldBookUsage(config, book.id);
-    if (!use.online.length && !use.offline.length && !use.diary) {
-      return "还没有角色用它（去角色的「单独配置」或「线下模式」里挂上，或打开「全局」）";
+    if (!use.online.length && !use.offline.length && !use.call.length && !use.diary) {
+      return "还没有角色用它（去角色的「单独配置」、「线下模式」或「接 FaceTime 通话」里挂上，或打开「全局」）";
     }
   }
   return null;
@@ -964,6 +968,7 @@ export function worldBookUsageText(config, book) {
   const parts = [];
   if (use.online.length) parts.push(`线上：${use.online.map(roleLabel).join("、")}`);
   if (use.offline.length) parts.push(`线下：${use.offline.map(roleLabel).join("、")}`);
+  if (use.call.length) parts.push(`通话：${use.call.map(roleLabel).join("、")}`);
   if (use.diary) parts.push("日记（在记忆库里单独挑的）");
   return parts.length ? `在用它的：${parts.join("；")}。` : "";
 }
