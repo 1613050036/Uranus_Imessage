@@ -624,12 +624,31 @@ df -h / && free -h && du -sh /opt/imessage/data
 ### 4.3 更新到新版本
 
 ```bash
-cd /opt/imessage && git pull && npm install && npm run build && sudo systemctl restart uranus
+sudo bash /opt/imessage/scripts/update-vps.sh
 ```
 
-> ⚠️ `git pull` 报「本地修改会被覆盖」说明你改过仓库里的文件。先 `git status` 看改了哪些，决定保留还是丢弃，**别硬来**。
+拉代码、装依赖、构建前端、重启服务，一条命令全做完。装了通话节点的话也一起重启。
 
-> 💡 仓库里那个 `更新.bat` / `scripts/update.mjs` 是给 Windows 用的（停服务靠 `taskkill`，重启靠 `cmd`），在这里跑会直接告诉你用上面这行。VPS 上本来就是 git + systemd，没必要多套一层。
+<details>
+<summary>为什么不是 <code>git pull && npm install && npm run build</code></summary>
+
+那一行在真实的 VPS 上会连着踩三个坑，每一个的报错都不说人话：
+
+1. **仓库属主不是 root**。用 root 跑一次 `npm install` 就会在目录里留下一堆 root 的文件，
+   下次那个用户再更新就「Permission denied」—— 而服务正是用那个用户跑的，
+   之后连数据都写不进去。
+2. **Node 是 nvm 装的**，不在 `/usr/bin` 下。`sudo -u admin npm` 报
+   「npm: command not found」，但 root 自己跑 `npm` 又是好的，很难想到是这个原因。
+3. **服务名**每台机器可能不一样。
+
+脚本把这三件事都自己查出来：属主用 `stat` 看，Node 的路径从正在跑的 systemd
+服务里抠（那个一定是对的），服务名用 `systemctl list-units` 找。
+
+</details>
+
+> ⚠️ `git pull` 报「本地修改会被覆盖」说明你改过仓库里的文件。先 `git status` 看改了哪些，决定保留还是丢弃，**别硬来**。脚本检测到本地有改动会直接停下来，不会帮你决定。
+
+> 💡 仓库里那个 `更新.bat` / `scripts/update.mjs` 是给 Windows 用的（停服务靠 `taskkill`，重启靠 `cmd`），在这里跑会直接告诉你用上面这条。
 
 ### 4.4 备份
 
