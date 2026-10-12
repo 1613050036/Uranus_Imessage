@@ -59,8 +59,30 @@ export PATH="$NODE_BIN:$PATH"
 say "Node：$(node -v)（$NODE_BIN）"
 
 # ── 3. 本地有没有改动 ────────────────────────────────────────
-if ! as_owner git -C "$REPO" diff --quiet || ! as_owner git -C "$REPO" diff --cached --quiet; then
-  die "本地有没提交的改动，git pull 会失败。先看一眼：git -C $REPO status"
+#
+# `package-lock.json` 要单独处理：npm install 几乎每次都会动它（不同 npm 版本
+# 写出来的格式有细微差别），而那不是用户改的，是上一次更新自己留下的。
+# 为它拦住用户的话，这个脚本第二次跑就没法用了。
+#
+# 别的文件照拦 —— 那才可能是用户自己改的东西，不该替他决定丢还是留。
+LOCK_DIRTY=0
+if ! as_owner git -C "$REPO" diff --quiet -- package-lock.json 2>/dev/null; then
+  LOCK_DIRTY=1
+fi
+
+OTHER="$(as_owner git -C "$REPO" status --porcelain -- . ':(exclude)package-lock.json' 2>/dev/null \
+  | grep -v '^??' || true)"
+if [ -n "$OTHER" ]; then
+  printf '\n%s\n' "$OTHER"
+  die "本地有没提交的改动（上面这些），git pull 会失败。
+先想清楚是要留还是要丢：
+  留 → git -C $REPO stash        （更新完 git stash pop 拿回来）
+  丢 → git -C $REPO checkout -- <文件>"
+fi
+
+if [ "$LOCK_DIRTY" = 1 ]; then
+  say "package-lock.json 被上次 npm install 动过了，丢掉重来"
+  as_owner git -C "$REPO" checkout -- package-lock.json
 fi
 
 # ── 4. 拉 ────────────────────────────────────────────────────
