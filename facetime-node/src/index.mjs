@@ -97,6 +97,7 @@ async function runServe() {
       call = new Call({
         link: cmd.link,
         name: cmd.name ?? "Uranus",
+        roleId: cmd.roleId ?? "",
         avatarPath: AVATAR_PATH,
         debugPort: cfg.debugPort,
         allowBargeIn: cmd.bargeIn !== false,

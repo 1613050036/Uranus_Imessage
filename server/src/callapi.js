@@ -36,6 +36,7 @@ export const NODE_PATHS = {
   stream: "/facetime/stream",
   utterance: "/facetime/utterance",
   event: "/facetime/event",
+  avatar: "/facetime/avatar",
 };
 
 /** 一次最多收多大的音频。16kHz 单声道 WAV，30 秒约 1MB，给到 4MB 很宽裕。 */
@@ -226,6 +227,46 @@ export function mountCall(app, loadConfig, hooks = {}) {
     }
   );
 
+  /* ── 头像：节点入会前来拿 ────────────────────────────────── */
+
+  /**
+   * 角色的头像。
+   *
+   * 节点入会时来取，取不到就用它自己画的占位图（深色底 + 角色名）。
+   *
+   * 为什么让节点来拿、而不是让用户往节点目录里拷一张：头像 Uranus 这边
+   * 本来就有（线下模式那栏配的），让用户再传一次是白费事，而且换头像还要
+   * 记得两边都换。
+   */
+  app.get(NODE_PATHS.avatar, async (req, res) => {
+    if (!checkSecret(req, res)) return;
+
+    const call = getCall();
+    const roleId = String(req.query?.roleId ?? call?.roleId ?? "");
+    const role = (loadConfig()?.roles ?? []).find((r) => r.id === roleId);
+    const name = String(role?.offline?.avatar ?? "").trim();
+
+    if (!name) {
+      // 没配头像不是错，节点会退回占位图
+      return res.status(404).json({ ok: false, error: "这个角色没配头像" });
+    }
+
+    try {
+      const { readFileSync } = await import("node:fs");
+      const { join, basename } = await import("node:path");
+      const { OFFLINE_MEDIA_DIR } = await import("./datadir.js");
+      // basename 挡掉 ../ 那类路径穿越 —— 这个字段是从配置读的，但配置也可能被手改
+      const file = join(OFFLINE_MEDIA_DIR, basename(name));
+      const bytes = readFileSync(file);
+      res.setHeader("Content-Type", guessImageMime(name));
+      res.setHeader("Cache-Control", "no-store");
+      res.end(bytes);
+    } catch (e) {
+      logWarn(SCOPE, `头像读不出来（${name}），节点会用占位图`, e);
+      res.status(404).json({ ok: false, error: "头像文件读不出来" });
+    }
+  });
+
   /* ── 节点报状态 ──────────────────────────────────────────── */
 
   app.post(NODE_PATHS.event, async (req, res) => {
@@ -276,4 +317,13 @@ export function mountCall(app, loadConfig, hooks = {}) {
 /** 测试用。 */
 export function resetNodeForTest() {
   node = null;
+}
+
+/** 按扩展名猜图片类型。猜不出来当 png —— 浏览器自己也会嗅探。 */
+function guessImageMime(name) {
+  const ext = String(name).toLowerCase().split(".").pop();
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "webp") return "image/webp";
+  if (ext === "gif") return "image/gif";
+  return "image/png";
 }

@@ -43,9 +43,27 @@ import { readFileSync } from "node:fs";
  * @param {boolean} [opts.beep] 每隔几秒响一声 —— 测试时用来确认对方听得到
  * @returns {string} 注入脚本
  */
-export function buildFakeMediaShim({ avatarPath = "", label = "Uranus", beep = false } = {}) {
+export function buildFakeMediaShim({
+  avatarPath = "",
+  avatarBytes = null,
+  avatarMime = "image/png",
+  label = "Uranus",
+  beep = false,
+} = {}) {
+  /*
+   * 头像有两个来源，按优先级：
+   *
+   *  1. `avatarBytes` —— 从 Uranus 那边拿来的（角色在线下模式那栏配的头像）。
+   *     不落盘，直接塞成 data URL。
+   *  2. `avatarPath` —— 节点目录下的 avatar.png，给「想单独给节点换一张」
+   *     的情况留的口子。
+   *
+   * 两个都没有就画占位图（深色底 + 角色名）。
+   */
   let avatarDataUrl = "";
-  if (avatarPath) {
+  if (avatarBytes?.length) {
+    avatarDataUrl = `data:${avatarMime};base64,${Buffer.from(avatarBytes).toString("base64")}`;
+  } else if (avatarPath) {
     try {
       avatarDataUrl = `data:image/png;base64,${readFileSync(avatarPath).toString("base64")}`;
     } catch {

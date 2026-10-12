@@ -117,13 +117,25 @@ export class Call {
      * 先开空白页，装完钩子再跳转 —— FaceTime 一加载就申请摄像头麦克风，
      * 晚一步就包不住了（见 fakemedia.mjs）。
      */
+    /*
+     * 先去 Uranus 那边拿角色头像（它在线下模式那栏配过的那张）。
+     *
+     * 拿不到不要紧：退回节点目录下的 avatar.png，再退回占位图。所以这一步
+     * 和浏览器并行跑，不让它拖慢入会 —— 对方正在等接通。
+     */
+    const avatarTask = this.opts.brain.fetchAvatar?.(this.opts.roleId ?? "") ?? Promise.resolve(null);
+
     this.browser = await launchBrowser({ url: "about:blank", port: debugPort });
     await connectCdp(debugPort);
     this.cdp = await connectPage(debugPort);
 
     await this.cdp.send("Page.enable");
     await this.cdp.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: buildFakeMediaShim({ avatarPath, label: name }),
+      source: buildFakeMediaShim({
+        avatarBytes: await avatarTask.catch(() => null),
+        avatarPath,
+        label: name,
+      }),
     });
 
     logInfo("通话", "打开链接…");

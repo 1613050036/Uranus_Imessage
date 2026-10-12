@@ -44,6 +44,7 @@ import { resolveEndpoint, resolveRoleEndpoints } from "./config.js";
 import { chatWithFallback, transcribeAudio } from "./llm.js";
 import { logDebug, logInfo, logWarn } from "./logs.js";
 import { splitMedia, synthesizeVoice } from "./media.js";
+import { transcribe as sttTranscribe } from "./stt.js";
 
 const SCOPE = "通话";
 
@@ -90,9 +91,30 @@ export function callEndpoint(config, role) {
  * @returns {Promise<string>} 转写出来的文字；听不出来返回空串
  */
 export async function transcribe(config, role, wav) {
+  /*
+   * ── 优先走专门的 STT ──
+   *
+   * 配了的话用它：1 秒内返回、只给原话、便宜一个数量级。多模态那条路
+   * （下面那段）慢好几秒，而且会"理解"而不是"转写" —— 实测把一句「Hi」
+   * 扩写成了六段式报告。通话最受不了这两样。
+   */
+  const stt = await sttTranscribe(config.sttApi, wav, {
+    mimeType: "audio/wav",
+    scope: SCOPE,
+  }).catch((e) => {
+    // 转写服务挂了就退回多模态，别让一通电话哑掉
+    logWarn(SCOPE, "专门的转写服务没转出来，退回多模态模型", e);
+    return null;
+  });
+  if (stt) return stt.text;
+
   const eps = resolveRoleEndpoints(config, role);
   if (!eps.audio) {
-    logWarn(SCOPE, "这个角色没开「听音」，通话里对方说的话没法转成文字");
+    logWarn(
+      SCOPE,
+      "没配转写服务，这个角色也没开「听音」—— 通话里对方说的话没法转成文字。" +
+        "去「连接」面板配一个转写服务（OpenAI 兼容 / Qwen / 讯飞都行）"
+    );
     return "";
   }
 

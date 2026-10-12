@@ -253,6 +253,14 @@ async function searchApple(term) {
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
   });
+  // 小手机（Cloudflare Worker）上这里永远是 429：苹果按出口 IP 限流，而所有 Worker
+  // 共用 Cloudflare 那一段出口（2a06:98c0:…），额度常年是满的，换请求头没用。
+  // 403 也见过。这两种都退到网页版的搜索页，见 searchAppleWeb。
+  if (res.status === 429 || res.status === 403) {
+    return searchAppleWeb(term).catch((e) => {
+      throw new Error(`HTTP ${res.status}，网页版也没成功：${why(e)}`);
+    });
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
   // 苹果这个接口回的 content-type 是 text/javascript，但内容确实是 JSON
@@ -267,6 +275,59 @@ async function searchApple(term) {
 }
 
 /**
+ * Apple Music 网页版的搜索页（music.apple.com/tw/search）。iTunes 接口被限流时的备胎。
+ *
+ * 页面是服务端渲染的，数据整份塞在 `<script id="serialized-server-data">` 里，
+ * 「歌曲」那一栏的 section id 以 `track-section` 开头，每条带 title、
+ * subtitleLinks（歌手，可能多个）和 contentDescriptor.url —— 那个 url 和
+ * iTunes 接口的 trackViewUrl 是同一种歌曲链接，发出去一样是音乐卡片。
+ * 同样是 TW 区，理由见 searchApple。
+ *
+ * 这是网页的内部结构，没有兼容性承诺；哪天改版了这里会抛错，日志里能看到。
+ */
+async function searchAppleWeb(term) {
+  const res = await fetch(`https://music.apple.com/tw/search?term=${encodeURIComponent(term)}`, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+      Accept: "text/html",
+    },
+    signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const html = await res.text();
+  const m = /<script[^>]*id="serialized-server-data"[^>]*>([\s\S]*?)<\/script>/.exec(html);
+  if (!m) throw new Error("页面里没找到搜索数据，可能改版了");
+
+  const sections = JSON.parse(m[1])?.data?.[0]?.data?.sections;
+  const songs = (Array.isArray(sections) ? sections : []).find((s) =>
+    String(s?.id ?? "").startsWith("track-section")
+  );
+  return (Array.isArray(songs?.items) ? songs.items : [])
+    .filter((it) => it?.contentDescriptor?.kind === "song")
+    .slice(0, SEARCH_LIMIT)
+    .map((it) => ({
+      url: String(it.contentDescriptor.url ?? "").trim(),
+      title: String(it?.title ?? "").trim(),
+      artist: (Array.isArray(it?.subtitleLinks) ? it.subtitleLinks : [])
+        .map((a) => String(a?.title ?? "").trim())
+        .filter(Boolean)
+        .join("/"),
+    }))
+    .filter((c) => c.url && c.title);
+}
+
+/** 网易云的风控码：-462「请完成验证操作」、-460 / 460「Cheating」。服务器 IP 上常见。 */
+const NETEASE_RISK_CODES = new Set([-462, -460, 460]);
+
+/** 随手编一个国内 IP 放进 X-Real-IP。网易云对海外 / 机房 IP 更容易上风控。 */
+function fakeCnIp() {
+  const r = (n) => Math.floor(Math.random() * n);
+  return `116.${25 + r(70)}.${r(255)}.${1 + r(250)}`;
+}
+
+/**
  * 网易云音乐：网页版自己在用的那个搜索接口。
  *
  * **非官方**，没有任何兼容性承诺。要带 Referer，不然直接被挡。
@@ -274,9 +335,29 @@ async function searchApple(term) {
  * 原来用的是 `/api/search/get/web`，2026 年 9 月起它的 result 变成了一串加密的
  * 十六进制，扒不出 songs，每首歌都被当成「网易云那边没有」。去掉 `/web` 的这个
  * 返回的还是明文、字段一样。
+ *
+ * 碰上风控码（NETEASE_RISK_CODES，小手机的 Cloudflare 出口 IP 上时有时无）就换
+ * `/api/cloudsearch/pc`、带一个国内 X-Real-IP 再试一次。cloudsearch 回的歌手字段
+ * 叫 `ar` 不叫 `artists`，下面两种都认。
  */
 async function searchNetease(term) {
-  const res = await fetch("https://music.163.com/api/search/get", {
+  try {
+    return await searchNeteaseOnce(term, "https://music.163.com/api/search/get", {});
+  } catch (e) {
+    if (!NETEASE_RISK_CODES.has(e?.neteaseCode)) throw e;
+    const ip = fakeCnIp();
+    return searchNeteaseOnce(term, "https://music.163.com/api/cloudsearch/pc", {
+      "X-Real-IP": ip,
+      "X-Forwarded-For": ip,
+      Cookie: "os=pc",
+    }).catch((e2) => {
+      throw new Error(`${e.message}，换接口重试也没成功：${e2.message}`);
+    });
+  }
+}
+
+async function searchNeteaseOnce(term, url, extraHeaders) {
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -284,6 +365,7 @@ async function searchNetease(term) {
       "User-Agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
       Accept: "application/json",
+      ...extraHeaders,
     },
     body: new URLSearchParams({
       s: term,
@@ -302,7 +384,9 @@ async function searchNetease(term) {
   // 再试」）。不看这个的话，出错会被当成「这首歌不存在」——最糟的是还会被
   // 缓存下来，这首歌接下来整段对话都查不到了。
   if (data?.code !== undefined && data.code !== 200) {
-    throw new Error(`${data.code} ${data.msg || data.message || ""}`.trim());
+    const err = new Error(`${data.code} ${data.msg || data.message || ""}`.trim());
+    err.neteaseCode = Number(data.code);
+    throw err;
   }
 
   return (Array.isArray(data?.result?.songs) ? data.result.songs : [])
@@ -310,7 +394,7 @@ async function searchNetease(term) {
     .map((s) => ({
       url: `https://music.163.com/song?id=${s.id}`,
       title: String(s?.name ?? "").trim(),
-      artist: (Array.isArray(s?.artists) ? s.artists : [])
+      artist: (Array.isArray(s?.artists) ? s.artists : Array.isArray(s?.ar) ? s.ar : [])
         .map((a) => String(a?.name ?? "").trim())
         .filter(Boolean)
         .join("/"),

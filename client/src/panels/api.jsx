@@ -1577,6 +1577,225 @@ export function TtsSection() {
  * 只管**线下模式**。iMessage 那条路要等模型把整段写完才知道拆成几条气泡、
  * 每条隔多久发，中间那半截没地方放。
  */
+/**
+ * 语音转文字（STT）的凭据。
+ *
+ * 两条路共用：iMessage 的语音条、FaceTime 通话。和 TtsSection 一个结构 ——
+ * 密钥全局一份、只写密钥文件，角色那边只有开关。
+ *
+ * 和「角色 → 听音模型」的关系要说清楚（界面上也写了）：那个是多模态模型，
+ * 能听出情绪和环境音；这个只管把话转成字，但快一个数量级、便宜一个数量级。
+ * 开了「情绪识别」的角色仍然走多模态 —— 那些东西专门的 STT 给不出来。
+ */
+export function SttSection() {
+  const { config, updateSttApi } = useConfig();
+  const stt = config.sttApi ?? {};
+  const oa = stt.openai ?? {};
+  const qw = stt.qwen ?? {};
+  const xf = stt.xfyun ?? {};
+
+  const blank = (v) => !String(v ?? "").trim();
+
+  // 和 server/src/stt.js:pickSttSource 同一个顺序和判据，两处一起改
+  const source =
+    oa.enabled && !blank(oa.key)
+      ? "OpenAI 兼容"
+      : qw.enabled && !blank(qw.key)
+        ? "阿里云 Qwen-Audio"
+        : xf.enabled && !blank(xf.appId) && !blank(xf.apiKey) && !blank(xf.apiSecret)
+          ? "讯飞"
+          : "";
+
+  const patch = (which, part) => updateSttApi({ [which]: { ...(stt[which] ?? {}), ...part } });
+
+  return (
+    <Card title="语音转文字">
+      <div className="grid grid-cols-1 gap-6">
+        <p className="max-w-[72ch] text-body text-ink-soft">
+          把对方说的话转成文字。<strong className="text-ink">两处用得上</strong>
+          ：iMessage 里收到的语音条，以及 FaceTime 通话。
+          <br />
+          <span className="text-meta text-ink-faint">
+            和「角色 → 听音模型」不是一回事：那个是多模态模型，能听出语气、环境音、
+            几个人在说话；这个只管把话转成字，但
+            <strong className="text-ink-soft">快一个数量级、也便宜一个数量级</strong>
+            。配了这里之后，语音条和通话都优先走它；开了「情绪识别」的角色仍然走多模态
+            —— 那些东西专门的转写服务给不出来。
+            <br />
+            三家都不配也能用，退回原来那条多模态的路，只是通话里会明显偏慢。
+          </span>
+        </p>
+
+        {source ? (
+          <p className="text-meta text-ink-faint">
+            现在生效的是<strong className="text-ink-soft"> {source} </strong>
+            （按下面的顺序挑第一个填齐的）。
+          </p>
+        ) : (
+          <p className="text-meta text-warn">
+            三家都没配 —— 会退回「角色 → 听音模型」那条路。
+          </p>
+        )}
+
+        <div className="grid grid-cols-1 gap-4 border-t border-line pt-6">
+          <label className="flex items-start justify-between gap-4">
+            <span className="min-w-0">
+              <span className="block text-ui text-ink">OpenAI 兼容（whisper）</span>
+              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                最通用的一条，打的是
+                <code className="mx-1 font-mono text-ink-soft">/audio/transcriptions</code>
+                —— 绝大多数中转站都支持，你现有的密钥很可能直接能用。
+                <strong className="text-ink-soft">三家都是云服务，都不用自己部署模型</strong>
+                （whisper-1 只是 OpenAI 那个模型的名字）。
+                <br />
+                最推荐 <strong className="text-ink-soft">Groq</strong>
+                ：跑 whisper 快得出名（比实时快几十倍），还有免费额度。地址填
+                <code className="mx-1 font-mono text-ink-soft">https://api.groq.com/openai/v1</code>
+                ，模型填
+                <code className="mx-1 font-mono text-ink-soft">whisper-large-v3-turbo</code>
+                ，密钥是控制台里
+                <code className="mx-1 font-mono text-ink-soft">gsk_</code>
+                开头那个。
+              </span>
+            </span>
+            <Switch
+              checked={Boolean(oa.enabled)}
+              onChange={(v) => patch("openai", { enabled: v })}
+              label="启用 OpenAI 兼容转写"
+            />
+          </label>
+          {oa.enabled && (
+            <div className="grid grid-cols-1 gap-4">
+              <Field label="密钥">
+                <input
+                  className="input font-mono"
+                  type="password"
+                  value={oa.key ?? ""}
+                  onChange={(e) => patch("openai", { key: e.target.value })}
+                  placeholder="sk-…"
+                />
+              </Field>
+              <Field label="接口地址" hint="Groq 填 https://api.groq.com/openai/v1。留空 = OpenAI 官方">
+                <input
+                  className="input font-mono"
+                  value={oa.url ?? ""}
+                  onChange={(e) => patch("openai", { url: e.target.value })}
+                  placeholder="https://api.groq.com/openai/v1"
+                />
+              </Field>
+              <Field label="模型" hint="Groq：whisper-large-v3-turbo（最快）/ whisper-large-v3（更准）。OpenAI 官方：whisper-1">
+                <input
+                  className="input font-mono"
+                  value={oa.model ?? ""}
+                  onChange={(e) => patch("openai", { model: e.target.value })}
+                  placeholder="whisper-large-v3-turbo"
+                />
+              </Field>
+              <Field
+                label="提示词（可选）"
+                hint="给它一点上下文能提高专有名词的准确率 —— 比如角色名、游戏名、常聊的话题"
+              >
+                <input
+                  className="input"
+                  value={oa.prompt ?? ""}
+                  onChange={(e) => patch("openai", { prompt: e.target.value })}
+                  placeholder="对话里可能出现的人名、地名、专有名词"
+                />
+              </Field>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 border-t border-line pt-6">
+          <label className="flex items-start justify-between gap-4">
+            <span className="min-w-0">
+              <span className="block text-ui text-ink">阿里云 Qwen-Audio</span>
+              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                中文识别更好，有免费额度。去阿里云百炼开通之后拿一个
+                <code className="mx-1 font-mono text-ink-soft">sk-</code>
+                开头的密钥。
+              </span>
+            </span>
+            <Switch
+              checked={Boolean(qw.enabled)}
+              onChange={(v) => patch("qwen", { enabled: v })}
+              label="启用 Qwen 转写"
+            />
+          </label>
+          {qw.enabled && (
+            <div className="grid grid-cols-1 gap-4">
+              <Field label="密钥">
+                <input
+                  className="input font-mono"
+                  type="password"
+                  value={qw.key ?? ""}
+                  onChange={(e) => patch("qwen", { key: e.target.value })}
+                  placeholder="sk-…"
+                />
+              </Field>
+              <Field label="模型" hint="qwen3-asr-flash 最快。也可以用 qwen-audio-turbo">
+                <input
+                  className="input font-mono"
+                  value={qw.model ?? ""}
+                  onChange={(e) => patch("qwen", { model: e.target.value })}
+                  placeholder="qwen3-asr-flash"
+                />
+              </Field>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 border-t border-line pt-6">
+          <label className="flex items-start justify-between gap-4">
+            <span className="min-w-0">
+              <span className="block text-ui text-ink">讯飞语音听写</span>
+              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                国内节点、中文最好、延迟最低。要去讯飞开放平台建一个「语音听写」应用，
+                拿三个凭据。
+                <br />
+                <strong className="text-ink-soft">机器时间要准</strong>
+                ：它的签名只接受前后 5 分钟内的时间戳，时间不对会一直报鉴权失败。
+              </span>
+            </span>
+            <Switch
+              checked={Boolean(xf.enabled)}
+              onChange={(v) => patch("xfyun", { enabled: v })}
+              label="启用讯飞转写"
+            />
+          </label>
+          {xf.enabled && (
+            <div className="grid grid-cols-1 gap-4">
+              <Field label="APPID">
+                <input
+                  className="input font-mono"
+                  value={xf.appId ?? ""}
+                  onChange={(e) => patch("xfyun", { appId: e.target.value })}
+                />
+              </Field>
+              <Field label="APIKey">
+                <input
+                  className="input font-mono"
+                  type="password"
+                  value={xf.apiKey ?? ""}
+                  onChange={(e) => patch("xfyun", { apiKey: e.target.value })}
+                />
+              </Field>
+              <Field label="APISecret">
+                <input
+                  className="input font-mono"
+                  type="password"
+                  value={xf.apiSecret ?? ""}
+                  onChange={(e) => patch("xfyun", { apiSecret: e.target.value })}
+                />
+              </Field>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 export function StreamSection() {
   const { config, updateStream } = useConfig();
   const mode = config.stream?.mode ?? "auto";
@@ -1656,6 +1875,7 @@ export function ProviderPanel() {
           </p>
         </Card>
         <TtsSection />
+        <SttSection />
         <StreamSection />
         <SaveBar hint="所有源的密钥都只写入本地 data.config.json" />
       </>
@@ -1672,6 +1892,7 @@ export function ProviderPanel() {
         defaultVideo={defaultVideo}
       />
       <TtsSection />
+      <SttSection />
       <StreamSection />
       <SaveBar hint="所有源的密钥都只写入本地 data.config.json" />
     </>

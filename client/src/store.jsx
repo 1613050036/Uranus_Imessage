@@ -1251,6 +1251,16 @@ export function ConfigProvider({ children }) {
     [updateConfig]
   );
   /**
+   * 语音转文字的凭据（OpenAI 兼容 / Qwen / 讯飞）。同样**全局一份**。
+   *
+   * 两条路共用：iMessage 的语音条、FaceTime 通话。角色那边什么都不用配 ——
+   * 转写是「把声音变成字」，和哪个角色在听无关，见 config.js 的 sttApi。
+   */
+  const updateSttApi = useCallback(
+    (patch) => updateConfig((c) => ({ ...c, sttApi: { ...c.sttApi, ...patch } })),
+    [updateConfig]
+  );
+  /**
    * 通话节点（地址 + 配对密钥）。同样**全局一份**。
    *
    * 角色那边只有 role.call（接不接、用哪份通话预设、哪个模型）—— 这边描述的是
@@ -2215,6 +2225,7 @@ export function ConfigProvider({ children }) {
         updateMcdApi,
         updateMcpServers,
         updateSpyApi,
+        updateSttApi,
         updateCallNode,
         updateDollApi,
         updateTtsApi,

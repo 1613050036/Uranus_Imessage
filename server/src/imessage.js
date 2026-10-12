@@ -70,6 +70,7 @@ import {
   readAnswer,
   readHangUp,
 } from "./calltags.js";
+import { pickSttSource, transcribe as sttTranscribe } from "./stt.js";
 import {
   callRecordLine,
   callUserMessage,
@@ -1559,23 +1560,37 @@ async function describeImages(endpoint, prompt, max, runner, images) {
 }
 
 /**
- * 把这一轮收到的语音条逐条交给多模态模型听，拼成一段文字。
+ * 把这一轮收到的语音条逐条听成文字。
  *
  * 结构和 describeImages 一模一样（单条失败不拖垮整轮、超上限的截断并说明、
- * 没启用时给一句让模型知道「有东西但你听不到」的降级文案），区别只在
- * 打的是哪个接口 —— 见 llm.js:transcribeAudio。
+ * 没启用时给一句让模型知道「有东西但你听不到」的降级文案）。
  *
- * 提示词有两套（只转写 / 连语气环境音一起报），选哪套在 config.js 里按角色的
- * 「情绪识别」开关决定，到这里已经是一个字符串了。
+ * ── 两条路，按「情绪识别」那个开关分 ──
+ *
+ * **关着**（只要原话）→ 优先走专门的 STT（`stt.js`）：一秒内返回、便宜一个
+ * 数量级、而且不会"理解"音频 —— 多模态模型实测会把一句「Hi」扩写成报告，
+ * 或者对着静音编出鸟鸣（config.js:55 那段注释记了这件事）。
+ *
+ * **开着**（要语气、环境音、说话人数）→ 只能走多模态：那些东西专门的 STT
+ * 给不出来，它只管转字。
+ *
+ * 两条都没配就走降级文案。
  *
  * @param {object|null} endpoint 听音模型的 endpoint，null = 没开或引用失效
+ * @param {object} [opts] `{ sttApi, rich }` —— rich = 要不要语气环境音那一套
  * @returns {Promise<{text:string,total:number,failed:number,firstError:Error|null}>}
  */
-async function describeVoices(endpoint, prompt, max, runner, voices) {
+async function describeVoices(endpoint, prompt, max, runner, voices, opts = {}) {
   const scope = scopeOf(runner, "听音");
   if (!voices.length) return { text: "", total: 0, failed: 0, firstError: null };
 
-  if (!endpoint) {
+  /*
+   * 不要语气环境音的话，专门的 STT 更合适。配了就用它，没配或者它挂了
+   * 再退回多模态。
+   */
+  const stt = !opts.rich && pickSttSource(opts.sttApi) ? opts.sttApi : null;
+
+  if (!endpoint && !stt) {
     logInfo(
       scope,
       `收到 ${voices.length} 条语音，但这个角色没启用语音识别（或引用的模型已失效），已跳过`
@@ -1604,7 +1619,26 @@ async function describeVoices(endpoint, prompt, max, runner, voices) {
       );
       const startedAt = Date.now();
       try {
-        const desc = await transcribeAudio(endpoint, prompt, voice);
+        let desc;
+        if (stt) {
+          /*
+           * 专门的 STT。`voice` 带的是 base64（readAudio 那边转好的），
+           * 这里要字节，所以解回来。
+           */
+          const bytes = Buffer.from(voice.base64, "base64");
+          const r = await sttTranscribe(stt, bytes, {
+            mimeType: voice.mimeType || "audio/mpeg",
+            scope,
+          });
+          desc = r?.text ?? "";
+          // 转写服务配着却回了空 —— 退回多模态再试一次，别让这条语音白瞎
+          if (!desc && endpoint) {
+            logWarn(scope, `${label}转写服务回了空，用多模态再试一次`);
+            desc = await transcribeAudio(endpoint, prompt, voice);
+          }
+        } else {
+          desc = await transcribeAudio(endpoint, prompt, voice);
+        }
         logInfo(
           scope,
           `${label}识别完成（${secsSince(startedAt)}s）：${desc.slice(0, 60)}${desc.length > 60 ? "…" : ""}`
@@ -3389,7 +3423,11 @@ async function handleTurn(
    */
   const [vision, voice, video] = await Promise.all([
     describeImages(eps.vision, eps.visionPrompt, eps.maxImages, runner, images),
-    describeVoices(eps.audio, eps.audioPrompt, eps.maxClips, runner, voices),
+    describeVoices(eps.audio, eps.audioPrompt, eps.maxClips, runner, voices, {
+      sttApi: freshConfig.sttApi,
+      // 开了「情绪识别」就得走多模态 —— 语气、环境音、说话人数专门的 STT 给不出来
+      rich: Boolean(freshRole.audioModel?.emotion),
+    }),
     describeVideos(eps.video, eps.videoPrompt, eps.maxVideos, runner, videos),
   ]);
   /*
@@ -10104,6 +10142,8 @@ export async function beginCall(getConfig, { runner, role, spaceId, peer, link }
   const sent = sendToNode("join", {
     link,
     name: role.name,
+    // 节点拿它去取角色头像（见 callapi.js 的 /facetime/avatar）
+    roleId: role.id,
     bargeIn: role.call?.bargeIn !== false,
     silenceNoticeMs: (role.call?.silenceNotice ?? 45) * 1000,
   });

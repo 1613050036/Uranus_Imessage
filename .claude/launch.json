@@ -2,16 +2,95 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "sillytavern",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd /d D:\\SillyTavern\\SillyTavern && node server.js --browserLaunchEnabled=false"],
+      "port": 8000
+    },
+    {
       "name": "sandbox",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:sandbox"],
+      "runtimeArgs": [
+        "run",
+        "dev:sandbox"
+      ],
       "port": 5174
     },
     {
       "name": "prod",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["start"],
+      "runtimeArgs": [
+        "start"
+      ],
       "port": 8787
+    },
+    {
+      "name": "sandbox-ig",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:sandbox"
+      ],
+      "port": 5176,
+      "env": {
+        "SANDBOX_API_PORT": "8790",
+        "URANUS_API": "http://[::1]:8790"
+      }
+    },
+    {
+      "name": "sandbox-pdt",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:sandbox",
+        "--",
+        "--tz=America/Los_Angeles"
+      ],
+      "port": 5174
+    },
+    {
+      "name": "xiaoshouji-probe",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "Uranus小手机/probe",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "8799"
+      ],
+      "port": 8799
+    },
+    {
+      "name": "xiaoshouji-console",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "Uranus小手机/console",
+        "run",
+        "dev"
+      ],
+      "port": 5175
+    },
+    {
+      "name": "xiaoshouji-worker",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "Uranus小手机/worker",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "8788"
+      ],
+      "port": 8788,
+      "env": {
+        "HTTPS_PROXY": "http://127.0.0.1:7892",
+        "HTTP_PROXY": "http://127.0.0.1:7892",
+        "MSYS_NO_PATHCONV": "1"
+      }
     }
   ]
 }

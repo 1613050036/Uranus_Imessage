@@ -733,6 +733,21 @@ export const DEFAULT_CONFIG = {
     firm: 10,
   },
   /*
+   * 语音转文字（STT）的凭据，全局一份（只写 data.config.json）。
+   *
+   * 两条路共用：iMessage 的语音条、FaceTime 通话。三家都没开 = 退回原来那条
+   * 多模态模型的路（role.audioModel），见 stt.js 文件头。
+   */
+  sttApi: {
+    // OpenAI 兼容的 /audio/transcriptions。最通用，中转站普遍支持
+    openai: { enabled: false, key: "", url: "", model: "whisper-1", prompt: "" },
+    // 阿里云 Qwen-Audio：走 OpenAI 兼容的 chat 接口，中文好、有免费额度
+    qwen: { enabled: false, key: "", url: "", model: "qwen3-asr-flash" },
+    // 讯飞语音听写：国内节点、中文最好、延迟最低，但要三个凭据
+    xfyun: { enabled: false, appId: "", apiKey: "", apiSecret: "" },
+  },
+
+  /*
    * FaceTime 通话节点。整块只住密钥文件 —— 配对密钥等于一把能让别人往你的
    * 通话里塞话的钥匙，和 dollApi 的 pushSecret 一个待遇。
    *
@@ -2103,6 +2118,38 @@ function normalizeVoiceSend(input) {
 }
 
 /**
+ * 语音转文字的凭据。**整块只住密钥文件**（和 ttsApi 一样），所以 enabled
+ * 也在里面 —— config.json 那份是整块抹空的，分开存的话重启后空结构会把
+ * 开关盖成 false。
+ */
+function normalizeSttApi(input) {
+  const i = input ?? {};
+  return {
+    openai: {
+      enabled: Boolean(i.openai?.enabled),
+      key: str(i.openai?.key).trim(),
+      // 空 = 用 OpenAI 官方。填中转站的话写到 /v1 为止
+      url: str(i.openai?.url).trim().replace(/\/+$/, ""),
+      model: str(i.openai?.model).trim() || "whisper-1",
+      // 给模型一点上下文能提高专有名词的准确率（人名、游戏名那些）
+      prompt: str(i.openai?.prompt).slice(0, 400),
+    },
+    qwen: {
+      enabled: Boolean(i.qwen?.enabled),
+      key: str(i.qwen?.key).trim(),
+      url: str(i.qwen?.url).trim().replace(/\/+$/, ""),
+      model: str(i.qwen?.model).trim() || "qwen3-asr-flash",
+    },
+    xfyun: {
+      enabled: Boolean(i.xfyun?.enabled),
+      appId: str(i.xfyun?.appId).trim(),
+      apiKey: str(i.xfyun?.apiKey).trim(),
+      apiSecret: str(i.xfyun?.apiSecret).trim(),
+    },
+  };
+}
+
+/**
  * 通话节点的地址和配对密钥。
  *
  * **整块只住密钥文件**（和 ttsApi / dollApi 一样），所以 `enabled` 这个开关
@@ -3420,6 +3467,7 @@ export function normalizeConfig(input) {
   base.spyApi = normalizeSpyApi(input.spyApi);
   base.dollApi = normalizeDollApi(input.dollApi);
   base.ttsApi = normalizeTtsApi(input.ttsApi);
+  base.sttApi = normalizeSttApi(input.sttApi);
   base.callNode = normalizeCallNode(input.callNode);
   base.referenceImages = normalizeReferenceImages(input.referenceImages);
   base.mcpServers = normalizeMcpServers(input.mcpServers);
@@ -3555,6 +3603,9 @@ function mergeSecrets(main, data) {
     merged.searchApi = data.searchKeys;
   }
   // TTS 同理（四家的开关也在这块里，一起读回来）
+  if (data.sttKeys && typeof data.sttKeys === "object") {
+    merged.sttApi = data.sttKeys;
+  }
   if (data.callNodeKeys && typeof data.callNodeKeys === "object") {
     merged.callNode = data.callNodeKeys;
   }
@@ -3649,6 +3700,7 @@ function writeToDisk(normalized) {
     luckinKeys: normalized.luckinApi,
     mcdKeys: normalized.mcdApi,
     ttsKeys: normalized.ttsApi,
+    sttKeys: normalized.sttApi,
     callNodeKeys: normalized.callNode,
     cloudKeys: normalized.cloudBackup,
   });
@@ -3676,6 +3728,8 @@ function writeToDisk(normalized) {
     mcdApi: {},
     // TTS 同理
     ttsApi: {},
+    // 转写的凭据同理
+    sttApi: {},
     // 通话节点那条腿（配对密钥 + 节点地址）同理
     callNode: {},
     // 云备份整块同理

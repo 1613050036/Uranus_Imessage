@@ -114,6 +114,33 @@ export class UranusBrain {
     }
   }
 
+  /**
+   * 去 Uranus 那边拿角色头像。
+   *
+   * 拿不到就返回 null，节点会用自己画的占位图（深色底 + 角色名）——
+   * 没有头像的通话照样能打，为这个中断一通电话不值得。
+   *
+   * @returns {Promise<Buffer|null>}
+   */
+  async fetchAvatar(roleId = "") {
+    try {
+      const res = await fetch(this.#url("/facetime/avatar", { roleId }), {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) {
+        // 404 = 这个角色没配头像，是正常情况，不用 warn
+        if (res.status !== 404) logWarn("Uranus", `取头像失败：HTTP ${res.status}`);
+        return null;
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      logInfo("Uranus", `拿到头像，${Math.round(buf.length / 1024)}KB`);
+      return buf;
+    } catch (e) {
+      logWarn("Uranus", "取头像出错，用占位图", e);
+      return null;
+    }
+  }
+
   /** 报一声状态。失败只记日志 —— 它不该把通话搞死。 */
   async report(type, data = {}) {
     try {
