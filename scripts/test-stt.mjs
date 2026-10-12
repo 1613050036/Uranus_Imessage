@@ -148,6 +148,51 @@ group("OpenAI 兼容：multipart 拼得对不对");
   check("没指定语言时不发 language", body.includes('name="language"'), false);
 }
 
+group("语言是从配置里来的");
+{
+  // 配置里写了语言，调用方什么都没说 —— 也要发出去。
+  // 不发的话 whisper 自己猜，通话那种又短又吵的片段它经常整段猜错语言
+  const f = fakeFetch({ body: "ok" });
+  await transcribe(
+    { language: "zh", openai: { enabled: true, key: "k" } },
+    Buffer.from("x")
+  );
+  f.restore();
+  const body = f.calls[0].init.body.toString("binary");
+  check("配置里的语言发出去了", body.includes('name="language"\r\n\r\nzh'), true);
+}
+{
+  // 调用方显式指定的压过配置
+  const f = fakeFetch({ body: "ok" });
+  await transcribe({ language: "zh", openai: { enabled: true, key: "k" } }, Buffer.from("x"), {
+    language: "ja",
+  });
+  f.restore();
+  const body = f.calls[0].init.body.toString("binary");
+  check("调用方指定的优先", body.includes('name="language"\r\n\r\nja'), true);
+  check("配置里那个不会一起发", body.includes('name="language"\r\n\r\nzh'), false);
+}
+{
+  // 空串 = 用户明确选了「自动」，那就真的别发
+  const f = fakeFetch({ body: "ok" });
+  await transcribe({ language: "", openai: { enabled: true, key: "k" } }, Buffer.from("x"));
+  f.restore();
+  check(
+    "选了自动就不发 language",
+    f.calls[0].init.body.toString("binary").includes('name="language"'),
+    false
+  );
+}
+{
+  // Qwen 那条路没有 language 字段，语言是写进那句指令里的
+  const f = fakeFetch({ body: JSON.stringify({ choices: [{ message: { content: "好的" } }] }) });
+  await transcribe({ language: "ja", qwen: { enabled: true, key: "k" } }, Buffer.from("x"));
+  f.restore();
+  const body = JSON.parse(f.calls[0].init.body);
+  check("Qwen 的指令里点明了语言", body.messages[0].content[1].text.includes("日文"), true);
+  check("不发 asr_options（中转站不认）", "asr_options" in body, false);
+}
+
 group("OpenAI 兼容：几个细节");
 {
   // 自定义中转站地址，末尾的斜杠要吃掉

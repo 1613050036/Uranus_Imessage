@@ -739,6 +739,16 @@ export const DEFAULT_CONFIG = {
    * 多模态模型的路（role.audioModel），见 stt.js 文件头。
    */
   sttApi: {
+    /*
+     * 说的是哪种语言。默认中文。
+     *
+     * 不填的话 whisper 自己猜，而**通话里的片段又短又吵**，它猜错的概率高得
+     * 离谱 —— 实测一通中文电话被认成冰岛语、韩语、俄语，转写出来是一串没有
+     * 意义的谚文。给了语言之后它不再猜，而且更快一点。
+     *
+     * 只在固定说某一种语言时留空（让它每段自己判）。
+     */
+    language: "zh",
     // OpenAI 兼容的 /audio/transcriptions。最通用，中转站普遍支持
     openai: { enabled: false, key: "", url: "", model: "whisper-1", prompt: "" },
     // 阿里云 Qwen-Audio：走 OpenAI 兼容的 chat 接口，中文好、有免费额度
@@ -2125,6 +2135,15 @@ function normalizeVoiceSend(input) {
 function normalizeSttApi(input) {
   const i = input ?? {};
   return {
+    /*
+     * 语言。**没有这个字段**（老配置、第一次启动）当成中文，不是「自动」——
+     * 自动是坏的默认值，见 DEFAULTS 里那段。用户想要自动得自己把它清空，
+     * 那时字段是空串、不是 undefined，这里分得开。
+     */
+    language:
+      i.language === undefined || i.language === null
+        ? "zh"
+        : str(i.language).trim().toLowerCase(),
     openai: {
       enabled: Boolean(i.openai?.enabled),
       key: str(i.openai?.key).trim(),

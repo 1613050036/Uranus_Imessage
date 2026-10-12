@@ -80,8 +80,17 @@ export async function transcribe(api, audio, opts = {}) {
   const kb = Math.round(audio.length / 1024);
   logDebug(scope, `${src.name} 开始转写，${kb}KB`);
 
+  /*
+   * 语言：调用方指定的优先，否则用全局配置里那个（默认 zh）。
+   *
+   * 这一条很要紧 —— 不给语言的话 whisper 每段各猜各的，而通话切出来的片段
+   * 又短又吵，实测一通中文电话被接连认成冰岛语、韩语、俄语，转写出来是一串
+   * 读不通的外文，模型还得对着那串瞎编。
+   */
+  const withLang = { ...opts, language: opts.language || api?.language || "" };
+
   try {
-    const text = await src.run(audio, opts);
+    const text = await src.run(audio, withLang);
     const ms = Date.now() - started;
     const clean = String(text ?? "").trim();
     logInfo(scope, `${src.name} 转写出 ${clean.length} 字，耗时 ${ms}ms`, clean.slice(0, 120));
@@ -207,8 +216,13 @@ async function sttQwen(cfg, audio, opts) {
         role: "user",
         content: [
           { type: "input_audio", input_audio: { data: `data:${mime};base64,${audio.toString("base64")}` } },
-          // 不给文字指令的话它有时会"回答"音频里的问题而不是转写
-          { type: "text", text: "转写这段音频，只输出原话，不要任何解释。" },
+          /*
+           * 不给文字指令的话它有时会"回答"音频里的问题而不是转写。
+           *
+           * 语言写进这句话里，而不是发 `asr_options` 字段 —— 后者只有阿里云
+           * 官方的那个地址认，中转站见到不认识的字段会直接 400。
+           */
+          { type: "text", text: `转写这段音频${langHint(opts.language)}，只输出原话，不要任何解释。` },
         ],
       },
     ],
@@ -305,7 +319,12 @@ async function sttXfyun(cfg, audio, opts) {
       const frame = {
         common: { app_id: String(cfg.appId).trim() },
         business: {
-          language: opts.language === "en" ? "en_us" : "zh_cn",
+          // 讯飞只收它自己那套代码；没列到的（含留空"自动"）都按中文办 ——
+          // 它没有「自动」这一档，总得给一个
+          language:
+            { en: "en_us", ja: "ja_jp", ko: "ko_kr", ru: "ru-ru", fr: "fr_fr", es: "es_es" }[
+              String(opts.language ?? "").trim().toLowerCase()
+            ] ?? "zh_cn",
           domain: "iat",
           accent: "mandarin",
           // 动态修正：边说边改，结果更准。代价是要处理 pgs 拼接
@@ -357,6 +376,29 @@ async function sttXfyun(cfg, audio, opts) {
       clearTimeout(timer);
     });
   });
+}
+
+/**
+ * 语言代码 → 写给 Qwen 看的那句话里的半截中文。
+ *
+ * 列的是常用的几个；没列到的按原样说「（{代码}）」—— 比瞎猜强，
+ * 也不用为了加一门语言回来改这张表。空 = 不提，让它自己判。
+ */
+function langHint(code) {
+  const c = String(code ?? "").trim().toLowerCase();
+  if (!c) return "";
+  const named = {
+    zh: "中文",
+    en: "英文",
+    ja: "日文",
+    ko: "韩文",
+    yue: "粤语",
+    ru: "俄文",
+    fr: "法文",
+    de: "德文",
+    es: "西班牙文",
+  }[c];
+  return `（说的是${named ?? c}）`;
 }
 
 /** 这段字节是不是 WAV（看 RIFF 头）。 */

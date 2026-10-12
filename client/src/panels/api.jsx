@@ -1638,6 +1638,35 @@ export function SttSection() {
         )}
 
         <div className="grid grid-cols-1 gap-4 border-t border-line pt-6">
+          <Field
+            label="说的是哪种语言"
+            hint="三家共用。选了之后转写服务就不再自己猜 —— 通话里切出来的片段又短又吵，让它猜很容易整段认成别的语言"
+          >
+            <select
+              className={inputCls}
+              value={stt.language ?? "zh"}
+              onChange={(e) => updateSttApi({ language: e.target.value })}
+            >
+              {/* 和 server/src/stt.js:langHint、讯飞那张映射表对齐，加语言三处一起改 */}
+              <option value="zh">中文</option>
+              <option value="en">英文</option>
+              <option value="ja">日文</option>
+              <option value="ko">韩文</option>
+              <option value="yue">粤语</option>
+              <option value="ru">俄文</option>
+              <option value="fr">法文</option>
+              <option value="de">德文</option>
+              <option value="es">西班牙文</option>
+              <option value="">自动判断（不推荐）</option>
+            </select>
+            <p className="text-meta leading-relaxed text-ink-faint">
+              「自动」实测很不靠谱：一通全程中文的电话被接连认成冰岛语、韩语、俄语，
+              转出来是一串读不通的外文，角色还得对着那串瞎回。只有真的经常换语言才选它。
+            </p>
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 border-t border-line pt-6">
           <label className="flex items-start justify-between gap-4">
             <span className="min-w-0">
               <span className="block text-ui text-ink">OpenAI 兼容（whisper）</span>
