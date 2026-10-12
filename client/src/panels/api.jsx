@@ -1669,7 +1669,12 @@ export function SttSection() {
                 <strong className="text-ink-soft">三家都是云服务，都不用自己部署模型</strong>
                 （whisper-1 只是 OpenAI 那个模型的名字）。
                 <br />
-                最推荐 <strong className="text-ink-soft">Groq</strong>
+                <strong className="text-warn">但说中文的话别用这条</strong>
+                ：whisper 的中文明显不如下面那个 Qwen3-ASR（实测把「怎么」听成
+                「三者」、两秒半的话只出三个字）。这条适合英文，或者你手头只有
+                中转站密钥的时候。
+                <br />
+                要用的话最推荐 <strong className="text-ink-soft">Groq</strong>
                 ：跑 whisper 快得出名（比实时快几十倍），还有免费额度。地址填
                 <code className="mx-1 font-mono text-ink-soft">https://api.groq.com/openai/v1</code>
                 ，模型填
@@ -1738,9 +1743,11 @@ export function SttSection() {
         <div className="grid grid-cols-1 gap-4 border-t border-line pt-6">
           <label className="flex items-start justify-between gap-4">
             <span className="min-w-0">
-              <span className="block text-ui text-ink">阿里云 Qwen-Audio</span>
+              <span className="block text-ui text-ink">阿里云 Qwen3-ASR</span>
               <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-                中文识别更好，有免费额度。去阿里云百炼开通之后拿一个
+                <strong className="text-ink-soft">中文最推荐这个</strong>
+                ：专职的中文语音识别，比 whisper 准不少，有免费额度。
+                去阿里云百炼开通之后拿一个
                 <code className="mx-1 font-mono text-ink-soft">sk-</code>
                 开头的密钥。
               </span>
@@ -1762,7 +1769,21 @@ export function SttSection() {
                   placeholder="sk-…"
                 />
               </Field>
-              <Field label="模型" hint="qwen3-asr-flash 最快。也可以用 qwen-audio-turbo">
+              <Field
+                label="接口地址"
+                hint="留空 = 阿里云官方（dashscope.aliyuncs.com/compatible-mode/v1）。填中转站的话写到 /v1 为止"
+              >
+                <input
+                  className="input font-mono"
+                  value={qw.url ?? ""}
+                  onChange={(e) => patch("qwen", { url: e.target.value })}
+                  placeholder="留空就好"
+                />
+              </Field>
+              <Field
+                label="模型"
+                hint="只能填 qwen3-asr-flash 系列 —— 别的 Qwen 语音模型走不了这条 OpenAI 兼容接口"
+              >
                 <input
                   className="input font-mono"
                   value={qw.model ?? ""}
@@ -1770,6 +1791,23 @@ export function SttSection() {
                   placeholder="qwen3-asr-flash"
                 />
               </Field>
+              <Field
+                label="专有名词（可选）"
+                hint="人名、地名、游戏名这些 —— 它会照着认。写词，别写句子"
+              >
+                <input
+                  className="input"
+                  value={qw.prompt ?? ""}
+                  onChange={(e) => patch("qwen", { prompt: e.target.value })}
+                  placeholder="例如：Charlie、niki、南宁"
+                />
+              </Field>
+              <p className="text-meta leading-relaxed text-ink-faint">
+                这一栏走的是它的「实体词表」，
+                <strong className="text-ink-soft">只认词、不认指令</strong>
+                —— 写「请用简体输出」那种话没用（它本来就输出简体）。
+                语言用上面那个「说的是哪种语言」，不用写在这儿。
+              </p>
             </div>
           )}
         </div>

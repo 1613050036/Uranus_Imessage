@@ -322,7 +322,7 @@ export function sttSourceName(api) {
   const a = api ?? {};
   const has = (v) => Boolean(String(v ?? "").trim());
   if (a.openai?.enabled && has(a.openai.key)) return "OpenAI 兼容";
-  if (a.qwen?.enabled && has(a.qwen.key)) return "阿里云 Qwen-Audio";
+  if (a.qwen?.enabled && has(a.qwen.key)) return "阿里云 Qwen3-ASR";
   if (
     a.xfyun?.enabled &&
     has(a.xfyun.appId) &&

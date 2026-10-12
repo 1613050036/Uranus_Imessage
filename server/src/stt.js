@@ -62,7 +62,7 @@ export function pickSttSource(api) {
     return { name: "OpenAI 兼容", run: (...args) => sttOpenAi(a.openai, ...args) };
   }
   if (a.qwen?.enabled && has(a.qwen.key)) {
-    return { name: "Qwen-Audio", run: (...args) => sttQwen(a.qwen, ...args) };
+    return { name: "Qwen3-ASR", run: (...args) => sttQwen(a.qwen, ...args) };
   }
   if (a.xfyun?.enabled && has(a.xfyun.appId) && has(a.xfyun.apiKey) && has(a.xfyun.apiSecret)) {
     return { name: "讯飞", run: (...args) => sttXfyun(a.xfyun, ...args) };
@@ -217,13 +217,29 @@ async function sttOpenAi(cfg, audio, opts) {
   return trimmed;
 }
 
-/* ========= 阿里云 Qwen-Audio ========= */
+/* ========= 阿里云 Qwen3-ASR ========= */
 
 /**
  * 走的是 OpenAI 兼容的 chat 接口，音频用 data URL 塞进 content 里。
  *
- * 它本质上还是个多模态模型，但**专门为语音调过**，比通用的 Gemini 快得多，
- * 而且中文识别更好。有免费额度。
+ * ── 这个接口**不是**普通的多模态 chat，别照那个写 ──
+ *
+ * `qwen3-asr-flash` 在阿里云那边是一个「专职任务」（dedicated task `asr`），
+ * 请求体的形状被卡得很死，踩过两次：
+ *
+ *  1. **user 的 content 数组里只许有一条，而且 type 必须是 `input_audio`。**
+ *     多塞一条 `{type:"text"}` 的文字指令（想让它"只输出原话"）就会收到
+ *     `400 InternalError.Algo.InvalidParameter: The dedicated task 'asr'
+ *     corresponding to the current service does not support this input.`
+ *     —— 这句话读起来像是音频格式不对，其实骂的是那条文字。
+ *     本来也不需要那条指令：专职 ASR 只会转写，不会"回答"音频里的问题。
+ *  2. **语言要用顶层的 `asr_options`**，不能写进文字指令里（见上一条）。
+ *
+ * 另外 system 消息在这儿是**给专有名词用的**（背景文本 / 实体词表），
+ * 不是传统的系统提示词，而且必须是第一条。所以「提示词」那一栏填的人名、
+ * 地名正好塞这儿。
+ *
+ * 文档：https://www.alibabacloud.com/help/en/model-studio/qwen-asr-api-reference
  */
 async function sttQwen(cfg, audio, opts) {
   /*
@@ -239,36 +255,62 @@ async function sttQwen(cfg, audio, opts) {
   const model = String(cfg.model ?? "qwen3-asr-flash").trim() || "qwen3-asr-flash";
   const mime = opts.mimeType ?? "audio/wav";
 
-  const body = {
-    model,
-    messages: [
+  const messages = [];
+  /*
+   * 专有名词表。只在用户填了「提示词」时才发 —— 这一条必须是第一条，
+   * 而且写的该是词表（「Charlie、niki、南宁」）而不是指令。
+   */
+  const glossary = String(cfg.prompt ?? "").trim();
+  if (glossary) messages.push({ role: "system", content: glossary.slice(0, 400) });
+  messages.push({
+    role: "user",
+    // 只许这一条，而且只许 input_audio —— 多一条就 400，见函数头
+    content: [
       {
-        role: "user",
-        content: [
-          { type: "input_audio", input_audio: { data: `data:${mime};base64,${audio.toString("base64")}` } },
-          /*
-           * 不给文字指令的话它有时会"回答"音频里的问题而不是转写。
-           *
-           * 语言写进这句话里，而不是发 `asr_options` 字段 —— 后者只有阿里云
-           * 官方的那个地址认，中转站见到不认识的字段会直接 400。
-           */
-          { type: "text", text: `转写这段音频${langHint(opts.language)}，只输出原话，不要任何解释。` },
-        ],
+        type: "input_audio",
+        input_audio: { data: `data:${mime};base64,${audio.toString("base64")}` },
       },
     ],
-  };
-
-  const res = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${String(cfg.key).trim()}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
   });
 
-  const text = await res.text();
+  const body = { model, messages };
+  /*
+   * 语言走顶层 `asr_options`（curl / REST 就是放顶层的，OpenAI 的 Python SDK
+   * 那边叫 extra_body）。留空 = 不发，让它自己判多语种。
+   *
+   * `enable_itn` 不开：它把「二零二六年」规整成「2026 年」这类，对转写出来
+   * 直接进上下文的场合没必要，而且中英之外不支持。
+   */
+  if (opts.language) body.asr_options = { language: opts.language };
+
+  const call = (payload) =>
+    fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${String(cfg.key).trim()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+
+  let res = await call(body);
+  let text = await res.text();
+
+  /*
+   * 中转站不认 `asr_options` 的话脱掉重打一次。
+   *
+   * 这个字段不是 OpenAI 标准里的，自建反代和一部分中转站见到不认识的顶层
+   * 字段会直接 400。丢掉它只是失去「指定语言」，而 Qwen 自己判语种本来也
+   * 不差 —— 比整条转写失败好得多。
+   */
+  if (!res.ok && res.status === 400 && body.asr_options && /asr_options/i.test(text)) {
+    logWarn(opts.scope ?? SCOPE, "这个地址不认 asr_options，去掉语言设置重打一次");
+    const { asr_options: _drop, ...rest } = body;
+    res = await call(rest);
+    text = await res.text();
+  }
+
   if (!res.ok) throw new Error(`Qwen 返回 ${res.status}：${text.slice(0, 300)}`);
 
   let data;
@@ -279,7 +321,7 @@ async function sttQwen(cfg, audio, opts) {
   }
 
   const content = data?.choices?.[0]?.message?.content;
-  // 它可能回字符串，也可能回 [{type:"text",text:"…"}]
+  // 文档里写的是数组、示例里回的是字符串，两种都兜住
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content.map((c) => (typeof c === "string" ? c : (c?.text ?? ""))).join("");
@@ -426,29 +468,6 @@ function defaultSttPrompt(code) {
   if (c === "zh") return "以下是一段普通话对话，请用简体中文转写。";
   if (c === "yue") return "以下是一段粤语对话，请用简体中文转写。";
   return "";
-}
-
-/**
- * 语言代码 → 写给 Qwen 看的那句话里的半截中文。
- *
- * 列的是常用的几个；没列到的按原样说「（{代码}）」—— 比瞎猜强，
- * 也不用为了加一门语言回来改这张表。空 = 不提，让它自己判。
- */
-function langHint(code) {
-  const c = String(code ?? "").trim().toLowerCase();
-  if (!c) return "";
-  const named = {
-    zh: "中文",
-    en: "英文",
-    ja: "日文",
-    ko: "韩文",
-    yue: "粤语",
-    ru: "俄文",
-    fr: "法文",
-    de: "德文",
-    es: "西班牙文",
-  }[c];
-  return `（说的是${named ?? c}）`;
 }
 
 /** 这段字节是不是 WAV（看 RIFF 头）。 */

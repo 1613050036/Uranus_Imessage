@@ -10220,6 +10220,8 @@ export async function beginCall(getConfig, { runner, role, spaceId, peer, link, 
     roleId: role.id,
     bargeIn: role.call?.bargeIn !== false,
     silenceNoticeMs: (role.call?.silenceNotice ?? 45) * 1000,
+    // 接通后等多久再开口（语音通道要热一下，不然头几个字被吃掉）
+    openingDelayMs: role.call?.openingDelayMs ?? 1500,
   });
   if (!sent) {
     endCall("节点没收到入会指令");

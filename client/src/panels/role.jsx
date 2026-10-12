@@ -5778,6 +5778,30 @@ export function RoleCallFields({ role, onGoto }) {
           </label>
 
           <Field
+            label="接通后等多久再开口"
+            hint="毫秒。默认 1500。还吞字就往上调（2000～2500）"
+          >
+            <input
+              type="number"
+              className="input"
+              min={0}
+              max={10000}
+              step={100}
+              value={c.openingDelayMs ?? 1500}
+              onChange={(e) => patch({ openingDelayMs: Number(e.target.value) })}
+            />
+          </Field>
+          <p className="text-meta leading-relaxed text-ink-faint">
+            这<strong className="text-ink-soft">不是</strong>为了装得像真人顿一下，是技术上必须的：
+            接通那一刻语音通道还没热起来（编码器可能还在静音抑制里、对方手机上的
+            缓冲是空的），立刻开口
+            <strong className="text-ink-soft">头上几个字会被吃掉</strong>。
+            节点那边还铺了一层听不见的底噪防这件事，两道一起用。
+            <br />
+            调到 0 = 接通立刻说，大概率吞字。
+          </p>
+
+          <Field
             label="多久没说话提醒一次"
             hint="0 = 不提醒。默认 45 秒"
           >

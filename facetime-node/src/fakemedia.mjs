@@ -204,6 +204,29 @@ export function buildFakeMediaShim({
   keepAlive.connect(keepGain).connect(dest);
   keepAlive.start();
 
+  /* ── 底噪：别让编码器启静音抑制 ─────────────────────────────
+   *
+   * 上面那个振荡器只够让「轨还活着」，对编码器来说 0.0001 就是静音 ——
+   * Opus 的 DTX 会就此停发数据包，对方那头的抖动缓冲跟着空掉。于是角色
+   * 一开口，**头上几个字被吃掉**（用户实测开场白就是这样）。
+   *
+   * 解法是铺一层极低的白噪声：-54dBFS 左右，人耳基本听不见（比任何一条
+   * 真实电话线的底噪都小），但足够让编码器一直认为「有声音」、一直发包。
+   *
+   * 用噪声而不是把振荡器调大：固定频率的纯音哪怕很轻也会被听成电流声，
+   * 而白噪声听起来就是「线路底噪」，恰好是打电话该有的样子。
+   */
+  const FLOOR = 0.002;
+  const noiseLen = Math.floor(ac.sampleRate * 2);
+  const noiseBuf = ac.createBuffer(1, noiseLen, ac.sampleRate);
+  const noiseData = noiseBuf.getChannelData(0);
+  for (let i = 0; i < noiseLen; i += 1) noiseData[i] = (Math.random() * 2 - 1) * FLOOR;
+  const noise = ac.createBufferSource();
+  noise.buffer = noiseBuf;
+  noise.loop = true; // 两秒一循环，接缝听不出来（本来就是噪声）
+  noise.connect(dest);
+  noise.start();
+
   if (BEEP) {
     // 测试用：每 3 秒「嘀」一声，对方听得到就说明上行通了
     setInterval(() => {

@@ -78,7 +78,7 @@ group("挑哪一家");
   check(
     "只开了 Qwen",
     pickSttSource({ qwen: { enabled: true, key: "k" } })?.name,
-    "Qwen-Audio"
+    "Qwen3-ASR"
   );
   check(
     "只开了讯飞",
@@ -90,7 +90,7 @@ group("挑哪一家");
   check(
     "开着但没填密钥 → 跳过",
     pickSttSource({ openai: { enabled: true, key: "" }, qwen: { enabled: true, key: "k" } })?.name,
-    "Qwen-Audio"
+    "Qwen3-ASR"
   );
   check(
     "讯飞缺一个凭据 → 跳过（它要三个）",
@@ -184,13 +184,17 @@ group("语言是从配置里来的");
   );
 }
 {
-  // Qwen 那条路没有 language 字段，语言是写进那句指令里的
+  /*
+   * Qwen 的语言走顶层 `asr_options`。
+   *
+   * 这里原来断言的是「语言写进一条文字指令里」—— **那个做法本身是错的**，
+   * 多出来的那条文字会让上游回 400（见下面那一组）。断言跟着改过来了。
+   */
   const f = fakeFetch({ body: JSON.stringify({ choices: [{ message: { content: "好的" } }] }) });
   await transcribe({ language: "ja", qwen: { enabled: true, key: "k" } }, Buffer.from("x"));
   f.restore();
   const body = JSON.parse(f.calls[0].init.body);
-  check("Qwen 的指令里点明了语言", body.messages[0].content[1].text.includes("日文"), true);
-  check("不发 asr_options（中转站不认）", "asr_options" in body, false);
+  check("语言在 asr_options 里", body.asr_options, { language: "ja" });
 }
 
 group("地址留空要用默认的（踩过的坑）");
@@ -320,6 +324,89 @@ group("OpenAI 兼容：几个细节");
 
 // ───────────────────────────────── Qwen
 
+group("Qwen3-ASR 的请求形状（踩过两次的坑）");
+{
+  /*
+   * `qwen3-asr-flash` 是阿里云那边的「专职任务」，请求体卡得很死：
+   * user 的 content 数组**只许一条、而且只许 input_audio**。多塞一条文字
+   * 指令就回 400 `The dedicated task 'asr' ... does not support this input.`
+   * —— 那句话读起来像在骂音频格式，其实骂的是那条文字。
+   *
+   * 这几条断言就是为了别再把文字指令加回去。
+   */
+  const f = fakeFetch({ body: JSON.stringify({ choices: [{ message: { content: "喂" } }] }) });
+  await transcribe({ language: "zh", qwen: { enabled: true, key: "k" } }, Buffer.from("x"));
+  f.restore();
+  const body = JSON.parse(f.calls[0].init.body);
+
+  const content = body.messages.at(-1).content;
+  check("content 里只有一条", content.length, 1);
+  check("那一条是 input_audio", content[0].type, "input_audio");
+  check(
+    "没有任何文字部分（多一条就 400）",
+    content.some((c) => c.type === "text"),
+    false
+  );
+  check("音频是 data URL", content[0].input_audio.data.startsWith("data:audio/wav;base64,"), true);
+  // 语言走顶层 asr_options，不是写进文字里
+  check("语言在 asr_options 里", body.asr_options, { language: "zh" });
+  check("没填专有名词时不发 system", body.messages.length, 1);
+}
+{
+  // 语言留空 = 不发 asr_options，让它自己判多语种
+  const f = fakeFetch({ body: JSON.stringify({ choices: [{ message: { content: "喂" } }] }) });
+  await transcribe({ language: "", qwen: { enabled: true, key: "k" } }, Buffer.from("x"));
+  f.restore();
+  check("自动时不发 asr_options", "asr_options" in JSON.parse(f.calls[0].init.body), false);
+}
+{
+  // 专有名词走 system，而且必须是第一条
+  const f = fakeFetch({ body: JSON.stringify({ choices: [{ message: { content: "喂" } }] }) });
+  await transcribe(
+    { language: "zh", qwen: { enabled: true, key: "k", prompt: "Charlie、niki、南宁" } },
+    Buffer.from("x")
+  );
+  f.restore();
+  const body = JSON.parse(f.calls[0].init.body);
+  check("第一条是 system", body.messages[0].role, "system");
+  check("内容就是那串词", body.messages[0].content, "Charlie、niki、南宁");
+  check("音频还在最后那条", body.messages.at(-1).role, "user");
+}
+{
+  /*
+   * 中转站不认 asr_options 时脱掉重打 —— 丢掉「指定语言」比整条失败好。
+   */
+  // 第一次拒（点名 asr_options），第二次放过
+  let n = 0;
+  const f = fakeFetch(() =>
+    n++ === 0
+      ? {
+          status: 400,
+          body: JSON.stringify({
+            error: { message: "Unrecognized request argument: asr_options" },
+          }),
+        }
+      : { body: JSON.stringify({ choices: [{ message: { content: "喂" } }] }) }
+  );
+  const r = await transcribe({ language: "zh", qwen: { enabled: true, key: "k" } }, Buffer.from("x"));
+  f.restore();
+  check("重打了一次", f.calls.length, 2);
+  check("第二次把 asr_options 脱了", "asr_options" in JSON.parse(f.calls[1].init.body), false);
+  check("这一轮最终是成的", r.text, "喂");
+}
+{
+  // 别的 400 不该触发那个重试（不然等于把每个错误都打两遍）
+  const no = { status: 400, body: JSON.stringify({ error: { message: "invalid api key" } }) };
+  const f = fakeFetch(no);
+  let msg = "";
+  await transcribe({ qwen: { enabled: true, key: "k" } }, Buffer.from("x")).catch((e) => {
+    msg = String(e?.message ?? e);
+  });
+  f.restore();
+  check("只打了一次", f.calls.length, 1);
+  check("错误里带上游原文", msg.includes("invalid api key"), true);
+}
+
 group("阿里云 Qwen-Audio");
 {
   const f = fakeFetch({
@@ -342,8 +429,12 @@ group("阿里云 Qwen-Audio");
   const body = JSON.parse(f.calls[0].init.body);
   check("默认模型", body.model, "qwen3-asr-flash");
   check("音频是 data URL", body.messages[0].content[0].input_audio.data.startsWith("data:audio/wav;base64,"), true);
-  // 不给文字指令它会"回答"音频里的问题而不是转写
-  check("带了一句转写指令", body.messages[0].content[1].type, "text");
+  /*
+   * 这里原来断言「带了一句转写指令」，理由写的是「不给它会回答音频里的
+   * 问题而不是转写」。**那个判断是错的**：qwen3-asr-flash 是专职 ASR，
+   * 只会转写；而多出来的那条文字会让它直接回 400。断言反过来了。
+   */
+  check("一个字的指令都不许带", body.messages[0].content.length, 1);
 }
 {
   // 它也可能回 [{type:"text",text:"…"}] 这种数组

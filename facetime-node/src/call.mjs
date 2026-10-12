@@ -35,6 +35,25 @@ const ALIVE_CHECK_MS = 3000;
 /** 接通后多久没查到对方还在，就认定挂断了。 */
 const ALIVE_GRACE = 2;
 
+/**
+ * 接通之后、角色开口之前先等一会儿（毫秒）。
+ *
+ * ── 为什么非等不可 ──
+ *
+ * 「接通」这一刻媒体通道还没热起来：我们的上行轨在页面加载时就建好了，但
+ * 平时只灌一个振幅 0.0001 的振荡器 —— 对编码器来说那就是静音，它很可能
+ * 启了静音抑制（DTX）压根不发包；对方那头的抖动缓冲也还是空的。这时候
+ * 立刻开口，**头上几个字会被吃掉**。
+ *
+ * 以前撞不上这个坑是因为接通后还要打一轮模型（8–25 秒），那段时间顺带把
+ * 通道焐热了。v1.19.1 把开场白改成提前合成之后，角色在接通的瞬间就开口，
+ * 这个问题立刻暴露出来 —— 用户的原话是「开场白会吞掉之前几个字」。
+ *
+ * 1.5 秒是按「真人接起来也要顿一下」选的：短了压不住，长了对方会觉得
+ * 这边没人。Uranus 那边可以在角色配置里改（join 带 openingDelayMs 过来）。
+ */
+const OPENING_DELAY_MS = 1500;
+
 export class Call {
   /**
    * @param {object} opts
@@ -89,8 +108,20 @@ export class Call {
       this.startedAt = Date.now();
       await this.opts.brain.onConnected?.();
 
-      // 接通之后角色先开口，不然一片沉默很尴尬
-      await this.#speak(() => this.opts.brain.onGreeting?.());
+      /*
+       * 接通之后角色先开口，不然一片沉默很尴尬。
+       *
+       * 但要先等通道热起来 —— 见 OPENING_DELAY_MS。这段时间 Uranus 那边
+       * 正好也在把开场白合成完（两件事并行，不叠加）。
+       */
+      const wait = this.opts.openingDelayMs ?? OPENING_DELAY_MS;
+      if (wait > 0) {
+        logInfo("通话", `接通了，先等 ${wait}ms 让语音通道热起来再开口`);
+        await sleep(wait);
+      }
+      if (this.state === "live") {
+        await this.#speak(() => this.opts.brain.onGreeting?.());
+      }
 
       await this.#waitUntilEnded();
     } catch (e) {

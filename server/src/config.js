@@ -754,8 +754,8 @@ export const DEFAULT_CONFIG = {
     language: "zh",
     // OpenAI 兼容的 /audio/transcriptions。最通用，中转站普遍支持
     openai: { enabled: false, key: "", url: "", model: "whisper-1", prompt: "" },
-    // 阿里云 Qwen-Audio：走 OpenAI 兼容的 chat 接口，中文好、有免费额度
-    qwen: { enabled: false, key: "", url: "", model: "qwen3-asr-flash" },
+    // 阿里云 Qwen3-ASR：走 OpenAI 兼容的 chat 接口，中文好、有免费额度
+    qwen: { enabled: false, key: "", url: "", model: "qwen3-asr-flash", prompt: "" },
     // 讯飞语音听写：国内节点、中文最好、延迟最低，但要三个凭据
     xfyun: { enabled: false, appId: "", apiKey: "", apiSecret: "" },
   },
@@ -2177,6 +2177,12 @@ function normalizeSttApi(input) {
       key: str(i.qwen?.key).trim(),
       url: str(i.qwen?.url).trim().replace(/\/+$/, ""),
       model: str(i.qwen?.model).trim() || "qwen3-asr-flash",
+      /*
+       * 专有名词表（人名、地名）。走的是 Qwen3-ASR 的 system 消息 ——
+       * 那一条在这个接口里**专门用来放背景文本和实体词表**，不是传统的
+       * 系统提示词（写指令进去不管用，见 stt.js:sttQwen）。
+       */
+      prompt: str(i.qwen?.prompt).slice(0, 400),
     },
     xfyun: {
       enabled: Boolean(i.xfyun?.enabled),
@@ -2285,6 +2291,21 @@ function normalizeRoleCall(input) {
      * 所以只报现象，让角色按人设自己判断。见 calltags.js:silenceNotice。
      */
     silenceNotice: clampInt(input?.silenceNotice, 45, 0, 600),
+
+    /*
+     * 接通之后等多久再开口，毫秒。默认 1500。
+     *
+     * 不是为了「像真人一样顿一下」（虽然顺带有这个效果），是**技术上必须**：
+     * 接通那一刻上行的语音通道还没热起来（编码器可能还在静音抑制里、对方
+     * 那头的抖动缓冲是空的），立刻开口头上几个字会被吃掉。
+     *
+     * 实测过：v1.19.1 把开场白改成提前合成、接通瞬间就播之后，这个问题
+     * 马上出现。节点那边还铺了一层 -54dBFS 的底噪防静音抑制
+     * （fakemedia.mjs），两道一起用。
+     *
+     * 还吞字就往上调（2000～2500）；觉得接起来太久没声音就往下调。
+     */
+    openingDelayMs: clampInt(input?.openingDelayMs, 1500, 0, 10_000),
 
     /** 角色入会之后先说的那句话的提示。空 = 让模型自己想。 */
     greeting: str(input?.greeting).trim(),
