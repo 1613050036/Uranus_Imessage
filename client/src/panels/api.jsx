@@ -1712,25 +1712,33 @@ export function SttSection() {
                   placeholder="https://api.groq.com/openai/v1"
                 />
               </Field>
-              <Field label="模型" hint="Groq：whisper-large-v3-turbo（最快）/ whisper-large-v3（更准）。OpenAI 官方：whisper-1">
+              <Field
+                label="模型"
+                hint="说中文建议 whisper-large-v3（不带 turbo）—— turbo 快一点，但中文明显更容易听错。OpenAI 官方：whisper-1"
+              >
                 <input
                   className="input font-mono"
                   value={oa.model ?? ""}
                   onChange={(e) => patch("openai", { model: e.target.value })}
-                  placeholder="whisper-large-v3-turbo"
+                  placeholder="whisper-large-v3"
                 />
               </Field>
               <Field
                 label="提示词（可选）"
-                hint="给它一点上下文能提高专有名词的准确率 —— 比如角色名、游戏名、常聊的话题"
+                hint="留空就好 —— 说中文时会自动给一句，让它输出简体（whisper 默认偏繁体）"
               >
                 <input
                   className="input"
                   value={oa.prompt ?? ""}
                   onChange={(e) => patch("openai", { prompt: e.target.value })}
-                  placeholder="对话里可能出现的人名、地名、专有名词"
+                  placeholder="留空 = 自动。要填就填人名、地名这类专有名词"
                 />
               </Field>
+              <p className="text-meta leading-relaxed text-ink-faint">
+                填了提示词会<strong className="text-ink-soft">顶掉那句自动的</strong>
+                ，所以要填的话自己也写成简体。别写太长太具体 ——
+                这段话会被当成上文，写进去的词它会倾向于硬塞进转写结果里。
+              </p>
             </div>
           )}
         </div>

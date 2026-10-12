@@ -139,7 +139,16 @@ async function sttOpenAi(cfg, audio, opts) {
    * 通话里用不上，白白多传。
    */
   push("response_format", "text");
-  if (cfg.prompt) push("prompt", String(cfg.prompt).slice(0, 400));
+  /*
+   * 提示词。用户填了用他的，没填而且说中文的话给一句默认的。
+   *
+   * 这一句不是摆设：whisper 对中文**默认偏向繁体**（实测「在家裡」），
+   * 而它判断字形的依据主要就是 prompt 的字形。给一句简体的话过去，
+   * 输出就跟着是简体。顺带也把「这是口语对话」这个先验交给它 ——
+   * 比什么都不给要准。
+   */
+  const hint = String(cfg.prompt ?? "").trim() || defaultSttPrompt(opts.language);
+  if (hint) push("prompt", hint.slice(0, 400));
 
   const mime = opts.mimeType ?? "audio/wav";
   /*
@@ -376,6 +385,26 @@ async function sttXfyun(cfg, audio, opts) {
       clearTimeout(timer);
     });
   });
+}
+
+/**
+ * 用户没填提示词时，按语言给一句默认的。
+ *
+ * **只有中文给**，而且只为了一件事：让它输出简体。whisper 认中文时默认偏
+ * 繁体（实测把「在家里」转成「在家裡」），而它判断用哪种字形主要看 prompt
+ * 里的字形 —— 给一句简体的过去，输出就跟着简体。
+ *
+ * 句子本身写成「平常说话的样子」也顺带把「这是口语对话、不是朗读」这个
+ * 先验交给它。别写得太长太具体：prompt 会被当成上文，写进具体词汇反而会
+ * 让它把那些词硬塞进转写结果。
+ *
+ * 别的语言不给：英文那些本来就没有字形问题，瞎给一句只会引入偏见。
+ */
+function defaultSttPrompt(code) {
+  const c = String(code ?? "").trim().toLowerCase();
+  if (c === "zh") return "以下是一段普通话对话，请用简体中文转写。";
+  if (c === "yue") return "以下是一段粤语对话，请用简体中文转写。";
+  return "";
 }
 
 /**

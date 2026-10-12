@@ -81,9 +81,17 @@ export class AudioPump {
     this.capturing = Boolean(got.capturing);
     if (!this.capturing) {
       this.noCaptureTicks += 1;
-      // 连着 25 轮（5 秒）都没接上，说明页面那边没找到对方的音频元素
-      if (this.noCaptureTicks === 25) {
-        logWarn("音频", "一直没接上对方的声音 —— 转写这条路是断的，检查页面结构");
+      /*
+       * 多久没接上才算不正常。
+       *
+       * 原来是 5 秒，太短了 —— FaceTime 把对方的音频轨挂上来本身就要几秒，
+       * 于是每通电话都会先报一条「转写这条路是断的」，然后立刻正常工作。
+       * 实测两通电话都是这样：一条红字，后面一切正常。排查别的问题时
+       * 这条假警报很误导人，所以放宽到 20 秒 —— 真的断了的话，那二十秒
+       * 里对方说什么都不会有反应，一样看得出来。
+       */
+      if (this.noCaptureTicks === 100) {
+        logWarn("音频", "20 秒都没接上对方的声音 —— 转写这条路是断的，检查页面结构");
       }
       return;
     }
@@ -105,7 +113,18 @@ export class AudioPump {
 
     for (const ev of this.vad.feed(pcm)) {
       if (ev.type === "speech") {
-        logInfo("音频", `对方说了一段，${Math.round(ev.durationMs)}ms`);
+        /*
+         * 把**音量**也记下来（峰值和有效值，dBFS）。
+         *
+         * 排查转写不准时这是第一个要看的数：转写服务对输入电平很敏感，
+         * 太小（峰值低于 -30dBFS 那种）它只能连蒙带猜，而这件事从
+         * 「转写出来的字」上根本看不出来 —— 看起来就像模型不行。
+         * 有了这两个数就能一眼分清是「声音太小」还是「模型该换」。
+         */
+        logInfo(
+          "音频",
+          `对方说了一段，${Math.round(ev.durationMs)}ms，${describeLevel(ev.pcm)}`
+        );
         this.opts.onUtterance?.(ev.pcm, { durationMs: ev.durationMs, truncated: ev.truncated });
       } else if (ev.type === "tooShort") {
         logDebug("音频", "一声短促的动静，当噪音丢了");
@@ -170,6 +189,26 @@ function decode(b64) {
   if (!b64) return new Int16Array(0);
   const buf = Buffer.from(b64, "base64");
   return new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 2));
+}
+
+/**
+ * 这段音频的峰值和有效值，说成一句话（dBFS，0 = 满刻度）。
+ *
+ * 大致的判读：峰值 -3 以上有削波的风险；-12 到 -6 很理想；
+ * 低于 -30 就该怀疑采集链路（而不是怀疑转写模型）。
+ */
+export function describeLevel(pcm) {
+  if (!pcm?.length) return "没有采样";
+  let peak = 0;
+  let sum = 0;
+  for (let i = 0; i < pcm.length; i += 1) {
+    const v = Math.abs(pcm[i]) / 32768;
+    if (v > peak) peak = v;
+    sum += v * v;
+  }
+  const rms = Math.sqrt(sum / pcm.length);
+  const db = (x) => (x > 0 ? `${(20 * Math.log10(x)).toFixed(1)}dBFS` : "静音");
+  return `峰值 ${db(peak)} / 有效值 ${db(rms)}`;
 }
 
 /** 这一批采样里有没有超过阈值的部分。 */

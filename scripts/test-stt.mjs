@@ -193,6 +193,44 @@ group("语言是从配置里来的");
   check("不发 asr_options（中转站不认）", "asr_options" in body, false);
 }
 
+group("提示词：中文默认给一句简体的");
+{
+  /*
+   * whisper 认中文默认偏繁体（实测「在家裡」），而它判断字形主要看 prompt
+   * 里的字形。所以用户没填的时候自己给一句简体的过去。
+   */
+  const f = fakeFetch({ body: "ok" });
+  await transcribe({ language: "zh", openai: { enabled: true, key: "k" } }, Buffer.from("x"));
+  f.restore();
+  // 中文要按 utf8 解 —— binary（latin1）下多字节字符对不上字面量
+  const body = f.calls[0].init.body.toString("utf8");
+  check("发了 prompt", body.includes('name="prompt"'), true);
+  check("里面写着简体中文", body.includes("简体中文"), true);
+}
+{
+  // 用户填了就用他的，别偷偷在后面拼一句
+  const f = fakeFetch({ body: "ok" });
+  await transcribe(
+    { language: "zh", openai: { enabled: true, key: "k", prompt: "Charlie、niki、南宁" } },
+    Buffer.from("x")
+  );
+  f.restore();
+  const body = f.calls[0].init.body.toString("utf8");
+  check("用用户那句", body.includes('name="prompt"\r\n\r\nCharlie、niki、南宁'), true);
+  check("不把默认那句拼上去", body.includes("简体中文"), false);
+}
+{
+  // 英文没有字形问题，瞎给一句只会引入偏见
+  const f = fakeFetch({ body: "ok" });
+  await transcribe({ language: "en", openai: { enabled: true, key: "k" } }, Buffer.from("x"));
+  f.restore();
+  check(
+    "英文不给默认提示词",
+    f.calls[0].init.body.toString("binary").includes('name="prompt"'),
+    false
+  );
+}
+
 group("OpenAI 兼容：几个细节");
 {
   // 自定义中转站地址，末尾的斜杠要吃掉

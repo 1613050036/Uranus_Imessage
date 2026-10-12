@@ -264,42 +264,86 @@ export async function* runCallTurn({ config, role, messages, params, signal }) {
     const raw = ready.shift();
     if (signal?.aborted) break;
 
-    /*
-     * 功能保留，但不念出来。
-     *
-     * `splitMedia` 把这一句切成一条条带类型的 part（`media.js:250`）。只有
-     * `text` 那些拿去念；转账、链接卡片、图片那些**照常交给各自的执行器**发出去
-     * —— 打电话时角色突然想转个钱，这很真实，只是不该念出「transfer 冒号 4000」。
-     */
-    const parts = splitMedia(raw);
-    const speakable = speakableFrom(parts, sep);
-    const media = parts.filter((p) => p.kind !== "text");
-
-    if (!speakable) {
-      // 整句只有标记（比如单独一个 [transfer:…]），不用合成，但媒体要带出去
-      if (media.length) yield { text: stripCallTags(raw), audio: null, media };
-      continue;
-    }
-
-    let audio = null;
-    try {
-      const out = await synthesizeVoice(config.ttsApi, voiceId, speakable, SCOPE);
-      audio = out?.buffer ?? null;
-    } catch (e) {
-      /*
-       * 合成失败不中断这一轮。
-       *
-       * 对方听不到这一句，但剩下的句子还能说 —— 比整通电话哑掉好。
-       * TTS 四家全没配的时候也走这儿（`synthesizeVoice` 返回 null）。
-       */
-      logWarn(SCOPE, `这一句没合成出来：${speakable.slice(0, 30)}`, e);
-    }
-
-    yield { text: speakable, audio, media, seq: seq++ };
+    yield* sayOne(raw, { config, voiceId, sep, seq: seq++ });
   }
 
   await task;
   if (failed) throw failed;
+}
+
+/**
+ * 把一句话合成出来。`runCallTurn` 和 `runCallSay` 共用这一段。
+ *
+ * 是生成器而不是普通函数，只为了「整句都是标记、没字可念」那种情况能
+ * **一个都不 yield**（而不是 yield 一个空的让调用方再判一次）。
+ *
+ * @yields {{text: string, audio: Buffer|null, media: object[], seq?: number}}
+ */
+async function* sayOne(raw, { config, voiceId, sep, seq }) {
+  /*
+   * 功能保留，但不念出来。
+   *
+   * `splitMedia` 把这一句切成一条条带类型的 part（`media.js:250`）。只有
+   * `text` 那些拿去念；转账、链接卡片、图片那些**照常交给各自的执行器**发出去
+   * —— 打电话时角色突然想转个钱，这很真实，只是不该念出「transfer 冒号 4000」。
+   */
+  const parts = splitMedia(raw);
+  const speakable = speakableFrom(parts, sep);
+  const media = parts.filter((p) => p.kind !== "text");
+
+  if (!speakable) {
+    // 整句只有标记（比如单独一个 [transfer:…]），不用合成，但媒体要带出去
+    if (media.length) yield { text: stripCallTags(raw), audio: null, media };
+    return;
+  }
+
+  let audio = null;
+  try {
+    const out = await synthesizeVoice(config.ttsApi, voiceId, speakable, SCOPE);
+    audio = out?.buffer ?? null;
+  } catch (e) {
+    /*
+     * 合成失败不中断这一轮。
+     *
+     * 对方听不到这一句，但剩下的句子还能说 —— 比整通电话哑掉好。
+     * TTS 四家全没配的时候也走这儿（`synthesizeVoice` 返回 null）。
+     */
+    logWarn(SCOPE, `这一句没合成出来：${speakable.slice(0, 30)}`, e);
+  }
+
+  yield { text: speakable, audio, media, seq };
+}
+
+/**
+ * 说一段**已经写好**的话 —— 不打模型。
+ *
+ * 现在只有一个用处：接通后的开场白。角色在答应接电话的那一轮里就把它写好了
+ * （`[接受通话]` 后面那段），所以接通的瞬间只剩合成这一件事 —— 省掉一整轮
+ * 模型（实测 8 到 25 秒，对方接起来先听一片沉默）。
+ *
+ * 和 `runCallTurn` 的产出形状完全一样，调用方那边不用分叉。
+ *
+ * @param {object} args
+ * @param {object} args.config
+ * @param {object} args.role
+ * @param {string} args.text 要说的话
+ * @yields {{text: string, audio: Buffer|null, media: object[], seq: number}}
+ */
+export async function* runCallSay({ config, role, text }) {
+  const sep = config?.chat?.separator ?? "$";
+  const voiceId = role?.voiceSend?.voiceId ?? "";
+
+  /*
+   * 照样按句切、一句一句合成。
+   *
+   * 整段一次合成会更简单，但第一句出来的时间就从 0.8 秒变成三四秒 ——
+   * 开场白恰恰是最该快的那一句（对方刚按下接听）。切法和模型流式那条
+   * 完全一致：第一句刻意短。
+   */
+  let seq = 0;
+  for (const piece of splitSentences(text, { minChars: 24 })) {
+    yield* sayOne(piece, { config, voiceId, sep, seq: seq++ });
+  }
 }
 
 /**

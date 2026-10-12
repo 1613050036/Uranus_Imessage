@@ -69,6 +69,17 @@ export function startCall(info) {
     nodeSeenAt: Date.now(),
     /** 通话期间攒的每一轮，挂断时一起交出去。 */
     log: [],
+    /*
+     * 接通之后要说的第一句话 —— 角色在答应接电话的**同一轮**里就写好了，
+     * 写在 `[接受通话]` 后面（见 calltags.js:inviteNotice）。
+     *
+     * 为什么要存在这儿：接通要十几秒，这期间那一轮模型早就跑完了。存下来，
+     * 节点一报 connected 就直接合成播出去，省掉一整轮模型（实测那一轮
+     * 8–25 秒，对方接起来先听一片沉默）。
+     *
+     * 空 = 角色只写了个标记什么都没说，那就退回原来那条路（现场打一轮模型）。
+     */
+    greeting: String(info?.greeting ?? "").trim(),
   };
   logInfo(SCOPE, `起一通电话：${info.roleName} ← ${info.peer}`);
   return current;
@@ -104,6 +115,22 @@ export function markConnected() {
   c.startedAt = Date.now();
   logInfo(SCOPE, `接通了：${c.roleName} ← ${c.peer}`);
   return c;
+}
+
+/**
+ * 取出接通后要说的第一句话，**并且清掉**。
+ *
+ * 一次性的：拿过就没了。不这么做的话，节点因为什么原因重问一次 greeting
+ * （重连、超时重试），角色会把同一句开场白再说一遍。
+ *
+ * @returns {string} 没有就返回空串，调用方据此退回「现场打一轮模型」
+ */
+export function takeGreeting() {
+  const c = getCall();
+  if (!c?.greeting) return "";
+  const text = c.greeting;
+  c.greeting = "";
+  return text;
 }
 
 /**

@@ -36,6 +36,7 @@ import {
   resetForTest,
   sayDuration,
   startCall,
+  takeGreeting,
 } from "../server/src/callsession.js";
 import { splitMedia } from "../server/src/media.js";
 
@@ -85,11 +86,19 @@ group("从消息里认出 FaceTime 链接");
 
 group("给模型的那几句话");
 {
+  /*
+   * 邀请这条分两行，**第一行是用户钉死的措辞**，一个字都不能动 ——
+   * 所以这里单独钉第一行，而不是整段。第二行（让它顺便把开场白写了）
+   * 是后加的，措辞可以调，但那两个标记名得在里面。
+   */
+  const invite = inviteNotice("niki");
   check(
-    "邀请",
-    inviteNotice("niki"),
+    "邀请的第一行（用户钉死的措辞）",
+    invite.split("\n")[0],
     "[niki向你发起Facetime通话邀请，回复[接受通话]即可进入通话，[拒绝通话]则会拒绝，请按照人设来进行回应，不要ooc]"
   );
+  check("邀请里让它顺便写开场白", /第一句话/.test(invite), true);
+  check("并且说清了那句话不发短信", /不会以短信发出/.test(invite), true);
   check("通话中的时间戳", callPrefix("3 分 12 秒"), "[Facetime已接通 3 分 12 秒]");
   check("打字发来的", typedPrefix("niki"), "[niki在imessage发来的信息]");
   check(
@@ -375,6 +384,67 @@ group("通话预设这条链路");
   check("线上提示词里没有通话那段", b3.messages.map((m) => m.content).join().includes("Phone_Call"), false);
 }
 
+group("开场白：接的那一轮就写好，接通时直接念");
+{
+  resetForTest();
+  startCall({
+    roleId: "r",
+    roleName: "Charlie",
+    sessionId: "s",
+    peer: "+1",
+    spaceId: "sp",
+    link: "x",
+    greeting: "喂？怎么了。",
+  });
+  check("存下来了", getCall().greeting, "喂？怎么了。");
+  check("取出来", takeGreeting(), "喂？怎么了。");
+  /*
+   * 一次性 —— 节点要是因为重连再问一次 greeting，角色不该把同一句再说一遍。
+   */
+  check("拿过就没了", takeGreeting(), "");
+}
+{
+  resetForTest();
+  startCall({ roleId: "r", roleName: "C", sessionId: "s", peer: "+1", spaceId: "sp", link: "x" });
+  check("没带开场白时是空串", takeGreeting(), "");
+  resetForTest();
+  check("压根没通话时也不炸", takeGreeting(), "");
+}
+{
+  // 空白被吃掉：模型写 `[接受通话]\n\n` 时不该被当成「写了开场白」
+  resetForTest();
+  startCall({
+    roleId: "r",
+    roleName: "C",
+    sessionId: "s",
+    peer: "+1",
+    spaceId: "sp",
+    link: "x",
+    greeting: "   \n  ",
+  });
+  check("只有空白等于没写", takeGreeting(), "");
+}
+
+group("开场白是从 [接受通话] 后面那段来的");
+{
+  /*
+   * imessage.js 那边拿的就是 readAnswer 剥完标记的正文，所以这里钉死
+   * 「剥完还剩什么」—— 剥多了开场白就没了，剥少了角色会念出方括号。
+   */
+  const a = readAnswer("[接受通话]喂？怎么突然打电话过来。");
+  check("答复是接", a.answer, ANSWER.accept);
+  check("剩下的正文就是开场白", a.text, "喂？怎么突然打电话过来。");
+
+  const b = readAnswer("[接受通话]\n\n嗯？\n\n大半夜的。");
+  check("中间的空行收拾干净", b.text, "嗯？\n\n大半夜的。");
+
+  const c = readAnswer("[接受通话]");
+  check("只写标记时没有开场白", c.text, "");
+
+  const d = readAnswer("[拒绝通话]现在在开车，等会儿打给你。");
+  check("拒接时正文照旧是要发的短信", d.text, "现在在开车，等会儿打给你。");
+  check("拒接就是拒接", d.answer, ANSWER.reject);
+}
 
 console.log(`\n${fail === 0 ? "全部通过" : "有失败"}：${pass} 通过 / ${fail} 失败\n`);
 process.exit(fail === 0 ? 0 : 1);

@@ -394,24 +394,75 @@ export function buildFakeMediaShim({
     if (tracks.every((t) => /MediaStreamAudioDestination/i.test(t.label || ""))) return false;
 
     try {
-      const src = ac.createMediaStreamSource(s);
+      /*
+       * ── 用一个 16kHz 的独立 AudioContext 来采，别自己重采样 ──
+       *
+       * 原来这里是在 48kHz 的上下文里取样，然后「每三个采样取一个」
+       * （最近邻）降到 16kHz。那是**抽取但不滤波**，8kHz 以上的频率会全部
+       * 折回语音频段变成噪声 —— 而中文的 s/sh/x/c/ch/q 这些辅音能量恰好
+       * 大半在那上面。实测的后果：一句两秒半的中文只转写出三个字，
+       * 「怎么」被认成「三者」。注释里原来写着「语音识别这个用途上够了」，
+       * 那个判断是错的。
+       *
+       * 正确的做法不是自己写个低通 —— 浏览器里已经有一个高质量重采样器：
+       * **把上下文本身建成 16kHz**，createMediaStreamSource 接进来时
+       * 由它负责带抗锯齿的重采样。于是 ratio 恒为 1，我们一个乘法都不用做。
+       *
+       * 为什么另建一个而不是把外面那个 ac 改成 16kHz：ac 还要往 FaceTime 灌
+       * 角色的声音，整条压到 16kHz 等于把角色的音质也拉低。两个上下文
+       * 各管一头，互不相干。
+       *
+       * （这一段是注进页面的模板字符串，注释里一个反引号都不能有 ——
+       * 会把整段截断，而报错指向的是一行注释。见 test/shim.test.mjs）
+       */
+      let capAc = ac;
+      try {
+        const Ctor = window.AudioContext || window.webkitAudioContext;
+        const low = new Ctor({ sampleRate: RATE });
+        // Chrome 不支持某个采样率时不一定抛错，可能悄悄给另一个值
+        if (Math.abs(low.sampleRate - RATE) < 1) capAc = low;
+        else low.close && low.close();
+      } catch (e) {
+        window.__ftCapture.errors.push("16k 上下文建不起来：" + String((e && e.message) || e));
+      }
+      window.__ftCapture.rate = capAc.sampleRate;
+
+      const src = capAc.createMediaStreamSource(s);
       /*
        * ScriptProcessor 是废弃 API，但这里是对的选择：
        *  - AudioWorklet 要单独的 .js 文件，而我们这段是注进页面的字符串，
        *    没有文件可引（blob: URL 又会撞上页面的 CSP）；
        *  - 它只搬运采样、不做运算，废弃 API 那点性能问题在这个量级无所谓。
        */
-      const node = ac.createScriptProcessor(4096, 1, 1);
-      const ratio = ac.sampleRate / RATE;
+      const node = capAc.createScriptProcessor(4096, 1, 1);
+      const ratio = capAc.sampleRate / RATE;
 
       node.onaudioprocess = (ev) => {
         const input = ev.inputBuffer.getChannelData(0);
-        // 最近邻重采样。语音识别这个用途上够了，不值得为它引一个重采样器
-        const outLen = Math.floor(input.length / ratio);
-        const out = new Float32Array(outLen);
-        for (let i = 0; i < outLen; i += 1) out[i] = input[Math.floor(i * ratio)];
+        let out;
+        if (ratio <= 1.0001) {
+          // 上下文本来就是 16kHz（正常情况）—— 原样拿走，一次运算都不做
+          out = new Float32Array(input);
+        } else {
+          /*
+           * 退路：上面那个 16kHz 上下文没建起来，只能自己降。
+           *
+           * **取窗口平均**而不是最近邻 —— 那是一个很糙的低通（移动平均），
+           * 远不如正经的 FIR，但它至少把折叠回来的高频压掉一大半，
+           * 不会像最近邻那样把辅音搅成噪声。
+           */
+          const outLen = Math.floor(input.length / ratio);
+          out = new Float32Array(outLen);
+          for (let i = 0; i < outLen; i += 1) {
+            const from = Math.floor(i * ratio);
+            const to = Math.min(input.length, Math.floor((i + 1) * ratio));
+            let sum = 0;
+            for (let j = from; j < to; j += 1) sum += input[j];
+            out[i] = to > from ? sum / (to - from) : 0;
+          }
+        }
         ring.push(out);
-        ringSamples += outLen;
+        ringSamples += out.length;
         while (ringSamples > RING_MAX) {
           ringSamples -= ring.shift().length;
         }
@@ -422,10 +473,10 @@ export function buildFakeMediaShim({
        * 但增益设成 0 —— 不然对方的声音会从节点这台机器的喇叭里放出来，
        * 而且会被我们自己的麦克风绕回去。
        */
-      const mute = ac.createGain();
+      const mute = capAc.createGain();
       mute.gain.value = 0;
       src.connect(node);
-      node.connect(mute).connect(ac.destination);
+      node.connect(mute).connect(capAc.destination);
 
       el.__ftTapped = true;
       capturing = true;

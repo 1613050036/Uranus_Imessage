@@ -62,7 +62,7 @@ import { pickEmoji } from "./emoji.js";
 import { isDocAttachment, readDocument } from "./docread.js";
 import { notePrompt } from "./lastprompt.js";
 import { nodeOnline, sendToNode } from "./callapi.js";
-import { endCall, getCall, sayDuration, startCall } from "./callsession.js";
+import { endCall, getCall, sayDuration, startCall, takeGreeting } from "./callsession.js";
 import {
   findFaceTimeLink,
   inviteNotice,
@@ -75,6 +75,7 @@ import {
   callRecordLine,
   callUserMessage,
   noteTurn,
+  runCallSay,
   runCallTurn,
   transcribe,
 } from "./callturn.js";
@@ -3676,16 +3677,33 @@ async function handleTurn(
     const { answer, text: withoutTags } = readAnswer(reply);
     reply = withoutTags;
     if (answer === "accept") {
+      /*
+       * `[接受通话]` 后面那段话是**开场白**，不是短信。
+       *
+       * 它要在电话接通的瞬间念出来（见 callsession.js 里 greeting 那个字段），
+       * 所以这一轮的正文要清空 —— 否则对方会先在 iMessage 里收到一条
+       * 「喂？怎么了」，几秒后又在电话里听到同一句，很出戏。
+       *
+       * 想在接之前发一句短信（「等我一下」）是另一个口子：
+       * `role.call.pickingUpTemplate`。
+       */
+      const greeting = reply.trim();
       const ok = await beginCall(getConfig, {
         runner,
         role: freshRole,
         spaceId,
         peer,
         link: meta.callInvite,
+        greeting,
       });
       // 接起来了的话，这一轮正文为空是正常的 —— 见下面那个判空分支
       meta.callAnswered = ok;
-      logInfo(scope, ok ? "角色接了这通电话" : "角色想接，但没接起来");
+      if (ok && greeting) {
+        reply = "";
+        logInfo(scope, `角色接了这通电话，接通后第一句已经写好了`, greeting);
+      } else {
+        logInfo(scope, ok ? "角色接了这通电话" : "角色想接，但没接起来");
+      }
     } else {
       logInfo(scope, answer === "reject" ? "角色拒接了" : "角色没表态，当作没接");
     }
@@ -10106,7 +10124,7 @@ export function isCallInvite(config, role, text) {
  * @param {string} args.link
  * @returns {Promise<boolean>} 起没起起来
  */
-export async function beginCall(getConfig, { runner, role, spaceId, peer, link }) {
+export async function beginCall(getConfig, { runner, role, spaceId, peer, link, greeting = "" }) {
   const scope = scopeOf(runner, "通话");
 
   if (!nodeOnline()) {
@@ -10135,6 +10153,8 @@ export async function beginCall(getConfig, { runner, role, spaceId, peer, link }
       peer,
       spaceId,
       link,
+      // 角色在答应接的同一轮里写好的开场白。空 = 接通后现场打一轮模型
+      greeting,
     });
   } catch (e) {
     logWarn(scope, "起通话失败", e);
@@ -10215,6 +10235,35 @@ export async function handleCallTurn(getConfig, { audio, kind = "said", seconds 
   const userName = resolveUser(config, role)?.name ?? "{{user}}";
   const userMsg = callUserMessage({ kind, text: said, seconds, userName });
 
+  /*
+   * ── 开场白：角色早就写好了，直接念，不打模型 ──
+   *
+   * 它写在答应接电话那一轮的 `[接受通话]` 后面（见 calltags.js:inviteNotice）。
+   * 拿到的话这一轮就只剩合成，对方按下接听几乎立刻听到声音；拿不到
+   * （角色只写了个标记）就往下走，照旧现场打一轮。
+   *
+   * 存档、历史、记忆走的还是下面那同一段代码 —— 这段话确实是在电话里说的，
+   * 该和别的轮次一样记上。
+   */
+  if (kind === "greeting") {
+    const ready = takeGreeting();
+    if (ready) {
+      logInfo(scope, "接通了，念角色先前写好的开场白（省掉一轮模型）", ready);
+      await speakAndRecord({
+        stream: runCallSay({ config, role, text: ready }),
+        ctx,
+        config,
+        role,
+        call,
+        userMsg,
+        send,
+        scope,
+      });
+      return;
+    }
+    logDebug(scope, "角色接的时候没写开场白，现场打一轮");
+  }
+
   // 3. 上下文：和发短信**同一条历史**
   const history = loadHistory(runner, role, call.sessionId, scope);
   history.push({ role: "user", content: userMsg });
@@ -10227,15 +10276,40 @@ export async function handleCallTurn(getConfig, { audio, kind = "said", seconds 
   });
   runner.history.set(call.sessionId, built.history);
 
-  // 5. 打模型，一句一句合成送回节点
-  const pieces = [];
-  const media = [];
-  for await (const part of runCallTurn({
+  // 5. 打模型，一句一句合成送回节点；存档、记忆、挂断都在 speakAndRecord 里
+  await speakAndRecord({
+    stream: runCallTurn({
+      config,
+      role,
+      messages: built.messages,
+      params: built.params,
+    }),
+    ctx,
     config,
     role,
-    messages: built.messages,
-    params: built.params,
-  })) {
+    call,
+    userMsg,
+    send,
+    scope,
+  });
+}
+
+/**
+ * 把一轮的产出播出去，然后存档、进记忆、该挂就挂。
+ *
+ * 两条路共用：模型现场生成的那一轮（`runCallTurn`），和念先前写好的开场白
+ * （`runCallSay`）。**刻意不分叉** —— 开场白也是电话里真说出口的话，该和
+ * 别的轮次一样进存档、进上下文、进待总结。
+ *
+ * @param {object} args
+ * @param {AsyncGenerator} args.stream 一句一句往外吐 `{text, audio, media, seq}`
+ */
+async function speakAndRecord({ stream, ctx, config, role, call, userMsg, send, scope }) {
+  const { runner } = ctx;
+  const pieces = [];
+  const media = [];
+
+  for await (const part of stream) {
     if (part.text) pieces.push(part.text);
     if (part.media?.length) media.push(...part.media);
     if (part.audio) {
@@ -10248,10 +10322,10 @@ export async function handleCallTurn(getConfig, { audio, kind = "said", seconds 
 
   const reply = pieces.join("");
 
-  // 6. 角色要挂断吗
+  // 角色要挂断吗
   const { hangUp, text: clean } = readHangUp(reply);
 
-  // 7. 存档 + 记忆 —— 和发短信走的是同一个函数
+  // 存档 + 记忆 —— 和发短信走的是同一个函数
   const space = ctx.space;
   appendTurn(
     call.sessionId,
@@ -10268,7 +10342,7 @@ export async function handleCallTurn(getConfig, { audio, kind = "said", seconds 
   afterTurn(runner, space, config, role, { user: userMsg, assistant: clean });
   noteTurn(userMsg, clean);
 
-  // 8. 通话里照样能转账、发卡片 —— 标记早被挑出来了，这里执行它们
+  // 通话里照样能转账、发卡片 —— 标记早被挑出来了，这里执行它们
   if (media.length) {
     logDebug(scope, `这一轮还有 ${media.length} 个要发出去的东西`);
   }
@@ -10283,13 +10357,22 @@ export async function handleCallTurn(getConfig, { audio, kind = "said", seconds 
  * 通话结束，收尾。
  *
  * 在聊天记录里留一条「通话结束 · 3 分 12 秒 · 8 轮对话」—— 翻记录时看得到
- * 什么时候通过话。两个参考项目都这么做。
+ * 什么时候通过话，模型下一轮也看得见刚才通过电话。
+ *
+ * ── 只进存档，**不发短信** ──
+ *
+ * 原来这里还 `sendSystem` 了一遍，于是对方真的在 iMessage 里收到一条
+ * 「通话结束 · 3 分 46 秒 · 8 轮对话」。那不对：真的 FaceTime 挂断之后，
+ * iMessage 里出现的是系统自己那条通话记录，不是对方给你发的一条短信。
+ * 角色刚跟你通完电话，紧接着发一条机器腔的统计过来，很破戏。
+ *
+ * 想让角色挂断后说点什么的话，那本来就该是它自己的下一条消息，不是这一条。
  */
 export async function finishCall(getConfig, call) {
   if (!call) return;
   const ctx = await callContext(getConfig, call.roleId, call.spaceId);
   if (!ctx) return;
-  const { runner, space } = ctx;
+  const { runner } = ctx;
   const line = callRecordLine(call);
 
   appendTurn(
@@ -10298,8 +10381,5 @@ export async function finishCall(getConfig, call) {
     [{ role: "system", content: line }],
     (msg) => logWarn(scopeOf(runner, "通话"), msg)
   );
-
-  if (space) {
-    await sendSystem(runner, space, line, { what: "通话记录" }).catch(() => {});
-  }
+  logInfo(scopeOf(runner, "通话"), `记进聊天记录：${line}`);
 }
