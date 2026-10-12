@@ -9,6 +9,7 @@ import {
   providerLabel,
   providerTypeOf,
   roleLabel,
+  sttSourceName,
   urlForType,
 } from "../labels.js";
 import { SaveBar, useSection } from "../section.jsx";
@@ -1594,17 +1595,8 @@ export function SttSection() {
   const qw = stt.qwen ?? {};
   const xf = stt.xfyun ?? {};
 
-  const blank = (v) => !String(v ?? "").trim();
-
-  // 和 server/src/stt.js:pickSttSource 同一个顺序和判据，两处一起改
-  const source =
-    oa.enabled && !blank(oa.key)
-      ? "OpenAI 兼容"
-      : qw.enabled && !blank(qw.key)
-        ? "阿里云 Qwen-Audio"
-        : xf.enabled && !blank(xf.appId) && !blank(xf.apiKey) && !blank(xf.apiSecret)
-          ? "讯飞"
-          : "";
+  // 判据只写在 labels.js:sttSourceName 一处（角色那边也要用它）
+  const source = sttSourceName(stt);
 
   const patch = (which, part) => updateSttApi({ [which]: { ...(stt[which] ?? {}), ...part } });
 

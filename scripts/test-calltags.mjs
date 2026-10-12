@@ -32,6 +32,7 @@ import {
   getCall,
   inCall,
   markConnected,
+  primeGreeting,
   recordCallTurn,
   resetForTest,
   sayDuration,
@@ -397,18 +398,18 @@ group("开场白：接的那一轮就写好，接通时直接念");
     greeting: "喂？怎么了。",
   });
   check("存下来了", getCall().greeting, "喂？怎么了。");
-  check("取出来", takeGreeting(), "喂？怎么了。");
+  check("取出来", takeGreeting().text, "喂？怎么了。");
   /*
    * 一次性 —— 节点要是因为重连再问一次 greeting，角色不该把同一句再说一遍。
    */
-  check("拿过就没了", takeGreeting(), "");
+  check("拿过就没了", takeGreeting().text, "");
 }
 {
   resetForTest();
   startCall({ roleId: "r", roleName: "C", sessionId: "s", peer: "+1", spaceId: "sp", link: "x" });
-  check("没带开场白时是空串", takeGreeting(), "");
+  check("没带开场白时是空串", takeGreeting().text, "");
   resetForTest();
-  check("压根没通话时也不炸", takeGreeting(), "");
+  check("压根没通话时也不炸", takeGreeting().text, "");
 }
 {
   // 空白被吃掉：模型写 `[接受通话]\n\n` 时不该被当成「写了开场白」
@@ -422,7 +423,54 @@ group("开场白：接的那一轮就写好，接通时直接念");
     link: "x",
     greeting: "   \n  ",
   });
-  check("只有空白等于没写", takeGreeting(), "");
+  check("只有空白等于没写", takeGreeting().text, "");
+}
+
+group("开场白的音频提前合成");
+{
+  // 合成在入会之前就开跑，接通时 await 已经 resolve 的那个 promise
+  resetForTest();
+  startCall({
+    roleId: "r",
+    roleName: "C",
+    sessionId: "s",
+    peer: "+1",
+    spaceId: "sp",
+    link: "x",
+    greeting: "喂。",
+  });
+  primeGreeting(Promise.resolve([{ text: "喂。", audio: null, media: [], seq: 0 }]));
+  const got = takeGreeting();
+  check("文字和音频一起拿到", got.text, "喂。");
+  check("音频是那几句", (await got.audio).length, 1);
+  check("音频也是一次性的", takeGreeting().audio, null);
+}
+{
+  /*
+   * 合成失败**不能**把整通电话连累掉 —— primeGreeting 在 promise 上就把
+   * 异常吃掉（没人 await 的 rejected promise 会打 unhandledRejection），
+   * 给调用方一个 null，让它退回现场合成。
+   */
+  resetForTest();
+  startCall({
+    roleId: "r",
+    roleName: "C",
+    sessionId: "s",
+    peer: "+1",
+    spaceId: "sp",
+    link: "x",
+    greeting: "喂。",
+  });
+  primeGreeting(Promise.reject(new Error("TTS 挂了")));
+  const got = takeGreeting();
+  check("失败时音频是 null，不抛", await got.audio, null);
+  check("文字还在（可以现场再合成一次）", got.text, "喂。");
+}
+{
+  resetForTest();
+  // 压根没通话时调用不该炸
+  primeGreeting(Promise.resolve([]));
+  check("没通话时 primeGreeting 是空转", getCall(), null);
 }
 
 group("开场白是从 [接受通话] 后面那段来的");

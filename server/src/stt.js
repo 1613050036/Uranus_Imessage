@@ -38,6 +38,17 @@ const SCOPE = "转写";
 const TIMEOUT_MS = 20_000;
 
 /**
+ * 地址规整：去掉首尾空白和末尾斜杠。**空的返回空串**，由调用方 `||` 兜默认值。
+ *
+ * 单独一个函数是因为这里踩过一次：原来两家都写 `cfg.url ?? "默认地址"`，
+ * 而配置里存的是空串（不是 undefined），`??` 不认空串 —— 于是没填地址时
+ * 拼出来的是相对路径，fetch 报「Failed to parse URL」。
+ */
+function trimBase(url) {
+  return String(url ?? "").trim().replace(/\/+$/, "");
+}
+
+/**
  * 挑一家来转写。
  *
  * @param {object} api config.sttApi
@@ -117,7 +128,10 @@ export async function transcribe(api, audio, opts = {}) {
  * 而某些中转站对 Blob 生成的 filename 很挑）。手拼几十行，可控得多。
  */
 async function sttOpenAi(cfg, audio, opts) {
-  const base = String(cfg.url ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+  // 留空要用 `||` 兜，不能用 `??` —— normalizeSttApi 存的是**空串**而不是
+  // undefined，`??` 不认空串，于是 base 成了 ""、fetch 收到一个 "/audio/…"
+  // 的相对路径，报一句「Failed to parse URL」。见 sttQwen 那边同样的坑
+  const base = trimBase(cfg.url) || "https://api.openai.com/v1";
   const url = `${base}/audio/transcriptions`;
   const model = String(cfg.model ?? "whisper-1").trim() || "whisper-1";
 
@@ -212,9 +226,16 @@ async function sttOpenAi(cfg, audio, opts) {
  * 而且中文识别更好。有免费额度。
  */
 async function sttQwen(cfg, audio, opts) {
-  const base = String(
-    cfg.url ?? "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  ).replace(/\/+$/, "");
+  /*
+   * 地址留空 = 用阿里云官方那个。
+   *
+   * 这里以前写的是 `cfg.url ?? "https://…"` —— **错的**：normalizeSttApi
+   * 存进配置的是空串而不是 undefined（`str(i.qwen?.url).trim()`），而 `??`
+   * 只认 null / undefined。于是没填地址时 base 是 ""，fetch 收到的是
+   * `"/chat/completions"` 这个相对路径，报一句不知所云的
+   * `TypeError: Failed to parse URL from /chat/completions`。
+   */
+  const base = trimBase(cfg.url) || "https://dashscope.aliyuncs.com/compatible-mode/v1";
   const model = String(cfg.model ?? "qwen3-asr-flash").trim() || "qwen3-asr-flash";
   const mime = opts.mimeType ?? "audio/wav";
 

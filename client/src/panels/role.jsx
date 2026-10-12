@@ -23,6 +23,7 @@ import {
   spyFeatureOn,
   spyFeaturesInGroup,
   spySwitchesOn,
+  sttSourceName,
   userLabel,
   worldBookLabel,
 } from "../labels.js";
@@ -6864,6 +6865,17 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
   const fb = role.fallbackModel ?? {};
   const vis = role.visionModel ?? {};
   const aud = role.audioModel ?? {};
+  /*
+   * 这一轮语音条实际会走哪条路。**和 imessage.js:describeVoices 同一个判据**，
+   * 两处一起改 —— 界面上说「现在走的是 X」而实际走的是 Y，比什么都不说更糟。
+   */
+  const sttConfigured = Boolean(sttSourceName(config.sttApi));
+  const audioRoute =
+    aud.source === "model"
+      ? "model"
+      : sttConfigured && (aud.source === "stt" || !aud.emotion)
+        ? "stt"
+        : "model";
   const vid = role.videoModel ?? {};
   const doc = role.fileRead ?? {};
 
@@ -7154,9 +7166,66 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
               </label>
               {aud.enabled && (
                 <>
+                  {/*
+                    * 用哪条路转写。以前这件事完全靠「识别情绪与环境音」那个开关
+                    * 推出来（开着就一律走多模态），是一条藏起来的规则 ——
+                    * 用户在「连接」里配好了 STT、看日志还在打 gemini-3.8-flash，
+                    * 从界面上根本看不出为什么。所以摆到明面上来。
+                    */}
                   <Field
-                    label="模型"
-                    hint="标了「听音」分类的才会出现在这里。走的是 Gemini 原生接口，只有 Gemini 系的模型听得到"
+                    label="用哪个来转写"
+                    hint="专门的转写服务在「连接 → 语音转文字」里配，全局一份；多模态模型是下面那个"
+                  >
+                    <select
+                      className={inputCls}
+                      value={aud.source ?? "auto"}
+                      onChange={(e) => patch({ audioModel: { ...aud, source: e.target.value } })}
+                    >
+                      <option value="auto">自动（配了转写服务就用它）</option>
+                      <option value="stt">只用专门的转写服务</option>
+                      <option value="model">只用多模态模型</option>
+                    </select>
+                    <p className="text-meta leading-relaxed text-ink-faint">
+                      {sttConfigured ? (
+                        audioRoute === "stt" ? (
+                          <>
+                            现在走的是
+                            <strong className="text-ink-soft"> 专门的转写服务 </strong>
+                            —— 快一个数量级、便宜一个数量级，只给原话。
+                          </>
+                        ) : (
+                          <>
+                            现在走的是
+                            <strong className="text-warn"> 多模态模型 </strong>
+                            {aud.source === "model"
+                              ? "（你指定了它）。"
+                              : "，因为下面「识别情绪与环境音」开着 —— 语气、背景声、几个人在说话这些专门的转写服务给不出来。想用转写服务就把那个开关关掉，或者在这里选「只用专门的转写服务」。"}
+                          </>
+                        )
+                      ) : (
+                        <>
+                          <strong className="text-warn">还没配专门的转写服务</strong>
+                          ，所以只能走多模态模型。
+                          <button
+                            type="button"
+                            onClick={() => onGoto?.("api")}
+                            className="link-slide ml-1 text-ink"
+                          >
+                            去「连接 → 语音转文字」配一个
+                          </button>
+                        </>
+                      )}
+                      <br />
+                      <span className="text-ink-faint">
+                        FaceTime 通话<strong className="text-ink-soft">不看这一项</strong>
+                        ：电话里永远优先用专门的转写服务（多模态那条又慢、还会把一句「嗯」
+                        扩写成一份报告）。
+                      </span>
+                    </p>
+                  </Field>
+                  <Field
+                    label="多模态模型"
+                    hint="标了「听音」分类的才会出现在这里。走的是 Gemini 原生接口，只有 Gemini 系的模型听得到。上面选「只用专门的转写服务」时它只在转写服务挂掉时顶一下"
                   >
                     <ModelSelect
                       category="audio"
@@ -7170,6 +7239,9 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
                       <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
                         关着只转写成文字；打开会连语气、背景声、说话人数一起报给聊天模型，
                         更贵也更慢。在「连接」面板给这个模型单独写了提示词的话，这个开关就不起作用了。
+                        <br />
+                        <strong className="text-ink-soft">只对多模态那条路有意义</strong>
+                        —— 上面选了「自动」的话，打开它等于把转写交回多模态模型。
                       </span>
                     </span>
                     <Switch

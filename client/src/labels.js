@@ -307,6 +307,33 @@ export function roleBlockReason(config, role) {
   return null;
 }
 
+/* ================= 语音转文字 ================= */
+
+/**
+ * 现在生效的是哪家转写服务，没配返回空串。
+ *
+ * **和 server/src/stt.js:pickSttSource 同一个顺序和判据** —— 按顺序挑第一个
+ * 「开着且凭据齐」的。改判据时两处一起改。
+ *
+ * 放在这里而不是某个面板里，是因为有两处要用：「连接 → 语音转文字」那一栏
+ * 显示「现在生效的是谁」，以及角色那边的「用哪个来转写」要知道「到底配了没」。
+ */
+export function sttSourceName(api) {
+  const a = api ?? {};
+  const has = (v) => Boolean(String(v ?? "").trim());
+  if (a.openai?.enabled && has(a.openai.key)) return "OpenAI 兼容";
+  if (a.qwen?.enabled && has(a.qwen.key)) return "阿里云 Qwen-Audio";
+  if (
+    a.xfyun?.enabled &&
+    has(a.xfyun.appId) &&
+    has(a.xfyun.apiKey) &&
+    has(a.xfyun.apiSecret)
+  ) {
+    return "讯飞";
+  }
+  return "";
+}
+
 /* ================= 预设 ================= */
 
 /** 预设的显示名：没起名就叫「未命名预设」。 */
@@ -315,19 +342,27 @@ export function presetLabel(preset) {
 }
 
 /**
- * 一份预设是线上的还是线下的。缺字段算线上（老配置原样升级）。
- * 和 server/src/preset.js:PRESET_MODES 对齐。
+ * 一份预设用在哪种玩法上。缺字段算线上（老配置原样升级）。
+ * 和 server/src/preset.js:PRESET_MODES 对齐，**三处都要有 call**。
  */
-export const PRESET_MODES = ["online", "offline"];
+export const PRESET_MODES = ["online", "offline", "call"];
 
 export const PRESET_MODE_LABELS = {
   online: "线上",
   offline: "线下",
+  call: "通话",
 };
 
-/** 一份预设的 mode，容错版（缺字段、写错了都算线上）。 */
+/**
+ * 一份预设的 mode，容错版（缺字段、写错了都算线上）。
+ *
+ * 原来这里写的是「不是 offline 就是 online」—— 于是通话预设被当成线上预设：
+ * 新建时选不到「通话」这一档（PRESET_MODES 里压根没有它），已有的通话预设
+ * 也会混进线上那批里。表现是用户在预设面板里**根本看不到通话预设**，而角色
+ * 那栏的「通话预设」下拉框列出来的却是一堆线上预设。
+ */
 export function presetMode(preset) {
-  return preset?.mode === "offline" ? "offline" : "online";
+  return PRESET_MODES.includes(preset?.mode) ? preset.mode : "online";
 }
 
 /** 某一类玩法的预设。和 server/src/preset.js:presetsFor 对齐。 */
@@ -353,8 +388,14 @@ export function resolvePreset(config, role, mode = "online") {
   const want = PRESET_MODES.includes(mode) ? mode : "online";
   const presets = presetsFor(config, want);
   if (!presets.length) return null;
-  const ref = want === "offline" ? role?.offline?.presetRef : role?.presetRef;
-  return presets.find((p) => p.id === ref) ?? presets[0];
+  return presets.find((p) => p.id === presetRefOf(role, want)) ?? presets[0];
+}
+
+/** 这个角色在这一类玩法上的预设引用。三种玩法各存各的字段。 */
+function presetRefOf(role, mode) {
+  if (mode === "offline") return role?.offline?.presetRef;
+  if (mode === "call") return role?.call?.presetRef;
+  return role?.presetRef;
 }
 
 /**
@@ -366,12 +407,14 @@ export function resolvePreset(config, role, mode = "online") {
 export function presetBlockReason(config, role, mode = "online") {
   const want = PRESET_MODES.includes(mode) ? mode : "online";
   const presets = presetsFor(config, want);
-  const what = want === "offline" ? "线下预设" : "预设";
-  const ref = want === "offline" ? role?.offline?.presetRef : role?.presetRef;
+  const what = want === "online" ? "预设" : `${PRESET_MODE_LABELS[want]}预设`;
+  const ref = presetRefOf(role, want);
   if (!presets.length) {
     return want === "offline"
       ? "一份线下预设都没有，演剧情时会用内置的默认线下预设"
-      : "一份预设都没有，发消息时会用内置的默认预设";
+      : want === "call"
+        ? "一份通话预设都没有，打电话时会用内置的默认通话预设"
+        : "一份预设都没有，发消息时会用内置的默认预设";
   }
   if (!ref) {
     return `没选${what}，会用第一份「${presetLabel(presets[0])}」`;
@@ -392,6 +435,7 @@ export const ENTRY_KIND_LABELS = {
   memory: "记忆库",
   onlineHistory: "线上聊天记录",
   userChoice: "用户选项",
+  callHowto: "怎么打电话",
 };
 
 /** 固定条目下面那行说明：这一条到底往提示词里塞什么。 */
@@ -408,6 +452,8 @@ export const ENTRY_KIND_HINTS = {
     "只有线下预设有这一条。在这个号码上跟该角色聊过的线上消息，换成 {{线上聊天记录}} 那个变量注入 <线上聊天记录>。一条线上记录都没有时整条不产出",
   userChoice:
     "只有线下预设有这一条。要模型在正文之后另给四条「我接下来可以怎么做」，注入 <User_Choices>。还得角色那边的「用户选项」开着才生效",
+  callHowto:
+    "只有通话预设有这一条。电话里该怎么说话：不写括号动作（TTS 会把「（笑）」一个字一个字念出来）、不拆气泡、一段两到四句、要有语气词，注入 <Phone_Call>",
 };
 
 /** 「消息格式与功能」的二十二个子条目。和 server/src/preset.js:FORMAT_CHILD_KINDS 对齐。 */

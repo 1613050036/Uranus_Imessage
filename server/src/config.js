@@ -560,6 +560,9 @@ export const DEFAULT_CONFIG = {
         modelId: "",
         maxClips: 2,
         emotion: false,
+        // 用专门的 STT 还是这个多模态模型。auto = 配了 STT 且没开情绪识别就用
+        // STT，见 normalizeRole 里那段
+        source: "auto",
       },
       // 看视频：把对方发来的视频转成一段描述再喂给聊天模型。也默认关 ——
       // 一段十几 MB 的视频上传要几十秒、按 token 算也比图片贵得多，
@@ -1324,6 +1327,22 @@ function normalizeRole(input, id, legacy) {
       enabled: Boolean(input?.audioModel?.enabled),
       maxClips: clampInt(input?.audioModel?.maxClips, 2, 1, 10),
       emotion: Boolean(input?.audioModel?.emotion),
+      /*
+       * 语音条用哪条路转写：
+       *   "auto"  配了专门的 STT 就用它，没配 / 开了情绪识别才用多模态（默认）
+       *   "stt"   只用专门的 STT（`config.sttApi`）
+       *   "model" 只用多模态模型（下面那个 audioModel 引用）
+       *
+       * 为什么要显式选，而不是光靠「情绪识别」那个开关推：开着情绪识别
+       * 就一律走多模态，是一条**藏起来的规则** —— 用户配好了 STT、看到
+       * 日志里还在打 gemini-3.8-flash，没办法从界面上看出为什么。
+       *
+       * 默认 auto 让老配置行为不变。通话那条路不看这个字段（电话里永远
+       * 优先 STT，六段式报告在电话里是灾难，见 callturn.js:transcribe）。
+       */
+      source: ["auto", "stt", "model"].includes(input?.audioModel?.source)
+        ? input.audioModel.source
+        : "auto",
     },
     /*
      * 看视频。同样没有 legacy 分支，同样默认**关**。

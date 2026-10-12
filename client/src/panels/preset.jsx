@@ -189,13 +189,14 @@ export function PresetDetail({ preset, onBack, onGoto }) {
           </Field>
 
           {/*
-           * 线上 / 线下。两批预设不串 —— 角色在「单独配置」里只能选线上那批，
-           * 在「线下模式」里只能选线下那批。切过来之后条目列表会跟着变
-           * （线下多一条「用户选项」，切回线上时那条降成自定义条目留着）。
+           * 线上 / 线下 / 通话。三批预设互不相串 —— 角色在「单独配置」里只能选
+           * 线上那批，在「线下模式」里只能选线下那批，在「接 FaceTime 通话」里
+           * 只能选通话那批。切过来之后条目列表会跟着变（线下多一条「用户选项」、
+           * 通话多一条「怎么打电话」，切走时那条降成自定义条目留着）。
            */}
           <Field
             label="用在哪种玩法"
-            hint="线上 = iMessage 上发消息；线下 = 「线下模式」里演剧情。同一份预设只能属于一边"
+            hint="线上 = iMessage 上发消息；线下 = 「线下模式」里演剧情；通话 = 接 FaceTime。同一份预设只能属于其中一种"
           >
             <div className="flex flex-wrap gap-2">
               {PRESET_MODES.map((m) => (
@@ -243,7 +244,11 @@ export function PresetDetail({ preset, onBack, onGoto }) {
                   onClick={() => onGoto?.("role")}
                   className="link-slide ml-1 text-ink"
                 >
-                  {offline ? "去「角色 → 线下模式」里挑" : "去「角色 → 单独配置」里挑"}
+                  {mode === "offline"
+                    ? "去「角色 → 线下模式」里挑"
+                    : mode === "call"
+                      ? "去「角色 → 接 FaceTime 通话」里挑"
+                      : "去「角色 → 单独配置」里挑"}
                 </button>
               </>
             )}

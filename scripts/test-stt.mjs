@@ -193,6 +193,51 @@ group("语言是从配置里来的");
   check("不发 asr_options（中转站不认）", "asr_options" in body, false);
 }
 
+group("地址留空要用默认的（踩过的坑）");
+{
+  /*
+   * normalizeSttApi 存进配置的是**空串**而不是 undefined，所以
+   * `cfg.url ?? "默认地址"` 不管用 —— 空串会原样通过，拼出一个相对路径，
+   * fetch 报 `TypeError: Failed to parse URL from /chat/completions`。
+   * 实测用户换到 Qwen 的第一下就撞上了。
+   */
+  const f = fakeFetch({ body: JSON.stringify({ choices: [{ message: { content: "好" } }] }) });
+  await transcribe({ qwen: { enabled: true, key: "k", url: "" } }, Buffer.from("x"));
+  f.restore();
+  check(
+    "Qwen 留空走阿里云官方",
+    f.calls[0].url,
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+  );
+}
+{
+  const f = fakeFetch({ body: "ok" });
+  await transcribe({ openai: { enabled: true, key: "k", url: "" } }, Buffer.from("x"));
+  f.restore();
+  check("OpenAI 留空走官方", f.calls[0].url, "https://api.openai.com/v1/audio/transcriptions");
+}
+{
+  // 只有空白也算留空
+  const f = fakeFetch({ body: JSON.stringify({ choices: [{ message: { content: "好" } }] }) });
+  await transcribe({ qwen: { enabled: true, key: "k", url: "   " } }, Buffer.from("x"));
+  f.restore();
+  check(
+    "全是空白也当留空",
+    f.calls[0].url,
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+  );
+}
+{
+  // 填了就用填的，末尾斜杠吃掉
+  const f = fakeFetch({ body: JSON.stringify({ choices: [{ message: { content: "好" } }] }) });
+  await transcribe(
+    { qwen: { enabled: true, key: "k", url: "https://relay.example/v1/" } },
+    Buffer.from("x")
+  );
+  f.restore();
+  check("填了就用填的", f.calls[0].url, "https://relay.example/v1/chat/completions");
+}
+
 group("提示词：中文默认给一句简体的");
 {
   /*

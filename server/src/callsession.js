@@ -80,6 +80,17 @@ export function startCall(info) {
      * 空 = 角色只写了个标记什么都没说，那就退回原来那条路（现场打一轮模型）。
      */
     greeting: String(info?.greeting ?? "").trim(),
+    /*
+     * 开场白**合成好的音频**，一个 Promise。
+     *
+     * 合成在入会之前就开跑（见 imessage.js:beginCall）—— 浏览器要开、对方
+     * 还要在 iPhone 上点「允许」，这段死时间十几秒，足够把两三句话合成完。
+     * 于是接通那一刻只剩「把字节发给节点」，一句都不用等。
+     *
+     * 存 Promise 而不是存结果：万一对方点得特别快，接通时合成还没完 ——
+     * 那就 await 它，照样是对的，只是少赚了那几秒。
+     */
+    greetingAudio: null,
   };
   logInfo(SCOPE, `起一通电话：${info.roleName} ← ${info.peer}`);
   return current;
@@ -118,19 +129,37 @@ export function markConnected() {
 }
 
 /**
- * 取出接通后要说的第一句话，**并且清掉**。
+ * 开场白开始合成了 —— 把那个 Promise 存起来，接通时再来取。
+ *
+ * **Promise 上的失败在这里就吃掉**：没人 await 的 rejected promise 会让
+ * Node 打一条 unhandledRejection（严格模式下直接退进程）。合成失败不该
+ * 把整通电话连累掉，退回「接通后现场打一轮模型」就是了。
+ */
+export function primeGreeting(promise) {
+  const c = getCall();
+  if (!c) return;
+  c.greetingAudio = Promise.resolve(promise).catch((e) => {
+    logWarn(SCOPE, "开场白没提前合成出来，接通后会现场打一轮模型", e);
+    return null;
+  });
+}
+
+/**
+ * 取出接通后要说的第一句话（文字 + 提前合成好的音频），**并且清掉**。
  *
  * 一次性的：拿过就没了。不这么做的话，节点因为什么原因重问一次 greeting
  * （重连、超时重试），角色会把同一句开场白再说一遍。
  *
- * @returns {string} 没有就返回空串，调用方据此退回「现场打一轮模型」
+ * @returns {{text: string, audio: Promise<object[]|null>|null}}
+ *   `text` 为空串 = 没有开场白，调用方据此退回「现场打一轮模型」
  */
 export function takeGreeting() {
   const c = getCall();
-  if (!c?.greeting) return "";
-  const text = c.greeting;
+  if (!c?.greeting) return { text: "", audio: null };
+  const out = { text: c.greeting, audio: c.greetingAudio };
   c.greeting = "";
-  return text;
+  c.greetingAudio = null;
+  return out;
 }
 
 /**

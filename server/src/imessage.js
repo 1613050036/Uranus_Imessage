@@ -62,7 +62,14 @@ import { pickEmoji } from "./emoji.js";
 import { isDocAttachment, readDocument } from "./docread.js";
 import { notePrompt } from "./lastprompt.js";
 import { nodeOnline, sendToNode } from "./callapi.js";
-import { endCall, getCall, sayDuration, startCall, takeGreeting } from "./callsession.js";
+import {
+  endCall,
+  getCall,
+  primeGreeting,
+  sayDuration,
+  startCall,
+  takeGreeting,
+} from "./callsession.js";
 import {
   findFaceTimeLink,
   inviteNotice,
@@ -75,8 +82,8 @@ import {
   callRecordLine,
   callUserMessage,
   noteTurn,
-  runCallSay,
   runCallTurn,
+  synthesizeSay,
   transcribe,
 } from "./callturn.js";
 import { fetchLinkImages, fetchLinkVideos, renderLinks } from "./linkmeta.js";
@@ -1586,10 +1593,21 @@ async function describeVoices(endpoint, prompt, max, runner, voices, opts = {}) 
   if (!voices.length) return { text: "", total: 0, failed: 0, firstError: null };
 
   /*
-   * 不要语气环境音的话，专门的 STT 更合适。配了就用它，没配或者它挂了
-   * 再退回多模态。
+   * 走专门的 STT 还是多模态模型 —— 由角色那栏的「用哪个来转写」决定
+   * （`role.audioModel.source`，见 config.js）。
+   *
+   *   "stt"   只用 STT。没配 STT 的话下面会退回多模态（总比听不见好）
+   *   "model" 只用多模态，哪怕 STT 配着
+   *   "auto"  配了 STT 就用它；但开了「情绪识别」还是走多模态 ——
+   *           语气、环境音、几个人在说话这些专门的 STT 给不出来
+   *
+   * 日志里**说清这一轮用的是哪条**：以前这个判断完全藏在代码里，用户配好了
+   * STT、看到日志里还在打 gemini-3.8-flash，从界面上根本看不出为什么。
    */
-  const stt = !opts.rich && pickSttSource(opts.sttApi) ? opts.sttApi : null;
+  const sttReady = Boolean(pickSttSource(opts.sttApi));
+  const source = opts.source ?? "auto";
+  const stt =
+    source === "model" ? null : sttReady && (source === "stt" || !opts.rich) ? opts.sttApi : null;
 
   if (!endpoint && !stt) {
     logInfo(
@@ -1608,6 +1626,22 @@ async function describeVoices(endpoint, prompt, max, runner, voices, opts = {}) 
   if (voices.length > use.length) {
     logWarn(scope, `这轮收到 ${voices.length} 条语音，按上限只识别前 ${use.length} 条`);
   }
+
+  // 这一轮走的是哪条路，以及为什么 —— 省掉「我配了 STT 它怎么不用」这种排查
+  logDebug(
+    scope,
+    stt
+      ? `这轮用专门的转写服务（${source === "stt" ? "你指定了它" : "自动挑的"}）`
+      : `这轮用多模态模型${
+          source === "model"
+            ? "（你指定了它）"
+            : opts.rich
+              ? "（开着「识别情绪与环境音」，专门的转写服务给不出这些）"
+              : sttReady
+                ? ""
+                : "（没配专门的转写服务）"
+        }`
+  );
 
   // 同 describeImages：几条语音同时听，顺序按下标定（见那边的注释）
   const settled = await Promise.all(
@@ -3432,6 +3466,8 @@ async function handleTurn(
       sttApi: freshConfig.sttApi,
       // 开了「情绪识别」就得走多模态 —— 语气、环境音、说话人数专门的 STT 给不出来
       rich: Boolean(freshRole.audioModel?.emotion),
+      // 「用哪个来转写」：auto / stt / model，见 config.js:audioModel.source
+      source: freshRole.audioModel?.source ?? "auto",
     }),
     describeVideos(eps.video, eps.videoPrompt, eps.maxVideos, runner, videos),
   ]);
@@ -10161,6 +10197,22 @@ export async function beginCall(getConfig, { runner, role, spaceId, peer, link, 
     return false;
   }
 
+  /*
+   * 开场白**现在就开始合成**，不等接通。
+   *
+   * 下面那句 sendToNode 之后，节点要开浏览器、入会、再等对方在 iPhone 上点
+   * 「允许」—— 实测这段十几秒里什么都没在做。把合成塞进去，接通那一刻
+   * 只剩「把字节发给节点」，对方按下接听几乎没有空档。
+   *
+   * **不 await** —— await 的话这十几秒就变成「先合成几秒、再开始响铃」，
+   * 白等。primeGreeting 里把失败吃掉了，合成挂了只是退回现场打一轮。
+   */
+  if (greeting) {
+    const config = getConfig();
+    primeGreeting(synthesizeSay({ config, role, text: greeting }));
+    logDebug(scope, "开场白已经在合成了，等接通就能直接播", greeting);
+  }
+
   const sent = sendToNode("join", {
     link,
     name: role.name,
@@ -10247,18 +10299,23 @@ export async function handleCallTurn(getConfig, { audio, kind = "said", seconds 
    */
   if (kind === "greeting") {
     const ready = takeGreeting();
-    if (ready) {
-      logInfo(scope, "接通了，念角色先前写好的开场白（省掉一轮模型）", ready);
-      await speakAndRecord({
-        stream: runCallSay({ config, role, text: ready }),
-        ctx,
-        config,
-        role,
-        call,
-        userMsg,
-        send,
-        scope,
-      });
+    if (ready.text) {
+      /*
+       * 音频多半已经在 beginCall 那会儿合成好了（见那边）。await 一下是为了
+       * 兜住「对方点得特别快，合成还没完」那种情况 —— 那时等的是剩下的那点
+       * 时间，不是从零开始。
+       *
+       * 合成失败（primeGreeting 吃掉异常后给 null）或者压根没提前合成：
+       * 现场合成一次，照样不打模型。
+       */
+      let parts = ready.audio ? await ready.audio : null;
+      if (parts?.length) {
+        logInfo(scope, "接通了，念角色先前写好的开场白（音频早就合成好了）", ready.text);
+      } else {
+        parts = await synthesizeSay({ config, role, text: ready.text });
+        logInfo(scope, "接通了，念角色先前写好的开场白（现场合成）", ready.text);
+      }
+      await speakAndRecord({ stream: replayParts(parts), ctx, config, role, call, userMsg, send, scope });
       return;
     }
     logDebug(scope, "角色接的时候没写开场白，现场打一轮");
@@ -10294,11 +10351,16 @@ export async function handleCallTurn(getConfig, { audio, kind = "said", seconds 
   });
 }
 
+/** 把攒好的那几句原样吐出去，让 speakAndRecord 那边不用分叉。 */
+async function* replayParts(parts) {
+  for (const p of parts ?? []) yield p;
+}
+
 /**
  * 把一轮的产出播出去，然后存档、进记忆、该挂就挂。
  *
  * 两条路共用：模型现场生成的那一轮（`runCallTurn`），和念先前写好的开场白
- * （`runCallSay`）。**刻意不分叉** —— 开场白也是电话里真说出口的话，该和
+ * （synthesizeSay）。**刻意不分叉** —— 开场白也是电话里真说出口的话，该和
  * 别的轮次一样进存档、进上下文、进待总结。
  *
  * @param {object} args

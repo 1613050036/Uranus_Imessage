@@ -272,7 +272,7 @@ export async function* runCallTurn({ config, role, messages, params, signal }) {
 }
 
 /**
- * 把一句话合成出来。`runCallTurn` 和 `runCallSay` 共用这一段。
+ * 把一句话合成出来。`runCallTurn` 和 `synthesizeSay` 共用这一段。
  *
  * 是生成器而不是普通函数，只为了「整句都是标记、没字可念」那种情况能
  * **一个都不 yield**（而不是 yield 一个空的让调用方再判一次）。
@@ -315,35 +315,39 @@ async function* sayOne(raw, { config, voiceId, sep, seq }) {
 }
 
 /**
- * 说一段**已经写好**的话 —— 不打模型。
+ * 把一段**已经写好**的话合成好 —— 不打模型。
  *
  * 现在只有一个用处：接通后的开场白。角色在答应接电话的那一轮里就把它写好了
- * （`[接受通话]` 后面那段），所以接通的瞬间只剩合成这一件事 —— 省掉一整轮
- * 模型（实测 8 到 25 秒，对方接起来先听一片沉默）。
+ * （`[接受通话]` 后面那段），所以这里只剩合成，省掉一整轮模型（实测 8 到
+ * 25 秒，对方接起来先听一片沉默）。
  *
- * 和 `runCallTurn` 的产出形状完全一样，调用方那边不用分叉。
+ * ── 为什么是「全部做完再返回」，不是边做边吐 ──
+ *
+ * 模型那条路必须边做边吐（第一句一凑齐就播，见 runCallTurn 的文件头）。
+ * 开场白正相反：它在**接通之前**就开始合成了 —— 角色答应接之后，浏览器要开、
+ * 对方还要在 iPhone 上点「允许」，实测这段死时间十几秒。合成塞进这段时间里
+ * 做完，接通那一刻只剩「把字节发给节点」。
+ *
+ * 所以这里要赶的不是「现在出第一句」，而是「接通那一刻一句都不等」。
+ * 返回的形状和 `runCallTurn` 产出的一致，调用方不用分叉。
  *
  * @param {object} args
  * @param {object} args.config
  * @param {object} args.role
  * @param {string} args.text 要说的话
- * @yields {{text: string, audio: Buffer|null, media: object[], seq: number}}
+ * @returns {Promise<object[]>} 几句 `{text, audio, media, seq}`
  */
-export async function* runCallSay({ config, role, text }) {
+export async function synthesizeSay({ config, role, text }) {
   const sep = config?.chat?.separator ?? "$";
   const voiceId = role?.voiceSend?.voiceId ?? "";
-
-  /*
-   * 照样按句切、一句一句合成。
-   *
-   * 整段一次合成会更简单，但第一句出来的时间就从 0.8 秒变成三四秒 ——
-   * 开场白恰恰是最该快的那一句（对方刚按下接听）。切法和模型流式那条
-   * 完全一致：第一句刻意短。
-   */
+  const out = [];
   let seq = 0;
-  for (const piece of splitSentences(text, { minChars: 24 })) {
-    yield* sayOne(piece, { config, voiceId, sep, seq: seq++ });
+  for (const piece of splitSentences(String(text ?? ""), { minChars: 24 })) {
+    for await (const part of sayOne(piece, { config, voiceId, sep, seq: seq++ })) {
+      out.push(part);
+    }
   }
+  return out;
 }
 
 /**
