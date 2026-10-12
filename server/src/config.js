@@ -732,6 +732,29 @@ export const DEFAULT_CONFIG = {
     soft: 4,
     firm: 10,
   },
+  /*
+   * FaceTime 通话节点。整块只住密钥文件 —— 配对密钥等于一把能让别人往你的
+   * 通话里塞话的钥匙，和 dollApi 的 pushSecret 一个待遇。
+   *
+   * 节点是一个**独立的程序**，跑在一台有浏览器的机器上（可以是这一台，也可以是
+   * 别的机器）。Uranus 本体跑在 CF Worker 或安卓上时起不了浏览器，所以这个功能
+   * 必须拆成两半 —— 见 facetime-node/设计.md。
+   */
+  callNode: {
+    enabled: false,
+    /*
+     * 谁连谁。
+     *  "node"   节点主动连 Uranus（默认）。Uranus 有公网地址时用这个，
+     *           节点可以躲在家里的路由器后面，没有公网 IP 也行。
+     *  "uranus" Uranus 主动连节点。Uranus 在本地电脑、节点在公网 VPS 时用这个。
+     */
+    direction: "node",
+    /** direction = "uranus" 时，节点的地址（如 http://1.2.3.4:8788）。 */
+    url: "",
+    /** 配对密钥。两边必须一致，节点那头靠它证明自己是谁。 */
+    secret: "",
+  },
+
   // 语音合成（TTS）的凭据，同样全局一份（只写 data.config.json）。
   // 四家都没开 = 角色就算打开了「发语音」也发不出来，退化成文字，见 media.js
   ttsApi: {
@@ -1326,6 +1349,9 @@ function normalizeRole(input, id, legacy) {
     spy: normalizeSpy(input?.spy),
     // 发语音、生图：同样只有开关。凭据和模型都是全局的，见下面两个函数
     voiceSend: normalizeVoiceSend(input?.voiceSend),
+    // 接 FaceTime：开关 + 通话预设 + 单独的模型 + 几个节奏参数。
+    // 节点地址和配对密钥是全局的（config.callNode），见下面那个函数
+    call: normalizeRoleCall(input?.call),
     imageGen: normalizeImageGen(input?.imageGen),
     // 发表情包：开关 + 标签黑名单。图片是用户自己硬盘上的，不花钱但也不该
     // 所有角色共用一套（见 normalizeStickerSend）
@@ -2073,6 +2099,89 @@ function normalizeVoiceSend(input) {
     language: str(input?.language).trim().toLowerCase(),
     // 口音标签的内容，如 "strong British accent"。方括号由 media.js 拼，这里剥掉用户手写的
     accent: str(input?.accent).replace(/[[\]［］]/g, "").trim(),
+  };
+}
+
+/**
+ * 通话节点的地址和配对密钥。
+ *
+ * **整块只住密钥文件**（和 ttsApi / dollApi 一样），所以 `enabled` 这个开关
+ * 也在密钥文件里 —— config.json 那份是整块抹空的，分开存的话重启之后空结构
+ * 会把开关盖成 false（这个坑 config.js:3441 附近的注释讲过）。
+ */
+function normalizeCallNode(input) {
+  const dir = input?.direction === "uranus" ? "uranus" : "node";
+  return {
+    enabled: Boolean(input?.enabled),
+    direction: dir,
+    // 去掉末尾的斜杠，拼路径时就不用判了
+    url: str(input?.url).trim().replace(/\/+$/, ""),
+    secret: str(input?.secret).trim(),
+  };
+}
+
+/**
+ * 接 FaceTime 通话：这个角色接不接、用哪份通话预设、哪个模型、什么节奏。
+ *
+ * **默认关。** 和 proactive / voiceSend 一样是会花钱的功能 —— 而且这个还要求
+ * 另外跑一个通话节点，不是打开开关就能用的。
+ *
+ * 声音用的是 `voiceSend.voiceId` 那个音色，不另配一个：打电话和发语音条是
+ * 同一个角色的同一个声音，分成两处设置只会让用户困惑「为什么电话里是另一个人」。
+ * 但**开关是独立的** —— 不开「发语音」也能接电话（电话里本来就该说话）。
+ *
+ * 三个模型/预设引用都只存**引用**，绝不存密钥（角色文件会被
+ * `backup.js:buildBundle` 原样打进可分享的备份包）。
+ */
+function normalizeRoleCall(input) {
+  return {
+    enabled: Boolean(input?.enabled),
+
+    /*
+     * 通话预设（`preset.mode === "call"`）。和 `role.presetRef`、
+     * `role.offline.presetRef` 是三个独立的引用，失效同样不清理 ——
+     * 退回内置的那份默认通话预设，见 preset.js:defaultCallPreset。
+     */
+    presetRef: str(input?.presetRef),
+
+    /*
+     * 通话单独用哪个模型。空 = 用角色的主聊天模型。
+     *
+     * 很值得单独配：通话对延迟敏感得多，带 thinking 的模型在电话里是灾难
+     * （实测主模型想了 7.3 秒才开口）。解析见 callturn.js:callEndpoint。
+     */
+    model: normalizeModelRef(input?.model),
+
+    /*
+     * 对方插话时要不要打断角色。默认**开**。
+     *
+     * 两个参考项目都没做打断（都是角色说话时干脆不开麦），因为误判的代价
+     * 不小 —— 一声咳嗽就把角色的话拦腰截断。所以节点那边判得比普通
+     * 静音检测严得多（要连着响满 500ms），并且这个开关留给用户关掉。
+     */
+    bargeIn: input?.bargeIn !== false,
+
+    /*
+     * 对方多久没说话就提醒模型一次，秒。0 = 不提醒。
+     *
+     * 默认 45 秒（用户定的）。通话里 30 秒不说话其实很常见（在找东西、
+     * 在看屏幕），太短会让角色一直在问「还在吗」。
+     *
+     * 推给模型的那句话**不替它下结论**说「关麦了」—— 静音检测会误判，
+     * 所以只报现象，让角色按人设自己判断。见 calltags.js:silenceNotice。
+     */
+    silenceNotice: clampInt(input?.silenceNotice, 45, 0, 600),
+
+    /** 角色入会之后先说的那句话的提示。空 = 让模型自己想。 */
+    greeting: str(input?.greeting).trim(),
+
+    /**
+     * 角色决定接之前，先在 iMessage 里回一句什么（比如「等我一下」）。
+     *
+     * 空 = 什么都不发，直接入会。留这个口子是因为入会要几秒，这期间
+     * 对方那头是静悄悄的。
+     */
+    pickingUpTemplate: str(input?.pickingUpTemplate).trim(),
   };
 }
 
@@ -3311,6 +3420,7 @@ export function normalizeConfig(input) {
   base.spyApi = normalizeSpyApi(input.spyApi);
   base.dollApi = normalizeDollApi(input.dollApi);
   base.ttsApi = normalizeTtsApi(input.ttsApi);
+  base.callNode = normalizeCallNode(input.callNode);
   base.referenceImages = normalizeReferenceImages(input.referenceImages);
   base.mcpServers = normalizeMcpServers(input.mcpServers);
   base.memories = normalizeMemories(input.memories);
@@ -3445,6 +3555,9 @@ function mergeSecrets(main, data) {
     merged.searchApi = data.searchKeys;
   }
   // TTS 同理（四家的开关也在这块里，一起读回来）
+  if (data.callNodeKeys && typeof data.callNodeKeys === "object") {
+    merged.callNode = data.callNodeKeys;
+  }
   if (data.ttsKeys && typeof data.ttsKeys === "object") {
     merged.ttsApi = data.ttsKeys;
   }
@@ -3536,6 +3649,7 @@ function writeToDisk(normalized) {
     luckinKeys: normalized.luckinApi,
     mcdKeys: normalized.mcdApi,
     ttsKeys: normalized.ttsApi,
+    callNodeKeys: normalized.callNode,
     cloudKeys: normalized.cloudBackup,
   });
 
@@ -3562,6 +3676,8 @@ function writeToDisk(normalized) {
     mcdApi: {},
     // TTS 同理
     ttsApi: {},
+    // 通话节点那条腿（配对密钥 + 节点地址）同理
+    callNode: {},
     // 云备份整块同理
     cloudBackup: {},
   });

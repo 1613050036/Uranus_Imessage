@@ -25,13 +25,14 @@ export const FIXED_KINDS = ["char", "user", "world", "format", "context", "memor
  *
  * `online`  iMessage 上的即时通讯（角色扮演聊天）
  * `offline` 线下剧情（网页上的「线下模式」分区，仿酒馆那种坐下来演一段）
+ * `call`    FaceTime 通话（角色用自己的声音和你说话，见 facetime-node/设计.md）
  *
  * 缺字段算 `online` —— 这一版之前所有预设都是线上的，老配置原样升级。
  * 两种玩法的要求是互斥的（线下不发气泡、不用消息格式与功能、不发主动消息），
  * 所以不共用一份预设，而是让角色两边各选一份：`role.presetRef` 是线上那份，
  * `role.offline.presetRef` 是线下那份。
  */
-export const PRESET_MODES = ["online", "offline"];
+export const PRESET_MODES = ["online", "offline", "call"];
 
 /**
  * 线下预设独有的固定条目：用户选项。
@@ -69,9 +70,41 @@ export const OFFLINE_FIXED_KINDS = [
   "userChoice",
 ];
 
+/**
+ * 通话预设独有的固定条目：怎么打电话。
+ *
+ * 为什么单独一条、而不是让用户在 `char` 里自己写：这一条里的每一句都是
+ * **踩出来的坑**（见 CALL_HOWTO 的正文），而且写错一条的后果很具体 ——
+ * 比如漏了「别写括号动作」，TTS 就会一字不漏地念出「（笑）」。做成固定 kind，
+ * 用户能改，但不会因为新建预设时忘了加而整通电话都在念方括号。
+ */
+export const CALL_ONLY_KINDS = ["callHowto"];
+
+/**
+ * 通话预设的固定条目清单。顺序 = 新建时的默认排列。
+ *
+ * 和线上那份几乎一样，只是：
+ *  - `callHowto` 插在 `format` **后面** —— 先讲清消息格式与功能（通话里那些
+ *    功能是保留的，角色打电话时照样能转账、发卡片），再讲「但在电话里要怎么
+ *    说话」。顺序反了的话，模型读到最后一条是「可以发表情包」，就真发了。
+ *  - 没有线下那条 `onlineHistory`：通话和短信共用同一条历史，不存在「把线上
+ *    记录搬进来」这回事。
+ */
+export const CALL_FIXED_KINDS = [
+  "char",
+  "user",
+  "world",
+  "format",
+  "callHowto",
+  "context",
+  "memory",
+];
+
 /** 这个 mode 的预设该有哪些固定条目。 */
 function fixedKindsFor(mode) {
-  return mode === "offline" ? OFFLINE_FIXED_KINDS : FIXED_KINDS;
+  if (mode === "offline") return OFFLINE_FIXED_KINDS;
+  if (mode === "call") return CALL_FIXED_KINDS;
+  return FIXED_KINDS;
 }
 
 /** 可移动条目能选的身份。 */
@@ -1070,6 +1103,67 @@ export const DEFAULT_ONLINE_HISTORY = [
   ONLINE_HISTORY_PLACEHOLDER,
 ].join("\n");
 
+/**
+ * 「怎么打电话」那条条目的默认正文。
+ *
+ * ── 每一条都是踩出来的，别随便删 ──
+ *
+ *  - **别写括号动作**：这是最要紧的一条。TTS 会把「（笑）」一字不漏地念出来，
+ *    两个参考项目都在它们的通话提示词里专门强调过这件事。
+ *  - **别写那个 `$`**：气泡分隔符默认是 `$`（config.js:424），模型写短信写惯了。
+ *    念出来就是一声「美元」。代码里还有两道兜底（通话不走 sendBubbles、合成前
+ *    再剥一遍，见 calltags.js:stripSeparator），但提示词这道是最省事的。
+ *  - **一段说完**：通话里不拆气泡，拆了也没用。
+ *  - **功能可以用，但别念出来**：标记会被 splitMedia 挑出去各自执行
+ *    （calltags.js:speakableFrom），所以「一边说话一边转钱」是可行的。
+ *  - **给反例**：两个参考项目都发现光说「要口语化」没用，得明确指出「客服念
+ *    话术」和「固定公式堆砌」这两种最常见的跑偏。
+ *
+ * 语气标记那段**刻意没写死某一家的写法** —— 四家 TTS 认的标签不一样
+ * （media.js:1691 的 elevenTagsOk 判这件事），写死会让另外三家把标签念出来。
+ */
+export const DEFAULT_CALL_HOWTO = [
+  "## 现在是在打电话",
+  "",
+  "你正在和 {{user}} 通 FaceTime。你说的每一句话都会被读成语音放给对方听 ——",
+  "这意味着**写在回复里的所有东西都会被念出声**。",
+  "",
+  "### 绝对不要写这些",
+  "",
+  "- **括号里的动作、神态、心理**。写「（笑）」就会被念成「括号笑括号」。",
+  "  想笑就直接写「哈哈」或者「噗」，那才是能听见的笑。",
+  "- **分隔符 $**。打电话不分气泡，一段话说完就行。",
+  "- **旁白和舞台提示**。没有「只见他顿了顿」这种东西，电话里只有说出口的话。",
+  "",
+  "### 电话里的人怎么说话",
+  "",
+  "- **一般两到四句**，说完就停，等对方回。不要一口气讲一大段。",
+  "- 该有语气词和停顿：「嗯……」「诶？」「等一下」「就是说……」。",
+  "- 可以说到一半改口、重复一个词、想不起来某件事。真人打电话就是这样。",
+  "- 听不清就问「什么？」—— 对方的话是语音转成文字的，转错了很正常。",
+  "",
+  "两种最常见的跑偏，别犯：",
+  "",
+  "❌ 像客服念话术：「您好，很高兴接到您的来电，请问有什么可以帮您」",
+  "❌ 套固定公式：每句都是「情绪 + 回应 + 状态 + 反问」四件套拼起来",
+  "",
+  "✅ 该是这样：「喂？……啊，等我一下，这边有点吵。」",
+  "✅ 或者这样：「嗯？你刚说什么，我没听清。」",
+  "",
+  "### 那些功能照样能用",
+  "",
+  "消息格式与功能里的那些标记在通话中**仍然有效** —— 比如聊到钱的时候顺手转一笔、",
+  "说到某个东西的时候发个链接。标记会被单独挑出去执行，**不会被念出来**，",
+  "所以不用担心对方听到一串方括号。",
+  "",
+  "但表情包、撤回、已读不回这几样在电话里是关着的 —— 接通了还「已读不回」没有意义，",
+  "说出口的话也收不回来。",
+  "",
+  "### 挂电话",
+  "",
+  "想结束通话就在回复里写 [结束通话]。该说的再见先说完，再写这个标记。",
+].join("\n");
+
 export const DEFAULT_USER_CHOICE = [
   "在你的正文写完之后，另起一段，给出四条「我接下来可以怎么做」的选项。",
   "",
@@ -1154,8 +1248,12 @@ function defaultEnabled() {
  *    开着的开关以为它生效了。
  */
 function defaultEnabledFor(kind, mode) {
-  if (mode !== "offline") return defaultEnabled();
-  if (kind === "userChoice" || kind === "format") return false;
+  if (mode === "offline") {
+    if (kind === "userChoice" || kind === "format") return false;
+    return defaultEnabled();
+  }
+  // 通话模式：每一条都该开着。format 要开 —— 通话里那些功能是保留的
+  // （角色打电话时照样能转账、发卡片），只是不念出来
   return defaultEnabled();
 }
 
@@ -1178,6 +1276,7 @@ export function defaultEntries(mode = "online") {
     ...(kind === "memory" ? { content: DEFAULT_MEMORY_ENTRY } : {}),
     ...(kind === "userChoice" ? { content: DEFAULT_USER_CHOICE } : {}),
     ...(kind === "onlineHistory" ? { content: DEFAULT_ONLINE_HISTORY } : {}),
+    ...(kind === "callHowto" ? { content: DEFAULT_CALL_HOWTO } : {}),
   }));
 }
 
@@ -1199,7 +1298,8 @@ export function makeDefaultPreset(overrides = {}) {
   const mode = PRESET_MODES.includes(overrides.mode) ? overrides.mode : "online";
   return normalizePreset(
     {
-      name: mode === "offline" ? "默认线下预设" : "默认预设",
+      name:
+        mode === "offline" ? "默认线下预设" : mode === "call" ? "默认通话预设" : "默认预设",
       params: { ...DEFAULT_PARAMS },
       entries: defaultEntries(mode),
       regex: defaultRegexRules(mode),
@@ -1401,6 +1501,11 @@ function normalizeEntries(list, mode = "online") {
       // 用户可能把 {{线上聊天记录}} 挪过位置或整行删掉（删掉 = 这条不要记录），
       // 只补「缺字段」的默认正文，别去动他已经改过的文字
       entry.content = raw?.content === undefined ? DEFAULT_ONLINE_HISTORY : str(raw.content);
+    } else if (kind === "callHowto") {
+      // 同上：只补「缺字段」的，用户改过的照原样留着。
+      // 漏了这一支的后果很隐蔽 —— 条目还在、开关也开着，但正文是空的，
+      // 于是整段「电话里怎么说话」压根没进提示词，角色照着发短信的路子念括号
+      entry.content = raw?.content === undefined ? DEFAULT_CALL_HOWTO : str(raw.content);
     } else if (kind === "custom") {
       // 从线下降回线上时，那条用户选项落到这里 —— 名字给一个，不然界面上
       // 是一条无名条目，用户不知道这段文字打哪来的
@@ -1506,7 +1611,16 @@ export function presetLabel(preset) {
 /** 这个 mode 下能挑的预设。缺 mode 字段的老预设算线上。 */
 export function presetsFor(config, mode = "online") {
   const want = PRESET_MODES.includes(mode) ? mode : "online";
-  return (config?.presets ?? []).filter((p) => (p?.mode === "offline" ? "offline" : "online") === want);
+  /*
+   * 缺 mode 字段的老预设算线上。
+   *
+   * 注意不能写成「不是 offline 就是 online」—— 那样 call 模式一份都筛不出来，
+   * 会静默回落到内置的默认通话预设，用户改了自己那份却看不到任何变化。
+   */
+  return (config?.presets ?? []).filter((p) => {
+    const m = PRESET_MODES.includes(p?.mode) ? p.mode : "online";
+    return m === want;
+  });
 }
 
 /**
@@ -1530,7 +1644,12 @@ export function presetsFor(config, mode = "online") {
 export function resolvePreset(config, role, mode = "online") {
   const want = PRESET_MODES.includes(mode) ? mode : "online";
   const presets = presetsFor(config, want);
-  const ref = want === "offline" ? role?.offline?.presetRef : role?.presetRef;
+  const ref =
+    want === "offline"
+      ? role?.offline?.presetRef
+      : want === "call"
+        ? role?.call?.presetRef
+        : role?.presetRef;
   if (!presets.length) return makeDefaultPreset({ mode: want });
   return presets.find((p) => p.id === ref) ?? presets[0];
 }

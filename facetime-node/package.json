@@ -1,0 +1,15 @@
+{
+  "name": "uranus-facetime-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Uranus 的 FaceTime 通话节点：开浏览器入会、收发声音，和 Uranus 本体可以不在同一台机器",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "selftest": "node src/index.mjs --selftest",
+    "test": "node --test test/*.test.mjs"
+  }
+}

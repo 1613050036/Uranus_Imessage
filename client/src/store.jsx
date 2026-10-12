@@ -1251,6 +1251,16 @@ export function ConfigProvider({ children }) {
     [updateConfig]
   );
   /**
+   * 通话节点（地址 + 配对密钥）。同样**全局一份**。
+   *
+   * 角色那边只有 role.call（接不接、用哪份通话预设、哪个模型）—— 这边描述的是
+   * 「那台替角色开浏览器接电话的机器」，和哪个角色在接无关，见 config.js 的 callNode。
+   */
+  const updateCallNode = useCallback(
+    (patch) => updateConfig((c) => ({ ...c, callNode: { ...c.callNode, ...patch } })),
+    [updateConfig]
+  );
+  /**
    * 语音合成的凭据（MiniMax / ElevenLabs / Fish Audio / GPT-SoVITS）。同样**全局一份**。
    *
    * 角色那边只有 role.voiceSend.enabled 和音色 ID —— 音色 ID 不是密钥，
@@ -2205,6 +2215,7 @@ export function ConfigProvider({ children }) {
         updateMcdApi,
         updateMcpServers,
         updateSpyApi,
+        updateCallNode,
         updateDollApi,
         updateTtsApi,
         updateStream,

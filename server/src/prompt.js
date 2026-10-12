@@ -815,7 +815,13 @@ function formatHistoryLines(messages, charName, userName, maxChars = 6000) {
 
 export async function buildPrompt(config, role, user, history, weatherNote = "", opts = {}) {
   const offline = opts?.mode === "offline";
-  const preset = resolvePreset(config, role, offline ? "offline" : "online");
+  /*
+   * 通话（`mode === "call"`）走自己那份预设，但**上下文按线上的规矩裁** ——
+   * 通话和发短信共用同一条历史，用线下那套（按轮数、一轮上千字）会把
+   * 短信那几十条挤没。
+   */
+  const mode = opts?.mode === "call" ? "call" : offline ? "offline" : "online";
+  const preset = resolvePreset(config, role, mode);
   const hist = trimHistory(history, role, { offline });
 
   const vars = {
@@ -946,6 +952,19 @@ export async function buildPrompt(config, role, user, history, weatherNote = "",
          * 所以这里不用再判一次 offline。
          */
         parts.push({ role: "system", content: wrap("User_Choices", fill(entry.content ?? "")) });
+        break;
+      case "callHowto":
+        /*
+         * 「怎么打电话」（通话预设专属）。
+         *
+         * 排在 format 后面：先讲清有哪些功能（通话里那些是保留的，角色打电话时
+         * 照样能转账、发卡片），再讲「但在电话里要这么说话」。顺序反了的话模型
+         * 读到的最后一条是「可以发表情包」，它就真发了。
+         *
+         * 线上/线下预设里不会有这个 kind（normalizeEntries 会把它转成 custom），
+         * 所以这里不用再判一次 mode。
+         */
+        parts.push({ role: "system", content: wrap("Phone_Call", fill(entry.content ?? "")) });
         break;
       case "custom":
         // 可移动条目不自动包标签 —— 名字是用户随便起的，未必是合法标签名。

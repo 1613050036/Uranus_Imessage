@@ -61,6 +61,22 @@ import {
 import { pickEmoji } from "./emoji.js";
 import { isDocAttachment, readDocument } from "./docread.js";
 import { notePrompt } from "./lastprompt.js";
+import { nodeOnline, sendToNode } from "./callapi.js";
+import { endCall, getCall, sayDuration, startCall } from "./callsession.js";
+import {
+  findFaceTimeLink,
+  inviteNotice,
+  isFaceTimeInvite,
+  readAnswer,
+  readHangUp,
+} from "./calltags.js";
+import {
+  callRecordLine,
+  callUserMessage,
+  noteTurn,
+  runCallTurn,
+  transcribe,
+} from "./callturn.js";
 import { fetchLinkImages, fetchLinkVideos, renderLinks } from "./linkmeta.js";
 import { igComposeNote, igRouteFor, publishIgTags, publishLines, tickIgQueue } from "./igrun.js";
 import { splitIg, stripIgTags } from "./igtags.js";
@@ -3443,7 +3459,24 @@ async function handleTurn(
    * 时间戳本来也该保持是原来那个。天气照旧现查现注入 —— 它不进存档，
    * 每次生成都是拿此刻的那份（和用户「什么时候生成就注入什么时间的天气」一致）。
    */
-  const combined = isReroll ? said : timePrefix + said;
+  let combined = isReroll ? said : timePrefix + said;
+
+  /*
+   * 对方发来了一条 FaceTime 链接 —— 在这一轮的用户消息后面补一句，让角色
+   * 自己决定接不接。
+   *
+   * **不直接入会**：角色正在忙、在生气、在开车，完全可以不接，这一句比什么都
+   * 有「活人感」。真正起通话在下面拿到模型回复之后（搜 meta.callInvite）。
+   *
+   * 功能没开、节点没配、或者这台角色压根不接电话时，这整段不进提示词 ——
+   * 那样模型看到一条奇怪的指令却没有对应的能力，只会胡乱回应。
+   */
+  const callLink = isCallInvite(freshConfig, freshRole, said) ? findFaceTimeLink(said) : "";
+  if (callLink && !isReroll) {
+    meta.callInvite = callLink;
+    combined += `\n${inviteNotice(user?.name ?? "{{user}}")}`;
+    logInfo(scope, "对方发来一通 FaceTime 邀请，问问角色接不接");
+  }
 
   /*
    * 一个字没打、而且这轮收到的图 / 语音 / 视频**全都**识别失败：模型拿到的
@@ -3588,6 +3621,33 @@ async function handleTurn(
   }
 
   logInfo(llmScope, `模型回复 ${reply.length} 字，花了 ${secsSince(askedAt)}s`, reply);
+
+  /*
+   * 对方发来的是 FaceTime 邀请，而角色答应接了 —— 起一通电话。
+   *
+   * **必须排在所有这些分支的最前面。** 实测踩过一次：那一轮角色同时写了
+   * `[leave_on_read]`，于是「已读不回」把整段回复连同入会的意思一起吞掉了，
+   * 对方对着一通永远接不通的电话干等。撤回、Instagram 那几条同理。
+   *
+   * 角色回 [拒绝通话] 或者什么都没写：什么都不做，正文照常往下走各种分支发出去
+   * （「现在在开车，等会儿打给你」这种话该正常发出去）。
+   */
+  if (meta.callInvite) {
+    const { answer, text: withoutTags } = readAnswer(reply);
+    reply = withoutTags;
+    if (answer === "accept") {
+      const ok = await beginCall(getConfig, {
+        runner,
+        role: freshRole,
+        spaceId,
+        peer,
+        link: meta.callInvite,
+      });
+      logInfo(scope, ok ? "角色接了这通电话" : "角色想接，但没接起来");
+    } else {
+      logInfo(scope, answer === "reject" ? "角色拒接了" : "角色没表态，当作没接");
+    }
+  }
 
   /*
    * MCP 工具：模型要了工具就真去调，拿结果再问（可能连着几趟，见 mcpRound）。
@@ -9939,4 +9999,246 @@ export async function stopAllBridges() {
   await Promise.all([...runners.values()].map((r) => stopRunner(r)));
   // 娃娃那条轮询是整个进程一份的，一条连接都不剩了才轮到它停
   stopDollWatcher();
+}
+/* ================= FaceTime 通话 ================= */
+
+/**
+ * 接一通 FaceTime。
+ *
+ * 这里是**通话和线上聊天的交汇点**：上下文、存档、记忆三样全部沿用发短信那一套
+ * （用户钉死的 —— 一接通就知道之前聊了什么，挂断后在 iMessage 里能接着聊）。
+ * 通话独有的那部分（拼通话提示词、流式合成）在 callturn.js。
+ *
+ * 为什么这几个函数住在这个文件：它们要用 `runners`、`loadHistory`、`afterTurn`、
+ * `sendSystem` 这些内部的东西。搬去 callturn.js 的话两个模块要互相 import ——
+ * 和 proactive.js / friendloc.js 当初的取舍一样（那两个文件头都写了这件事）。
+ */
+
+/**
+ * 按会话 id 找回 runner 和 space。通话要往 iMessage 里发东西时用
+ * （接之前那句「等我一下」、挂断后那条通话记录）。
+ *
+ * space 走现成的 `spaceForChat` —— 它自己会按「合并窗口里的 → 上一次用过的
+ * → 现问一次」三步找，比在这儿另写一套稳。
+ */
+async function callContext(getConfig, roleId, spaceId) {
+  const config = getConfig();
+  for (const runner of runners.values()) {
+    const role = currentRole(config, runner);
+    if (role?.id !== roleId) continue;
+    const space = await spaceForChat(runner, spaceId).catch(() => null);
+    if (space) return { runner, space, role };
+  }
+  return null;
+}
+
+/**
+ * 对方发来了一条 FaceTime 链接 —— 先问角色接不接。
+ *
+ * **不直接入会**。角色正在忙、在生气、在开车，完全可以不接，这一句比什么都有
+ * 「活人感」。模型回 `[接受通话]` 才起通话，回 `[拒绝通话]` 或者什么都不写就
+ * 当普通消息处理（正文照常发出去）。
+ *
+ * @returns {boolean} true = 这条消息已经被当成通话邀请处理了，别再走普通链路
+ */
+export function isCallInvite(config, role, text) {
+  if (!role?.call?.enabled) return false;
+  if (!config?.callNode?.enabled) return false;
+  return isFaceTimeInvite(text);
+}
+
+/**
+ * 角色答应接了 —— 起一通电话。
+ *
+ * @param {Function} getConfig
+ * @param {object} args
+ * @param {object} args.runner
+ * @param {object} args.role
+ * @param {string} args.spaceId
+ * @param {string} args.peer
+ * @param {string} args.link
+ * @returns {Promise<boolean>} 起没起起来
+ */
+export async function beginCall(getConfig, { runner, role, spaceId, peer, link }) {
+  const scope = scopeOf(runner, "通话");
+
+  if (!nodeOnline()) {
+    /*
+     * 节点不在线。
+     *
+     * 用角色的口吻回一句，别让对方对着一通永远接不通的电话干等
+     * （这是用户点名要的：「不出戏」）。真正的原因写在日志里。
+     */
+    logWarn(scope, "通话节点不在线，接不了");
+    const space = await spaceForChat(runner, spaceId).catch(() => null);
+    if (space) {
+      await sendSystem(runner, space, "（这边信号好像不太好，打不通……）", {
+        what: "通话节点不在线",
+      }).catch(() => {});
+    }
+    return false;
+  }
+
+  const sessionId = sessionIdOf(runner, role, peer);
+  try {
+    startCall({
+      roleId: role.id,
+      roleName: role.name,
+      sessionId,
+      peer,
+      spaceId,
+      link,
+    });
+  } catch (e) {
+    logWarn(scope, "起通话失败", e);
+    return false;
+  }
+
+  const sent = sendToNode("join", {
+    link,
+    name: role.name,
+    bargeIn: role.call?.bargeIn !== false,
+    silenceNoticeMs: (role.call?.silenceNotice ?? 45) * 1000,
+  });
+  if (!sent) {
+    endCall("节点没收到入会指令");
+    return false;
+  }
+
+  logInfo(scope, `让节点去接了：${role.name} ← ${peer}`);
+  return true;
+}
+
+/**
+ * 通话里的一轮：对方说了一句（或者打字发来一条、或者半天没说话）。
+ *
+ * 和发短信那条路共用上下文、存档、记忆 —— 区别只在于不拆气泡、不走已读不回
+ * 那一摞，以及回复是一句一句合成播出去的。
+ *
+ * @param {Function} getConfig
+ * @param {object} args
+ * @param {Buffer} [args.audio] 对方说的那段 WAV
+ * @param {string} args.kind "said" | "typed" | "silence"
+ * @param {number} [args.seconds] kind = silence 时，静了多少秒
+ * @param {string} [args.typed] kind = typed 时，打字的内容
+ * @param {(type: string, data: object) => void} args.send 往节点那条流式响应里写
+ */
+export async function handleCallTurn(getConfig, { audio, kind = "said", seconds = 0, typed = "", send }) {
+  const call = getCall();
+  if (!call) throw new Error("现在没有正在进行的通话");
+
+  const ctx = await callContext(getConfig, call.roleId, call.spaceId);
+  if (!ctx) throw new Error("找不到这通电话对应的会话");
+  const { runner, role } = ctx;
+  const config = getConfig();
+  const scope = scopeOf(runner, "通话");
+
+  // 1. 对方说了什么
+  let said = typed;
+  if (kind === "said") {
+    if (!audio?.length) throw new Error("没收到音频");
+    said = await transcribe(config, role, audio);
+    if (!said) {
+      /*
+       * 没听清就**什么都不做**。
+       *
+       * 别让角色说「我没听清」—— 多半是环境噪音被当成了说话（VAD 会误判），
+       * 这时候搭一句话反而莫名其妙。真没听清的话对方自己会再说一遍。
+       */
+      logDebug(scope, "这段没转出文字，跳过这一轮");
+      return;
+    }
+  }
+
+  // 2. 拼成这一轮的用户消息（带上「已接通多久」那个前缀）
+  const userName = resolveUser(config, role)?.name ?? "{{user}}";
+  const userMsg = callUserMessage({ kind, text: said, seconds, userName });
+
+  // 3. 上下文：和发短信**同一条历史**
+  const history = loadHistory(runner, role, call.sessionId, scope);
+  history.push({ role: "user", content: userMsg });
+  runner.history.set(call.sessionId, history);
+
+  // 4. 拼提示词。通话预设那份，没挑就用内置的默认通话预设
+  const built = await buildPrompt(config, role, resolveUser(config, role), history, "", {
+    mode: "call",
+    presetRef: role.call?.presetRef ?? "",
+  });
+  runner.history.set(call.sessionId, built.history);
+
+  // 5. 打模型，一句一句合成送回节点
+  const pieces = [];
+  const media = [];
+  for await (const part of runCallTurn({
+    config,
+    role,
+    messages: built.messages,
+    params: built.params,
+  })) {
+    if (part.text) pieces.push(part.text);
+    if (part.media?.length) media.push(...part.media);
+    if (part.audio) {
+      send("say", { text: part.text, audio: part.audio.toString("base64"), seq: part.seq });
+    } else if (part.text) {
+      // 合成失败：把文字也报上去，节点那边会记进日志，至少知道它想说什么
+      send("silent", { text: part.text });
+    }
+  }
+
+  const reply = pieces.join("");
+
+  // 6. 角色要挂断吗
+  const { hangUp, text: clean } = readHangUp(reply);
+
+  // 7. 存档 + 记忆 —— 和发短信走的是同一个函数
+  const space = ctx.space;
+  appendTurn(
+    call.sessionId,
+    { roleId: role.id, roleName: role.name, peer: call.peer },
+    [
+      { role: "user", content: userMsg },
+      { role: "assistant", content: clean },
+    ],
+    (msg) => logWarn(scope, msg)
+  );
+  const hist = runner.history.get(call.sessionId) ?? [];
+  hist.push({ role: "assistant", content: clean });
+  runner.history.set(call.sessionId, hist);
+  afterTurn(runner, space, config, role, { user: userMsg, assistant: clean });
+  noteTurn(userMsg, clean);
+
+  // 8. 通话里照样能转账、发卡片 —— 标记早被挑出来了，这里执行它们
+  if (media.length) {
+    logDebug(scope, `这一轮还有 ${media.length} 个要发出去的东西`);
+  }
+
+  if (hangUp) {
+    logInfo(scope, "角色自己挂了");
+    sendToNode("hangup", { reason: "角色挂断" });
+  }
+}
+
+/**
+ * 通话结束，收尾。
+ *
+ * 在聊天记录里留一条「通话结束 · 3 分 12 秒 · 8 轮对话」—— 翻记录时看得到
+ * 什么时候通过话。两个参考项目都这么做。
+ */
+export async function finishCall(getConfig, call) {
+  if (!call) return;
+  const ctx = await callContext(getConfig, call.roleId, call.spaceId);
+  if (!ctx) return;
+  const { runner, space } = ctx;
+  const line = callRecordLine(call);
+
+  appendTurn(
+    call.sessionId,
+    { roleId: call.roleId, roleName: call.roleName, peer: call.peer },
+    [{ role: "system", content: line }],
+    (msg) => logWarn(scopeOf(runner, "通话"), msg)
+  );
+
+  if (space) {
+    await sendSystem(runner, space, line, { what: "通话记录" }).catch(() => {});
+  }
 }

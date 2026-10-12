@@ -40,13 +40,15 @@ import {
 } from "./cloudbackup.js";
 import { driverFor } from "./cloud/index.js";
 import {
-  syncBridges,
-  restartBridges,
-  stopAllBridges,
-  getStatus,
+  finishCall,
   forgetHistory,
+  getStatus,
+  handleCallTurn,
   handleDollPush,
   igSessionFor,
+  restartBridges,
+  stopAllBridges,
+  syncBridges,
 } from "./imessage.js";
 // 共感娃娃：面板上「测试连接」和「校准」那两个按钮背后的东西（见 doll.js）
 import {
@@ -88,6 +90,8 @@ import { mcdAddresses } from "./mcd.js";
 import { mountTheater } from "./theater.js";
 import { mountPhone } from "./phonecheck.js";
 import { mountReminders } from "./reminderapi.js";
+import { mountCall, sendToNode } from "./callapi.js";
+import { endCall, markConnected } from "./callsession.js";
 import { mountCustomCss } from "./customcss.js";
 import {
   assistantGreeting,
@@ -328,9 +332,13 @@ app.use((req, res, next) => {
      * 照着查只会被带到查岗那边去。
      */
     const ownDoll = req.path === DOLL_PUSH_PATH;
+    // 通话节点那几条路径同理：它们也带 ?secret=，而且通话期间每秒好几次，
+    // 不豁免的话会把日志刷没（见 callapi.js 文件头）
+    const ownCall = req.path.startsWith("/facetime/");
     const looksLikeShot =
       !ownApi &&
       !ownDoll &&
+      !ownCall &&
       (/screenshot|phone/i.test(req.path) ||
         req.query?.secret != null ||
         req.headers["x-spy-secret"] != null);
@@ -1362,6 +1370,26 @@ mountPhone(app, loadConfig);
 mountReminders(app, loadConfig);
 // 控制台 / 查手机的自定义 CSS（data/custom-css.json，不走 /api/config）
 mountCustomCss(app);
+/*
+ * FaceTime 通话（见 callapi.js）。
+ *
+ * 那几个 hook 是桥：callapi.js 不 import imessage.js —— 那边 8000 多行，
+ * 而且会绕回来 import 配置。所以由这里把两边接上。
+ */
+mountCall(app, loadConfig, {
+  onUtterance: (args) => handleCallTurn(loadConfig, args),
+  onCallEnded: (call) => finishCall(loadConfig, call),
+  onEvent: async (type, body) => {
+    if (type === "connected") {
+      markConnected();
+    } else if (type === "ended") {
+      await finishCall(loadConfig, endCall(body?.reason ?? "对方挂断"));
+    } else if (type === "error") {
+      logWarn("通话", `节点报错：${body?.error ?? "没说原因"}`);
+      await finishCall(loadConfig, endCall(`出错：${body?.error ?? ""}`));
+    }
+  },
+});
 
 /**
  * 测试一台 MCP 服务器：连上、握手、列工具。前端传的是界面上那份（可能还没保存），

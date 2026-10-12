@@ -5409,6 +5409,269 @@ function AvatarField({ label, hint, file, fallback, onChange }) {
  *
  * 三个默认值是用户钉死的：小总结 6 轮、大总结默认关、大总结攒 8 个小总结。
  */
+/**
+ * 通话节点那一栏（全局配置，但摆在角色面板里）。
+ *
+ * 和共感娃娃那边同一个处理（RoleHugFields 里直接放 dollApi）：这台机器是
+ * 「谁去替角色开浏览器接电话」，和哪个角色在接无关，但用户是在配这个角色的
+ * 时候才想起要它 —— 让他为一个密钥跳到另一个面板再跳回来不值得。
+ *
+ * 配对码把「地址 + 密钥」打成一行 base64，用户复制粘贴到节点上跑一次就好 ——
+ * 比让他在两处分别填少一半出错机会。编码方式和节点那边的
+ * `facetime-node/src/config.mjs:makePairCode` 必须一致，改一边要改两边。
+ */
+function CallNodeSetup({ node, updateCallNode, ready }) {
+  const [copied, setCopied] = useState(false);
+
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const secret = String(node.secret ?? "").trim();
+  const pairCode = secret
+    ? btoa(
+        // 和节点那边 makePairCode 一样：{u, s} 两个短键，再 base64
+        // 用 encodeURIComponent 绕一下，btoa 不认非 ASCII
+        unescape(encodeURIComponent(JSON.stringify({ u: origin, s: secret })))
+      )
+    : "";
+
+  const roll = () => {
+    // 随机 24 个十六进制字符。够长到猜不出来，又短到能手敲
+    const bytes = new Uint8Array(12);
+    crypto.getRandomValues(bytes);
+    const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+    updateCallNode({ secret: hex, enabled: true });
+  };
+
+  return (
+    <div className="grid grid-cols-1 gap-4 rounded bg-sunken px-3 py-3">
+      <label className="flex items-start justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-ui text-ink">通话节点</span>
+          <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+            接电话要另外跑一个小程序 —— 它去开浏览器、加入 FaceTime、收发声音。
+            Uranus 自己不开浏览器（跑在小手机或安卓上时根本开不了），所以这个
+            功能天生是两半。
+            <br />
+            节点可以和 Uranus 在<strong className="text-ink-soft">同一台机器</strong>
+            上，也可以是你自己的电脑、或者另一台小鸡 —— 只要那台机器能装 Chrome。
+          </span>
+        </span>
+        <Switch
+          checked={Boolean(node.enabled)}
+          onChange={(v) => updateCallNode({ enabled: v })}
+          label="启用通话节点"
+        />
+      </label>
+
+      {node.enabled && (
+        <div className="grid grid-cols-1 gap-4">
+          <Field label="配对密钥" hint="节点靠它证明自己是谁。两边必须一样">
+            <div className="flex gap-2">
+              <input
+                className="input flex-1 font-mono"
+                value={secret}
+                placeholder="点右边生成一个"
+                onChange={(e) => updateCallNode({ secret: e.target.value })}
+              />
+              <button type="button" className="btn" onClick={roll}>
+                随机生成
+              </button>
+            </div>
+          </Field>
+
+          {pairCode ? (
+            <div className="grid grid-cols-1 gap-2">
+              <p className="text-meta leading-relaxed text-ink-faint">
+                在节点那台机器上跑一次下面这条命令（把配对码一起粘过去），然后
+                <code className="mx-1 font-mono text-ink-soft">node src/index.mjs</code>
+                就挂上了：
+              </p>
+              <div className="flex gap-2">
+                <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-base px-2 py-1 font-mono text-meta text-ink-soft">
+                  node src/index.mjs --pair {pairCode}
+                </code>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(`node src/index.mjs --pair ${pairCode}`);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1500);
+                  }}
+                >
+                  {copied ? "copied" : "复制"}
+                </button>
+              </div>
+              <p className="text-meta leading-relaxed text-ink-faint">
+                配对码里的地址是
+                <code className="mx-1 font-mono text-ink-soft">{origin}</code>
+                —— 这是你现在打开控制台用的那个地址。
+                <strong className="text-ink-soft">
+                  节点要是在别的机器上，这个地址得是它能访问到的
+                </strong>
+                ：用 localhost 打开控制台、节点却在另一台机器，就连不上。那种情况
+                在节点的 config.json 里把 uranus 改成这台机器的内网地址。
+              </p>
+            </div>
+          ) : (
+            <p className="text-meta leading-relaxed text-ink-faint">
+              先生成一个配对密钥，这儿就会出现一条可以直接复制的配对命令。
+            </p>
+          )}
+
+          {!ready && secret && (
+            <p className="text-meta leading-relaxed text-warn">开关还没打开，节点连不上来。</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 接 FaceTime 通话。
+ *
+ * 三层结构和「发语音」一样（role.jsx:1091 那条）：**开关在角色、节点在全局
+ * （config.callNode）、提示词在通话预设里**。
+ *
+ * 这一栏有个别处没有的前提：**还要另外跑一个通话节点**。那是一个独立的小程序，
+ * 跑在一台有浏览器的机器上 —— Uranus 自己跑在 CF Worker 或安卓上时起不了
+ * 浏览器，所以这个功能天生要拆成两半。开关底下那段话必须说清这件事，否则
+ * 用户打开开关、发了链接、什么都没发生，他不会知道是少了一个节点。
+ */
+export function RoleCallFields({ role, onGoto }) {
+  const { config, updateRole, updateCallNode } = useConfig();
+  const c = role.call ?? {};
+  // updateRole 是浅合并，每次都得把整个 call 摊开重写
+  const patch = (part) => updateRole(role.id, { call: { ...c, ...part } });
+
+  const node = config.callNode ?? {};
+  const nodeReady = Boolean(node.enabled && String(node.secret ?? "").trim());
+
+  // 通话预设是**第三批**（preset.mode === "call"），和线上线下那两批都不串
+  const presets = presetsFor(config, "call");
+  const staleRef = Boolean(c.presetRef) && !presets.some((p) => p.id === c.presetRef);
+
+  const vs = role.voiceSend ?? {};
+  const userName = resolveUser(config, role)?.name?.trim() || "用户";
+
+  return (
+    <div className="grid grid-cols-1 gap-6">
+      <label className="flex items-start justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-ui text-ink">接 FaceTime 通话</span>
+          <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+            {userName}在 iPhone 的 FaceTime 里创建一条链接、用 iMessage 发过来，
+            这个角色就能<strong className="text-ink-soft">用自己的声音接电话</strong>
+            —— 真的 FaceTime，接通之后全程在 iPhone 原生的通话界面里。
+            <br />
+            收到链接时会先问角色一句接不接，由它按人设自己决定 ——
+            正忙着、在生气、在开车，完全可以不接。
+          </span>
+        </span>
+        <Switch
+          checked={Boolean(c.enabled)}
+          onChange={(v) => patch({ enabled: v })}
+          label="启用接通话"
+        />
+      </label>
+
+      {c.enabled && (
+        <div className="grid grid-cols-1 gap-6">
+          <CallNodeSetup node={node} updateCallNode={updateCallNode} ready={nodeReady} />
+
+          {!vs.voiceId && (
+            <p className="text-meta leading-relaxed text-ink-faint">
+              这个角色还没填音色 ID（在上面「发语音」那一栏），通话里会用当前这家
+              TTS 的默认声音。<strong className="text-ink-soft">不用打开「发语音」</strong>
+              —— 那个管的是发语音条，和接电话是两件事，但两边用同一个音色。
+            </p>
+          )}
+
+          <Field
+            label="通话预设"
+            hint="留空 = 用内置的那份。它和线上、线下预设是三批独立的东西"
+          >
+            <select
+              className="select"
+              value={c.presetRef ?? ""}
+              onChange={(e) => patch({ presetRef: e.target.value })}
+            >
+              <option value="">内置的默认通话预设</option>
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name || "没名字的预设"}
+                </option>
+              ))}
+              {staleRef && <option value={c.presetRef}>⚠ 引用的预设已删除</option>}
+            </select>
+          </Field>
+          <p className="text-meta leading-relaxed text-ink-faint">
+            通话预设里那条「怎么打电话」管的是电话里该怎么说话：
+            <strong className="text-ink-soft">不写括号动作</strong>
+            （TTS 会把「（笑）」一个字一个字念出来）、不拆气泡、一段两到四句、
+            要有语气词。内置那份已经写好了，想改就新建一份通话预设。
+          </p>
+
+          <Field
+            label="通话用哪个模型"
+            hint="留空 = 用「模型 → 聊天 API」那条，和发短信同一个"
+          >
+            <ModelSelect
+              category="chat"
+              value={c.model}
+              onChange={(ref) => patch({ model: { ...(c.model ?? {}), ...ref } })}
+            />
+          </Field>
+          <p className="text-meta leading-relaxed text-ink-faint">
+            <strong className="text-ink-soft">这一项很值得单独配。</strong>
+            打电话对快慢敏感得多 —— 带思考过程的模型在电话里是灾难，对方要对着
+            听筒等上七八秒。这儿挑一个快的（不带 thinking 的），聊天那边照旧用好的。
+            挑的那个失效了会自动退回角色的聊天 API，只在日志里记一笔。
+          </p>
+
+          <label className="flex items-start justify-between gap-4 border-t border-line pt-6">
+            <span className="min-w-0">
+              <span className="block text-ui text-ink">允许打断</span>
+              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                角色说话的时候{userName}一开口，它就立刻停下来听 —— 更像真人。
+                代价是咳嗽一声、旁边有人说话都可能误触，把角色的话拦腰截断。
+                关掉的话角色会把一句说完才听。
+              </span>
+            </span>
+            <Switch
+              checked={c.bargeIn !== false}
+              onChange={(v) => patch({ bargeIn: v })}
+              label="允许打断"
+            />
+          </label>
+
+          <Field
+            label="多久没说话提醒一次"
+            hint="0 = 不提醒。默认 45 秒"
+          >
+            <input
+              type="number"
+              className="input"
+              min={0}
+              max={600}
+              value={c.silenceNotice ?? 45}
+              onChange={(e) => patch({ silenceNotice: Number(e.target.value) })}
+            />
+          </Field>
+          <p className="text-meta leading-relaxed text-ink-faint">
+            {userName}一直没出声时，会给模型递一句「已经 N 秒没说话了，可能是关了
+            麦克风」，让角色按人设自己反应 —— 问一句「还在吗」，或者自顾自说下去。
+            <strong className="text-ink-soft">不会替模型下结论</strong>
+            说对方关麦了：人可能只是在想事情、在找东西。
+            <br />
+            这期间{userName}在 iMessage 里打字发消息照样能接上 —— 你打字、它说话。
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RoleOfflineFields({ role, onGoto }) {
   const { config, updateRole } = useConfig();
   const off = role.offline ?? {};
@@ -7004,6 +7267,14 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
           badge={onOff(role.voiceSend?.enabled)}
         >
           <RoleVoiceFields role={role} onGoto={onGoto} />
+        </Fold>
+
+        <Fold
+          title="接 FaceTime 通话"
+          desc="用自己的声音接你从 iPhone 打来的电话"
+          badge={onOff(role.call?.enabled)}
+        >
+          <RoleCallFields role={role} onGoto={onGoto} />
         </Fold>
 
         <Fold
