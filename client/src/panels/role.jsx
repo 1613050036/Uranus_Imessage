@@ -5464,7 +5464,10 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
 
       {node.enabled && (
         <div className="grid grid-cols-1 gap-4">
-          <Field label="配对密钥" hint="节点靠它证明自己是谁。两边必须一样">
+          <Field
+            label="配对密钥"
+            hint="节点靠它证明自己是谁。生成完**看下面那串配对码**，要粘到节点上的是那个"
+          >
             <div className="flex gap-2">
               <input
                 className="input flex-1 font-mono"
@@ -5481,11 +5484,12 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
           {pairCode ? (
             <div className="grid grid-cols-1 gap-2">
               <p className="text-meta leading-relaxed text-ink-faint">
-                复制下面这串配对码，到节点那台机器的
+                <strong className="text-ink-soft">配对码</strong>
+                （不是上面那串密钥，是下面这一长串）。到节点那台机器的
                 <code className="mx-1 font-mono text-ink-soft">facetime-node</code>
                 目录里跑
                 <code className="mx-1 font-mono text-ink-soft">sudo bash pair.sh</code>
-                ，把它粘进去：
+                ，把它整个粘进去 —— 地址和密钥都在里面了：
               </p>
               <div className="flex gap-2">
                 <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-base px-2 py-1 font-mono text-meta text-ink-soft">

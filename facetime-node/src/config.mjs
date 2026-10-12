@@ -66,6 +66,19 @@ export function parsePairCode(code) {
   const raw = String(code ?? "").trim().replace(/\s+/g, "");
   if (!raw) throw new Error("配对码是空的");
 
+  /*
+   * 最常见的粘错：把**配对密钥**（24 位十六进制）当成配对码粘进来了。
+   * 两样东西在界面上挨着，不说清楚的话十有八九会拿错 —— 实测第一次就踩了。
+   *
+   * 报「解出来不是一段 JSON」对用户没有任何帮助，所以这里单独认一下。
+   */
+  if (/^[0-9a-f]{16,64}$/i.test(raw)) {
+    throw new Error(
+      "这是配对**密钥**，不是配对码。\n" +
+        "配对码在控制台里密钥输入框的**下面**，是一长串 base64（eyJ1Ijoi… 开头），右边有「复制」按钮。"
+    );
+  }
+
   let json;
   try {
     json = Buffer.from(raw, "base64").toString("utf8");
@@ -77,7 +90,10 @@ export function parsePairCode(code) {
   try {
     obj = JSON.parse(json);
   } catch {
-    throw new Error("这串配对码不对（解出来不是一段 JSON）");
+    throw new Error(
+      "这串配对码不对（解出来不是一段 JSON）。\n" +
+        "要粘的是控制台里那一长串 base64（eyJ1Ijoi… 开头），不是密钥、也不是网址。"
+    );
   }
 
   const uranus = String(obj.u ?? obj.uranus ?? "").trim();
