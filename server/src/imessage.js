@@ -10413,7 +10413,14 @@ async function speakAndRecord({ stream, ctx, config, role, call, userMsg, send, 
 
   if (hangUp) {
     logInfo(scope, "角色自己挂了");
-    sendToNode("hangup", { reason: "角色挂断" });
+    /*
+     * `drain` = 先把话说完再挂。
+     *
+     * `[结束通话]` 前面几乎总还有一句「再见」，而挂断指令走的是控制通道、
+     * 和送音频那条响应是两条独立的通道 —— 不等的话节点会在那句话还在播的
+     * 时候关掉浏览器，对方听到半个字然后断线。见 call.mjs:#drainSpeech。
+     */
+    sendToNode("hangup", { reason: "角色挂断", drain: true });
   }
 }
 

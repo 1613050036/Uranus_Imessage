@@ -1601,264 +1601,262 @@ export function SttSection() {
   const patch = (which, part) => updateSttApi({ [which]: { ...(stt[which] ?? {}), ...part } });
 
   return (
-    <Card title="语音转文字">
-      <div className="grid grid-cols-1 gap-6">
-        <p className="max-w-[72ch] text-body text-ink-soft">
-          把对方说的话转成文字。<strong className="text-ink">两处用得上</strong>
-          ：iMessage 里收到的语音条，以及 FaceTime 通话。
-          <br />
-          <span className="text-meta text-ink-faint">
-            和「角色 → 听音模型」不是一回事：那个是多模态模型，能听出语气、环境音、
-            几个人在说话；这个只管把话转成字，但
-            <strong className="text-ink-soft">快一个数量级、也便宜一个数量级</strong>
-            。配了这里之后，语音条和通话都优先走它；开了「情绪识别」的角色仍然走多模态
-            —— 那些东西专门的转写服务给不出来。
+    <Card title="语音转文字（STT）" desc="把对方说的话转成文字。全局一份，所有角色共用">
+      <Fold
+        title="三家转写服务"
+        badge={source || "未启用"}
+        desc={
+          source
+            ? `现在用的是 ${source}。密钥只写入本地 data.config.json，不进备份文件。`
+            : "一家都没开。语音条和通话会退回「角色 → 语音识别 API」那个多模态模型 —— 慢好几秒，而且它在「理解」而不是「转写」。"
+        }
+      >
+        <div className="grid grid-cols-1 gap-6">
+          <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
+            <strong className="text-ink-soft">两处用得上</strong>
+            ：iMessage 里收到的语音条，以及 FaceTime 通话。几家都开着时按
+            <strong className="text-ink-soft"> OpenAI 兼容 → Qwen3-ASR → 讯飞 </strong>
+            挑第一个凭据填齐的。
             <br />
-            三家都不配也能用，退回原来那条多模态的路，只是通话里会明显偏慢。
-          </span>
-        </p>
-
-        {source ? (
-          <p className="text-meta text-ink-faint">
-            现在生效的是<strong className="text-ink-soft"> {source} </strong>
-            （按下面的顺序挑第一个填齐的）。
+            和「角色 → 语音识别 API」不是一回事：那个是多模态模型，能听出语气、
+            环境音、几个人在说话；这个只管把话转成字，但
+            <strong className="text-ink-soft">快一个数量级、也便宜一个数量级</strong>
+            。语音条走哪条路由角色那边的「用哪个来转写」决定；
+            <strong className="text-ink-soft">FaceTime 通话永远优先走这里</strong>
+            —— 多模态那条在电话里又慢、还会把一句「嗯」扩写成一份报告。
           </p>
-        ) : (
-          <p className="text-meta text-warn">
-            三家都没配 —— 会退回「角色 → 听音模型」那条路。
-          </p>
-        )}
 
-        <div className="grid grid-cols-1 gap-4 border-t border-line pt-6">
-          <Field
-            label="说的是哪种语言"
-            hint="三家共用。选了之后转写服务就不再自己猜 —— 通话里切出来的片段又短又吵，让它猜很容易整段认成别的语言"
-          >
-            <select
-              className={inputCls}
-              value={stt.language ?? "zh"}
-              onChange={(e) => updateSttApi({ language: e.target.value })}
+          <div className="grid grid-cols-1 gap-4 border-t border-line pt-5">
+            <Field
+              label="说的是哪种语言"
+              hint="三家共用。选了之后转写服务就不再自己猜 —— 通话里切出来的片段又短又吵，让它猜很容易整段认成别的语言"
             >
-              {/* 和 server/src/stt.js:langHint、讯飞那张映射表对齐，加语言三处一起改 */}
-              <option value="zh">中文</option>
-              <option value="en">英文</option>
-              <option value="ja">日文</option>
-              <option value="ko">韩文</option>
-              <option value="yue">粤语</option>
-              <option value="ru">俄文</option>
-              <option value="fr">法文</option>
-              <option value="de">德文</option>
-              <option value="es">西班牙文</option>
-              <option value="">自动判断（不推荐）</option>
-            </select>
+              <select
+                className={inputCls}
+                value={stt.language ?? "zh"}
+                onChange={(e) => updateSttApi({ language: e.target.value })}
+              >
+                {/* 和 server/src/stt.js:defaultSttPrompt、讯飞那张映射表对齐，加语言三处一起改 */}
+                <option value="zh">中文</option>
+                <option value="en">英文</option>
+                <option value="ja">日文</option>
+                <option value="ko">韩文</option>
+                <option value="yue">粤语</option>
+                <option value="ru">俄文</option>
+                <option value="fr">法文</option>
+                <option value="de">德文</option>
+                <option value="es">西班牙文</option>
+                <option value="">自动判断（不推荐）</option>
+              </select>
+            </Field>
             <p className="text-meta leading-relaxed text-ink-faint">
               「自动」实测很不靠谱：一通全程中文的电话被接连认成冰岛语、韩语、俄语，
               转出来是一串读不通的外文，角色还得对着那串瞎回。只有真的经常换语言才选它。
             </p>
-          </Field>
-        </div>
+          </div>
 
-        <div className="grid grid-cols-1 gap-4 border-t border-line pt-6">
-          <label className="flex items-start justify-between gap-4">
-            <span className="min-w-0">
-              <span className="block text-ui text-ink">OpenAI 兼容（whisper）</span>
-              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-                最通用的一条，打的是
-                <code className="mx-1 font-mono text-ink-soft">/audio/transcriptions</code>
-                —— 绝大多数中转站都支持，你现有的密钥很可能直接能用。
-                <strong className="text-ink-soft">三家都是云服务，都不用自己部署模型</strong>
-                （whisper-1 只是 OpenAI 那个模型的名字）。
-                <br />
-                <strong className="text-warn">但说中文的话别用这条</strong>
-                ：whisper 的中文明显不如下面那个 Qwen3-ASR（实测把「怎么」听成
-                「三者」、两秒半的话只出三个字）。这条适合英文，或者你手头只有
-                中转站密钥的时候。
-                <br />
-                要用的话最推荐 <strong className="text-ink-soft">Groq</strong>
-                ：跑 whisper 快得出名（比实时快几十倍），还有免费额度。地址填
-                <code className="mx-1 font-mono text-ink-soft">https://api.groq.com/openai/v1</code>
-                ，模型填
-                <code className="mx-1 font-mono text-ink-soft">whisper-large-v3-turbo</code>
-                ，密钥是控制台里
-                <code className="mx-1 font-mono text-ink-soft">gsk_</code>
-                开头那个。
+          <div className="grid grid-cols-1 gap-4 border-t border-line pt-5">
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-ui text-ink">OpenAI 兼容（whisper）</span>
+                <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                  最通用的一条，打的是
+                  <code className="mx-1 font-mono text-ink-soft">/audio/transcriptions</code>
+                  —— 绝大多数中转站都支持，你现有的密钥很可能直接能用。
+                  <strong className="text-ink-soft">三家都是云服务，都不用自己部署模型</strong>
+                  （whisper-1 只是 OpenAI 那个模型的名字）。
+                  <br />
+                  <strong className="text-warn">但说中文的话别用这条</strong>
+                  ：whisper 的中文明显不如下面那个 Qwen3-ASR（实测把「怎么」听成
+                  「三者」、两秒半的话只出三个字）。这条适合英文，或者你手头只有
+                  中转站密钥的时候。
+                  <br />
+                  要用的话最推荐 <strong className="text-ink-soft">Groq</strong>
+                  ：跑 whisper 快得出名（比实时快几十倍），还有免费额度。地址填
+                  <code className="mx-1 font-mono text-ink-soft">https://api.groq.com/openai/v1</code>
+                  ，模型填
+                  <code className="mx-1 font-mono text-ink-soft">whisper-large-v3-turbo</code>
+                  ，密钥是控制台里
+                  <code className="mx-1 font-mono text-ink-soft">gsk_</code>
+                  开头那个。
+                </span>
               </span>
-            </span>
-            <Switch
-              checked={Boolean(oa.enabled)}
-              onChange={(v) => patch("openai", { enabled: v })}
-              label="启用 OpenAI 兼容转写"
-            />
-          </label>
-          {oa.enabled && (
-            <div className="grid grid-cols-1 gap-4">
-              <Field label="密钥">
-                <input
-                  className="input font-mono"
-                  type="password"
-                  value={oa.key ?? ""}
-                  onChange={(e) => patch("openai", { key: e.target.value })}
-                  placeholder="sk-…"
-                />
-              </Field>
-              <Field label="接口地址" hint="Groq 填 https://api.groq.com/openai/v1。留空 = OpenAI 官方">
-                <input
-                  className="input font-mono"
-                  value={oa.url ?? ""}
-                  onChange={(e) => patch("openai", { url: e.target.value })}
-                  placeholder="https://api.groq.com/openai/v1"
-                />
-              </Field>
-              <Field
-                label="模型"
-                hint="说中文建议 whisper-large-v3（不带 turbo）—— turbo 快一点，但中文明显更容易听错。OpenAI 官方：whisper-1"
-              >
-                <input
-                  className="input font-mono"
-                  value={oa.model ?? ""}
-                  onChange={(e) => patch("openai", { model: e.target.value })}
-                  placeholder="whisper-large-v3"
-                />
-              </Field>
-              <Field
-                label="提示词（可选）"
-                hint="留空就好 —— 说中文时会自动给一句，让它输出简体（whisper 默认偏繁体）"
-              >
-                <input
-                  className="input"
-                  value={oa.prompt ?? ""}
-                  onChange={(e) => patch("openai", { prompt: e.target.value })}
-                  placeholder="留空 = 自动。要填就填人名、地名这类专有名词"
-                />
-              </Field>
-              <p className="text-meta leading-relaxed text-ink-faint">
-                填了提示词会<strong className="text-ink-soft">顶掉那句自动的</strong>
-                ，所以要填的话自己也写成简体。别写太长太具体 ——
-                这段话会被当成上文，写进去的词它会倾向于硬塞进转写结果里。
-              </p>
-            </div>
-          )}
-        </div>
+              <Switch
+                checked={Boolean(oa.enabled)}
+                onChange={(v) => patch("openai", { enabled: v })}
+                label="启用 OpenAI 兼容转写"
+              />
+            </label>
+            {oa.enabled && (
+              <div className="grid grid-cols-1 gap-4">
+                <Field label="密钥">
+                  <input
+                    className={`${inputCls} font-mono`}
+                    type="password"
+                    value={oa.key ?? ""}
+                    onChange={(e) => patch("openai", { key: e.target.value })}
+                    placeholder="sk-…"
+                  />
+                </Field>
+                <Field label="接口地址" hint="Groq 填 https://api.groq.com/openai/v1。留空 = OpenAI 官方">
+                  <input
+                    className={`${inputCls} font-mono`}
+                    value={oa.url ?? ""}
+                    onChange={(e) => patch("openai", { url: e.target.value })}
+                    placeholder="https://api.groq.com/openai/v1"
+                  />
+                </Field>
+                <Field
+                  label="模型"
+                  hint="说中文建议 whisper-large-v3（不带 turbo）—— turbo 快一点，但中文明显更容易听错。OpenAI 官方：whisper-1"
+                >
+                  <input
+                    className={`${inputCls} font-mono`}
+                    value={oa.model ?? ""}
+                    onChange={(e) => patch("openai", { model: e.target.value })}
+                    placeholder="whisper-large-v3"
+                  />
+                </Field>
+                <Field
+                  label="提示词（可选）"
+                  hint="留空就好 —— 说中文时会自动给一句，让它输出简体（whisper 默认偏繁体）"
+                >
+                  <input
+                    className={inputCls}
+                    value={oa.prompt ?? ""}
+                    onChange={(e) => patch("openai", { prompt: e.target.value })}
+                    placeholder="留空 = 自动。要填就填人名、地名这类专有名词"
+                  />
+                </Field>
+                <p className="text-meta leading-relaxed text-ink-faint">
+                  填了提示词会<strong className="text-ink-soft">顶掉那句自动的</strong>
+                  ，所以要填的话自己也写成简体。别写太长太具体 ——
+                  这段话会被当成上文，写进去的词它会倾向于硬塞进转写结果里。
+                </p>
+              </div>
+            )}
+          </div>
 
-        <div className="grid grid-cols-1 gap-4 border-t border-line pt-6">
-          <label className="flex items-start justify-between gap-4">
-            <span className="min-w-0">
-              <span className="block text-ui text-ink">阿里云 Qwen3-ASR</span>
-              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-                <strong className="text-ink-soft">中文最推荐这个</strong>
-                ：专职的中文语音识别，比 whisper 准不少，有免费额度。
-                去阿里云百炼开通之后拿一个
-                <code className="mx-1 font-mono text-ink-soft">sk-</code>
-                开头的密钥。
+          <div className="grid grid-cols-1 gap-4 border-t border-line pt-5">
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-ui text-ink">阿里云 Qwen3-ASR</span>
+                <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                  <strong className="text-ink-soft">中文最推荐这个</strong>
+                  ：专职的中文语音识别，比 whisper 准不少，有免费额度。
+                  去阿里云百炼开通之后拿一个
+                  <code className="mx-1 font-mono text-ink-soft">sk-</code>
+                  开头的密钥。
+                </span>
               </span>
-            </span>
-            <Switch
-              checked={Boolean(qw.enabled)}
-              onChange={(v) => patch("qwen", { enabled: v })}
-              label="启用 Qwen 转写"
-            />
-          </label>
-          {qw.enabled && (
-            <div className="grid grid-cols-1 gap-4">
-              <Field label="密钥">
-                <input
-                  className="input font-mono"
-                  type="password"
-                  value={qw.key ?? ""}
-                  onChange={(e) => patch("qwen", { key: e.target.value })}
-                  placeholder="sk-…"
-                />
-              </Field>
-              <Field
-                label="接口地址"
-                hint="留空 = 阿里云官方（dashscope.aliyuncs.com/compatible-mode/v1）。填中转站的话写到 /v1 为止"
-              >
-                <input
-                  className="input font-mono"
-                  value={qw.url ?? ""}
-                  onChange={(e) => patch("qwen", { url: e.target.value })}
-                  placeholder="留空就好"
-                />
-              </Field>
-              <Field
-                label="模型"
-                hint="只能填 qwen3-asr-flash 系列 —— 别的 Qwen 语音模型走不了这条 OpenAI 兼容接口"
-              >
-                <input
-                  className="input font-mono"
-                  value={qw.model ?? ""}
-                  onChange={(e) => patch("qwen", { model: e.target.value })}
-                  placeholder="qwen3-asr-flash"
-                />
-              </Field>
-              <Field
-                label="专有名词（可选）"
-                hint="人名、地名、游戏名这些 —— 它会照着认。写词，别写句子"
-              >
-                <input
-                  className="input"
-                  value={qw.prompt ?? ""}
-                  onChange={(e) => patch("qwen", { prompt: e.target.value })}
-                  placeholder="例如：Charlie、niki、南宁"
-                />
-              </Field>
-              <p className="text-meta leading-relaxed text-ink-faint">
-                这一栏走的是它的「实体词表」，
-                <strong className="text-ink-soft">只认词、不认指令</strong>
-                —— 写「请用简体输出」那种话没用（它本来就输出简体）。
-                语言用上面那个「说的是哪种语言」，不用写在这儿。
-              </p>
-            </div>
-          )}
-        </div>
+              <Switch
+                checked={Boolean(qw.enabled)}
+                onChange={(v) => patch("qwen", { enabled: v })}
+                label="启用 Qwen 转写"
+              />
+            </label>
+            {qw.enabled && (
+              <div className="grid grid-cols-1 gap-4">
+                <Field label="密钥">
+                  <input
+                    className={`${inputCls} font-mono`}
+                    type="password"
+                    value={qw.key ?? ""}
+                    onChange={(e) => patch("qwen", { key: e.target.value })}
+                    placeholder="sk-…"
+                  />
+                </Field>
+                <Field
+                  label="接口地址"
+                  hint="留空 = 阿里云官方（dashscope.aliyuncs.com/compatible-mode/v1）。填中转站的话写到 /v1 为止"
+                >
+                  <input
+                    className={`${inputCls} font-mono`}
+                    value={qw.url ?? ""}
+                    onChange={(e) => patch("qwen", { url: e.target.value })}
+                    placeholder="留空就好"
+                  />
+                </Field>
+                <Field
+                  label="模型"
+                  hint="只能填 qwen3-asr-flash 系列 —— 别的 Qwen 语音模型走不了这条 OpenAI 兼容接口"
+                >
+                  <input
+                    className={`${inputCls} font-mono`}
+                    value={qw.model ?? ""}
+                    onChange={(e) => patch("qwen", { model: e.target.value })}
+                    placeholder="qwen3-asr-flash"
+                  />
+                </Field>
+                <Field
+                  label="专有名词（可选）"
+                  hint="人名、地名、游戏名这些 —— 它会照着认。写词，别写句子"
+                >
+                  <input
+                    className={inputCls}
+                    value={qw.prompt ?? ""}
+                    onChange={(e) => patch("qwen", { prompt: e.target.value })}
+                    placeholder="例如：Charlie、niki、南宁"
+                  />
+                </Field>
+                <p className="text-meta leading-relaxed text-ink-faint">
+                  这一栏走的是它的「实体词表」，
+                  <strong className="text-ink-soft">只认词、不认指令</strong>
+                  —— 写「请用简体输出」那种话没用（它本来就输出简体）。
+                  语言用上面那个「说的是哪种语言」，不用写在这儿。
+                </p>
+              </div>
+            )}
+          </div>
 
-        <div className="grid grid-cols-1 gap-4 border-t border-line pt-6">
-          <label className="flex items-start justify-between gap-4">
-            <span className="min-w-0">
-              <span className="block text-ui text-ink">讯飞语音听写</span>
-              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-                国内节点、中文最好、延迟最低。要去讯飞开放平台建一个「语音听写」应用，
-                拿三个凭据。
-                <br />
-                <strong className="text-ink-soft">机器时间要准</strong>
-                ：它的签名只接受前后 5 分钟内的时间戳，时间不对会一直报鉴权失败。
+          <div className="grid grid-cols-1 gap-4 border-t border-line pt-5">
+            <label className="flex items-start justify-between gap-4">
+              <span className="min-w-0">
+                <span className="block text-ui text-ink">讯飞语音听写</span>
+                <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                  国内节点、中文最好、延迟最低。要去讯飞开放平台建一个「语音听写」应用，
+                  拿三个凭据。
+                  <br />
+                  <strong className="text-ink-soft">机器时间要准</strong>
+                  ：它的签名只接受前后 5 分钟内的时间戳，时间不对会一直报鉴权失败。
+                </span>
               </span>
-            </span>
-            <Switch
-              checked={Boolean(xf.enabled)}
-              onChange={(v) => patch("xfyun", { enabled: v })}
-              label="启用讯飞转写"
-            />
-          </label>
-          {xf.enabled && (
-            <div className="grid grid-cols-1 gap-4">
-              <Field label="APPID">
-                <input
-                  className="input font-mono"
-                  value={xf.appId ?? ""}
-                  onChange={(e) => patch("xfyun", { appId: e.target.value })}
-                />
-              </Field>
-              <Field label="APIKey">
-                <input
-                  className="input font-mono"
-                  type="password"
-                  value={xf.apiKey ?? ""}
-                  onChange={(e) => patch("xfyun", { apiKey: e.target.value })}
-                />
-              </Field>
-              <Field label="APISecret">
-                <input
-                  className="input font-mono"
-                  type="password"
-                  value={xf.apiSecret ?? ""}
-                  onChange={(e) => patch("xfyun", { apiSecret: e.target.value })}
-                />
-              </Field>
-            </div>
-          )}
+              <Switch
+                checked={Boolean(xf.enabled)}
+                onChange={(v) => patch("xfyun", { enabled: v })}
+                label="启用讯飞转写"
+              />
+            </label>
+            {xf.enabled && (
+              <div className="grid grid-cols-1 gap-4">
+                <Field label="APPID">
+                  <input
+                    className={`${inputCls} font-mono`}
+                    value={xf.appId ?? ""}
+                    onChange={(e) => patch("xfyun", { appId: e.target.value })}
+                  />
+                </Field>
+                <Field label="APIKey">
+                  <input
+                    className={`${inputCls} font-mono`}
+                    type="password"
+                    value={xf.apiKey ?? ""}
+                    onChange={(e) => patch("xfyun", { apiKey: e.target.value })}
+                  />
+                </Field>
+                <Field label="APISecret">
+                  <input
+                    className={`${inputCls} font-mono`}
+                    type="password"
+                    value={xf.apiSecret ?? ""}
+                    onChange={(e) => patch("xfyun", { apiSecret: e.target.value })}
+                  />
+                </Field>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      </Fold>
     </Card>
   );
 }

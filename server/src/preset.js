@@ -1161,7 +1161,13 @@ export const DEFAULT_CALL_HOWTO = [
   "",
   "### 挂电话",
   "",
-  "想结束通话就在回复里写 [结束通话]。该说的再见先说完，再写这个标记。",
+  "**你可以自己挂电话** —— 想结束通话就在回复里写 [结束通话]。",
+  "",
+  "- 该说的话先说完，把标记写在**最后面**：「那我先去忙了，晚点聊。[结束通话]」",
+  "  这句再见会正常说出口，说完才真的断线。",
+  "- 什么时候该挂，按人设自己判断：说完事了、被惹到了、那边一直没人说话、",
+  "  手头真有事要走。不用等对方同意，也不用问「那我挂了？」再等一轮。",
+  "- 别为了挂而挂。聊得正好的时候硬收尾，比不挂更出戏。",
 ].join("\n");
 
 export const DEFAULT_USER_CHOICE = [
@@ -1531,6 +1537,16 @@ function normalizeEntries(list, mode = "online") {
     if (kind === "memory") entry.content = DEFAULT_MEMORY_ENTRY;
     if (kind === "userChoice") entry.content = DEFAULT_USER_CHOICE;
     if (kind === "onlineHistory") entry.content = DEFAULT_ONLINE_HISTORY;
+    /*
+     * 漏了这一行的后果很隐蔽，而且踩到了：新建一份通话预设时「怎么打电话」
+     * 那条**条目在、开关也开着、正文是 undefined** —— 于是整段「电话里怎么
+     * 说话」压根没进提示词（里面包括「想挂电话就写 [结束通话]」那一段），
+     * 角色照着发短信的路子念括号、也不知道自己能挂电话。
+     *
+     * 上面那个循环（改已有条目）早就处理了 callHowto，只有这个「补齐缺的」
+     * 分支漏了，所以老预设正常、新建的坏 —— 最难想到的那种。
+     */
+    if (kind === "callHowto") entry.content = DEFAULT_CALL_HOWTO;
     out.push(entry);
   }
 

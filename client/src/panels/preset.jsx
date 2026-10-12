@@ -134,8 +134,17 @@ export function PresetPanel({ onGoto }) {
               没给角色选预设时，用排在第一份的那个。去「角色 → 单独配置」里挑。
             </p>
             <p className="text-meta leading-relaxed text-ink-faint">
-              每份预设分线上和线下两种，在它的「基本信息」里切。线上给 iMessage
-              聊天用，线下给「线下模式」里演剧情用 —— 角色两边各选一份，两批不串。
+              每份预设分<strong className="text-ink-soft">线上 / 线下 / 通话</strong>
+              三种，在它的「基本信息」里切：线上给 iMessage 聊天用，线下给「线下模式」
+              里演剧情用，通话给接 FaceTime 用。
+              <strong className="text-ink-soft">三批互不相串</strong>
+              —— 角色在「单独配置」「线下模式」「接 FaceTime 通话」里各选一份。
+              <br />
+              通话预设里多一条
+              <strong className="text-ink-soft">「怎么打电话」</strong>
+              ：电话里不写括号动作、不拆气泡、一段两到四句，以及
+              <strong className="text-ink-soft">角色想挂电话就写 [结束通话]</strong>
+              。内置那份已经写好了，想改措辞就新建一份通话预设改它。
             </p>
           </div>
         ) : (

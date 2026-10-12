@@ -1,7 +1,7 @@
 {
   "name": "uranus-imessage",
   "private": true,
-  "version": "1.19.3",
+  "version": "1.19.4",
   "workspaces": [
     "server",
     "client"
@@ -10,6 +10,7 @@
     "dev:sandbox": "node scripts/dev-sandbox.mjs",
     "sync:cliche": "node scripts/sync-cliche.mjs",
     "build": "npm --workspace client run build",
-    "start": "node server/src/index.js"
+    "start": "node server/src/index.js",
+    "test": "node scripts/test-all.mjs"
   }
 }

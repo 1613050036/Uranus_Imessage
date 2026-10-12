@@ -73,8 +73,30 @@ function extractFn(name, kind = "function") {
   // `export function enqueue(` 里也含 `function enqueue(`，所以不用特别处理 export
   const at = IM_SRC.indexOf(head);
   assert.ok(at >= 0, `在 imessage.js 里找不到 ${name}`);
+
+  /*
+   * ── 先跳过参数表，再去找函数体的那个 `{` ──
+   *
+   * 原来是直接找 `at` 之后第一个 `{` 当函数体开头。那在参数表里有**默认值
+   * 对象**时是错的：`describeVoices(…, opts = {})` 的第一个 `{` 是那个
+   * `{}`，它立刻又闭合、depth 归零，于是"抠出来的函数"只有一行签名（78 个
+   * 字符）。后面那些 `assert.match(fn, /await Promise\.all\(/)` 自然全失配 ——
+   * 而代码本身完全是对的。
+   *
+   * 所以先按括号配平走完参数表，从它后面再找函数体。
+   */
+  let paren = 0;
+  let i = IM_SRC.indexOf("(", at);
+  for (; i < IM_SRC.length; i += 1) {
+    if (IM_SRC[i] === "(") paren += 1;
+    else if (IM_SRC[i] === ")") {
+      paren -= 1;
+      if (paren === 0) break;
+    }
+  }
+
   let depth = 0;
-  let i = IM_SRC.indexOf("{", at);
+  i = IM_SRC.indexOf("{", i);
   for (; i < IM_SRC.length; i += 1) {
     if (IM_SRC[i] === "{") depth += 1;
     else if (IM_SRC[i] === "}") {

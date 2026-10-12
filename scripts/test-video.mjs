@@ -476,8 +476,18 @@ console.log("\n[3. release 的每一条路]");
     assert.ok(at > 0, "找不到三条 describe 的调用处");
     const around = IM_SRC.slice(at - 700, at);
     assert.match(around, /识别完|放掉|撒手/);
-    // 而且视频那一路必须真的在这一组里，不然它的 finally 压根跑不到
-    assert.match(IM_SRC.slice(at, at + 400), /describeVideos\(/);
+    /*
+     * 视频那一路必须真的在这一组里，不然它的 finally 压根跑不到。
+     *
+     * 截到**这一组的收尾** `]);`，而不是「往后数 400 个字符」—— 那个写法
+     * 被 describeVoices 多出来的几个参数（sttApi / rich / source）顶过了
+     * 400，于是断言失败，而代码其实完全是对的。锚结构，不锚长度。
+     */
+    const group = IM_SRC.slice(at, IM_SRC.indexOf("]);", at));
+    assert.match(group, /describeVideos\(/);
+    // 顺带把另外两路也钉上：这一组的意义就是三条同时跑
+    assert.match(group, /describeImages\(/);
+    assert.match(group, /describeVoices\(/);
   });
 }
 

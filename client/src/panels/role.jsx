@@ -5442,8 +5442,9 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
     updateCallNode({ secret: hex, enabled: true });
   };
 
+  // 嵌在角色栏里的一块设置：边框 + bg-sunken，和全站其他嵌套盒子一致
   return (
-    <div className="grid grid-cols-1 gap-4 rounded bg-sunken px-3 py-3">
+    <div className="grid grid-cols-1 gap-4 border border-line bg-sunken p-6">
       <label className="flex items-start justify-between gap-4">
         <span className="min-w-0">
           <span className="block text-ui text-ink">通话节点</span>
@@ -5467,18 +5468,18 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
         <div className="grid grid-cols-1 gap-4">
           <Field
             label="配对密钥"
-            hint="节点靠它证明自己是谁。生成完**看下面那串配对码**，要粘到节点上的是那个"
+            hint="节点靠它证明自己是谁。生成完看下面那串配对码，要粘到节点上的是那个"
           >
-            <div className="flex gap-2">
+            <div className="flex items-end gap-2">
               <input
-                className="input flex-1 font-mono"
+                className={`${inputCls} min-w-0 flex-1 font-mono`}
                 value={secret}
                 placeholder="点右边生成一个"
                 onChange={(e) => updateCallNode({ secret: e.target.value })}
               />
-              <button type="button" className="btn" onClick={roll}>
+              <Button variant="outline" onClick={roll}>
                 随机生成
-              </button>
+              </Button>
             </div>
           </Field>
 
@@ -5492,21 +5493,34 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
                 <code className="mx-1 font-mono text-ink-soft">sudo bash pair.sh</code>
                 ，把它整个粘进去 —— 地址和密钥都在里面了：
               </p>
-              <div className="flex gap-2">
-                <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-base px-2 py-1 font-mono text-meta text-ink-soft">
+              {/* 边框和底色跟 CodeBlock 一致（ui.jsx）—— 这一串也是要复制的东西 */}
+              <div className="flex items-start gap-2">
+                <code
+                  className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap border border-line bg-paper px-3.5 py-3 font-mono text-meta text-ink-soft"
+                  data-scroll
+                >
                   {pairCode}
                 </code>
-                <button
-                  type="button"
-                  className="btn"
+                <Button
+                  variant="outline"
                   onClick={() => {
                     navigator.clipboard?.writeText(pairCode);
                     setCopied(true);
                     setTimeout(() => setCopied(false), 1500);
                   }}
                 >
-                  {copied ? "copied" : "复制"}
-                </button>
+                  {copied ? (
+                    <>
+                      <Check size={14} className="text-good" />
+                      已复制
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={14} />
+                      复制
+                    </>
+                  )}
+                </Button>
               </div>
               <p className="text-meta leading-relaxed text-ink-faint">
                 配完再跑一次
@@ -5622,7 +5636,7 @@ export function RoleCallFields({ role, onGoto }) {
             hint="留空 = 用内置的那份。它和线上、线下预设是三批独立的东西"
           >
             <select
-              className="select"
+              className={inputCls}
               value={c.presetRef ?? ""}
               onChange={(e) => patch({ presetRef: e.target.value })}
             >
@@ -5777,20 +5791,17 @@ export function RoleCallFields({ role, onGoto }) {
             />
           </label>
 
-          <Field
+          {/* 数字一律走 NumberField —— 和全站其他数值项同一个窄框 + 单位后缀 */}
+          <NumberField
             label="接通后等多久再开口"
-            hint="毫秒。默认 1500。还吞字就往上调（2000～2500）"
-          >
-            <input
-              type="number"
-              className="input"
-              min={0}
-              max={10000}
-              step={100}
-              value={c.openingDelayMs ?? 1500}
-              onChange={(e) => patch({ openingDelayMs: Number(e.target.value) })}
-            />
-          </Field>
+            value={c.openingDelayMs ?? 1500}
+            min={0}
+            max={10000}
+            step={100}
+            onChange={(v) => patch({ openingDelayMs: v })}
+            hint="默认 1500。还吞字就往上调（2000～2500）"
+            suffix="毫秒"
+          />
           <p className="text-meta leading-relaxed text-ink-faint">
             这<strong className="text-ink-soft">不是</strong>为了装得像真人顿一下，是技术上必须的：
             接通那一刻语音通道还没热起来（编码器可能还在静音抑制里、对方手机上的
@@ -5801,19 +5812,16 @@ export function RoleCallFields({ role, onGoto }) {
             调到 0 = 接通立刻说，大概率吞字。
           </p>
 
-          <Field
+          <NumberField
             label="多久没说话提醒一次"
+            value={c.silenceNotice ?? 45}
+            min={0}
+            max={600}
+            step={5}
+            onChange={(v) => patch({ silenceNotice: v })}
             hint="0 = 不提醒。默认 45 秒"
-          >
-            <input
-              type="number"
-              className="input"
-              min={0}
-              max={600}
-              value={c.silenceNotice ?? 45}
-              onChange={(e) => patch({ silenceNotice: Number(e.target.value) })}
-            />
-          </Field>
+            suffix="秒"
+          />
           <p className="text-meta leading-relaxed text-ink-faint">
             {userName}一直没出声时，会给模型递一句「已经 N 秒没说话了，可能是关了
             麦克风」，让角色按人设自己反应 —— 问一句「还在吗」，或者自顾自说下去。

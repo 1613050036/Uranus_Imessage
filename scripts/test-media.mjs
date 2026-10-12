@@ -907,7 +907,15 @@ console.log("\n[配置：默认值]");
 
   const role = normalizeConfig({ roles: [{ name: "小柚" }] }).roles[0];
   assert.equal("language" in role, false);
-  assert.deepEqual(role.voiceSend, { enabled: false, voiceId: "" });
+  /*
+   * voiceSend 后来多了 language / accent 两项（ElevenLabs 的 language_code
+   * 和口音，见 config.js:normalizeVoiceSend）。这条断言当时没跟着改，于是
+   * 整个 test-media 一直是红的 —— 和它要测的东西完全无关。
+   *
+   * 仍然用 deepEqual 而不是逐项 equal：这条断言的价值正在于「字段清单变了
+   * 要有人知道」，换成松一点的判断就等于把它废了。
+   */
+  assert.deepEqual(role.voiceSend, { enabled: false, voiceId: "", language: "", accent: "" });
   assert.deepEqual(role.imageGen, { enabled: false, img2img: false, refs: [] });
   assert.deepEqual(role.stickerSend, { enabled: false, blacklist: [], noRepeat: 5 });
   ok("角色上三块默认值（三个功能默认关、连着 5 次不重样；language 已整个删掉）");

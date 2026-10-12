@@ -37,6 +37,7 @@ import {
   FIXED_KINDS,
 } from "../server/src/preset.js";
 import { pickSttSource } from "../server/src/stt.js";
+import { normalizeConfig } from "../server/src/config.js";
 
 let pass = 0;
 let fail = 0;
@@ -125,6 +126,52 @@ group("resolvePreset：三种玩法各看各的引用字段");
   // 这一批一份都没有 → null（服务端那边会兜底用内置的默认预设）
   const onlyOnline = { presets: [{ id: "on1", mode: "online" }] };
   check("一份通话预设都没有时返回 null", resolvePreset(onlyOnline, role, "call"), null);
+}
+
+group("新建一份通话预设：条目齐、正文不空（踩过两次的坑）");
+{
+  /*
+   * 这是「静默失效」那一类里最难发现的：条目在、开关也开着、**正文是
+   * undefined** —— 于是整段「电话里怎么说话」（里面包括「想挂电话就写
+   * [结束通话]」）压根没进提示词，角色照着发短信的路子念括号、也不知道
+   * 自己能挂电话。界面上看起来一切正常。
+   *
+   * `normalizeEntries` 有两个分支：改已有条目的那个一直是对的，而
+   * 「补齐缺的固定条目」那个循环漏了 callHowto —— 所以**老预设正常、
+   * 新建的坏**，最想不到的那种。
+   */
+  const c = normalizeConfig({ presets: [{ id: "p", name: "我的通话预设", mode: "call", entries: [] }] });
+  const p = c.presets[0];
+  check("mode 留住了", p.mode, "call");
+  check(
+    "条目清单和服务端那张表一致",
+    p.entries.map((e) => e.kind),
+    CALL_FIXED_KINDS
+  );
+  const howto = p.entries.find((e) => e.kind === "callHowto");
+  check("怎么打电话这条是开着的", howto?.enabled, true);
+  check("而且正文不是空的", Boolean(howto?.content?.trim()), true);
+  check("里面有「别写括号动作」那条", /括号/.test(howto?.content ?? ""), true);
+  // 角色能自己挂电话这件事，全靠这段话告诉它
+  check("里面有挂电话那一段", /\[结束通话\]/.test(howto?.content ?? ""), true);
+}
+{
+  // 用户改过的正文不许被默认值盖回去
+  const c = normalizeConfig({
+    presets: [
+      { id: "p", mode: "call", entries: [{ kind: "callHowto", enabled: true, content: "我自己写的" }] },
+    ],
+  });
+  const howto = c.presets[0].entries.find((e) => e.kind === "callHowto");
+  check("改过的留着", howto.content, "我自己写的");
+}
+{
+  // 明确清空（填了空串）也该留着 —— 那是「我不要这段」
+  const c = normalizeConfig({
+    presets: [{ id: "p", mode: "call", entries: [{ kind: "callHowto", enabled: true, content: "" }] }],
+  });
+  const howto = c.presets[0].entries.find((e) => e.kind === "callHowto");
+  check("清空了就是空的，不补默认", howto.content, "");
 }
 
 group("固定条目的中文名：服务端列的每一个都得有");

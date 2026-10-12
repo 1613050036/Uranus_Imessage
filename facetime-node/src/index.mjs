@@ -126,7 +126,13 @@ async function runServe() {
     if (cmd.type === "hangup") {
       if (!call) return;
       logInfo("节点", `Uranus 让挂断：${cmd.reason ?? ""}`);
-      call.hangUp(cmd.reason ?? "Uranus 叫停");
+      /*
+       * `drain` 由 Uranus 那边给：角色自己写 `[结束通话]` 时是 true
+       * （前面通常还有一句「再见」要说完），控制台上手动点挂断是 false。
+       * 不 await —— 它最多要等三十秒，这个回调不能被堵住（期间还要能收
+       * 别的指令、还要能处理对方先挂断）。
+       */
+      void call.hangUp(cmd.reason ?? "Uranus 叫停", { drain: Boolean(cmd.drain) });
       return;
     }
 

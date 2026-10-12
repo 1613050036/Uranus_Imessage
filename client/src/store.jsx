@@ -585,10 +585,11 @@ function defaultFormatChildren() {
  */
 function blankPreset(mode = "online") {
   const offline = mode === "offline";
+  const call = mode === "call";
   return {
     id: newId("ps"),
     name: "",
-    mode: offline ? "offline" : "online",
+    mode: offline ? "offline" : call ? "call" : "online",
     params: {
       temperature: 0.7,
       topP: 1,
@@ -610,6 +611,15 @@ function blankPreset(mode = "online") {
       // onlineHistory 挨在 context 前面 —— 那批线上消息是「以前发生过的事」，
       // 摆在上文之前读起来才像一段旧事（服务端 OFFLINE_FIXED_KINDS 同序）
       ...(offline ? [{ id: newId("e"), kind: "onlineHistory", enabled: true }] : []),
+      /*
+       * callHowto 紧跟在 format **后面**（服务端 CALL_FIXED_KINDS 同序）：
+       * 先讲清消息格式与功能（通话里那些功能是保留的），再讲「但在电话里要
+       * 怎么说话」。顺序反了的话模型读到最后一条是「可以发表情包」，就真发了。
+       *
+       * 正文同样不写在这儿 —— 服务端 normalizeEntries 会补上 DEFAULT_CALL_HOWTO
+       * （那段七百多字，前端再抄一遍就多一处会和服务端分叉的文字）。
+       */
+      ...(call ? [{ id: newId("e"), kind: "callHowto", enabled: true }] : []),
       { id: newId("e"), kind: "context", enabled: true },
       { id: newId("e"), kind: "memory", enabled: false },
       // 正文不写在这儿：`content` 压根不给，服务端 normalizeEntries 会补上它那份

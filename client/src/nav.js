@@ -123,12 +123,14 @@ export const NAV = [
       (c.presets ?? []).map((p) => ({
         id: p.id,
         label: presetLabel(p),
-        // 线上的显示「开着几条/共几条」，线下的直接标「线下」—— 260px 那栏塞不下
+        // 线上的显示「开着几条/共几条」，线下和通话直接标出来 —— 260px 那栏塞不下
         // 两样，而「这是哪一边的」比条目数更要紧（选错边等于这份预设压根不生效）
         meta:
           p.mode === "offline"
             ? "线下"
-            : `${(p.entries ?? []).filter((e) => e.enabled).length}/${(p.entries ?? []).length}`,
+            : p.mode === "call"
+              ? "通话"
+              : `${(p.entries ?? []).filter((e) => e.enabled).length}/${(p.entries ?? []).length}`,
       })),
   },
   {

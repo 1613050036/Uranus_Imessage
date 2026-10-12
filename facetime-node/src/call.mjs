@@ -135,10 +135,53 @@ export class Call {
     return { reason: this.endReason, turns: this.turns, durationMs: this.elapsedMs };
   }
 
-  /** 挂断。角色发了 [结束通话] 或者 Uranus 那边叫停时调。 */
-  hangUp(reason = "角色挂断") {
+  /**
+   * 挂断。角色发了 `[结束通话]` 或者 Uranus 那边叫停时调。
+   *
+   * @param {string} reason
+   * @param {object} [opts]
+   * @param {boolean} [opts.drain] 先把没说完的话说完再挂
+   *
+   * ── drain 是干什么的 ──
+   *
+   * 角色自己挂电话时，`[结束通话]` 前面**几乎总还有一句「再见」**。而
+   * `state = "ended"` 一设下去，`#speak` 里那个「等队列播完」的循环
+   * （条件含 `state === "live"`）立刻退出，紧接着 `#cleanup` 关掉浏览器 ——
+   * 于是那句再见被硬生生切掉，对方听到的是半个字然后断线。
+   *
+   * 所以角色主动挂断要 drain：等它把话说完再真的挂。控制台上手动点「挂断」
+   * 不 drain —— 那是人要它立刻停下。
+   */
+  async hangUp(reason = "角色挂断", { drain = false } = {}) {
     this.endReason = reason;
+    if (drain) await this.#drainSpeech();
     this.state = "ended";
+  }
+
+  /**
+   * 等「这一轮说完」—— 包括还在路上的句子。
+   *
+   * 两段都要等，而且顺序不能换：
+   *
+   *  1. **等这一轮的生成和排队结束**。挂断指令走的是控制通道，和送音频的
+   *     那条 SSE 响应是**两条独立的通道** —— 挂断完全可能比最后一句音频先到。
+   *     这时候队列还是空的，只看「队列播完了吗」会立刻返回、白等一场。
+   *     `this.current` 在整个 `#speak` 期间非空，拿它当「还在生成」的判据。
+   *  2. **再等播放队列排空**。
+   *
+   * 有上限：模型卡住的话不能让一通电话永远挂不掉。
+   */
+  async #drainSpeech() {
+    const until = Date.now() + 30_000;
+    while (this.current && Date.now() < until) await sleep(200);
+    while (Date.now() < until) {
+      const still = await this.cdp
+        .evaluate("window.__ftSpeaking && window.__ftSpeaking()")
+        .catch(() => false);
+      if (!still) return;
+      await sleep(200);
+    }
+    logWarn("通话", "等它把话说完等太久了，直接挂");
   }
 
   async #connect() {
