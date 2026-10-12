@@ -5481,19 +5481,21 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
           {pairCode ? (
             <div className="grid grid-cols-1 gap-2">
               <p className="text-meta leading-relaxed text-ink-faint">
-                在节点那台机器上跑一次下面这条命令（把配对码一起粘过去），然后
-                <code className="mx-1 font-mono text-ink-soft">node src/index.mjs</code>
-                就挂上了：
+                复制下面这串配对码，到节点那台机器的
+                <code className="mx-1 font-mono text-ink-soft">facetime-node</code>
+                目录里跑
+                <code className="mx-1 font-mono text-ink-soft">sudo bash pair.sh</code>
+                ，把它粘进去：
               </p>
               <div className="flex gap-2">
                 <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-base px-2 py-1 font-mono text-meta text-ink-soft">
-                  node src/index.mjs --pair {pairCode}
+                  {pairCode}
                 </code>
                 <button
                   type="button"
                   className="btn"
                   onClick={() => {
-                    navigator.clipboard?.writeText(`node src/index.mjs --pair ${pairCode}`);
+                    navigator.clipboard?.writeText(pairCode);
                     setCopied(true);
                     setTimeout(() => setCopied(false), 1500);
                   }}
@@ -5501,6 +5503,12 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
                   {copied ? "copied" : "复制"}
                 </button>
               </div>
+              <p className="text-meta leading-relaxed text-ink-faint">
+                配完再跑一次
+                <code className="mx-1 font-mono text-ink-soft">sudo bash install-service.sh</code>
+                装成后台服务，之后开机自启、崩了自己重启，
+                <strong className="text-ink-soft">再也不用碰命令行</strong>。
+              </p>
               <p className="text-meta leading-relaxed text-ink-faint">
                 配对码里的地址是
                 <code className="mx-1 font-mono text-ink-soft">{origin}</code>

@@ -23,8 +23,9 @@ die() { printf '\n\033[31m%s\033[0m\n\n' "$1" >&2; exit 1; }
 # ── 先把该有的都检查一遍，别装完才发现跑不起来 ──────────────
 
 # 1. 配对了没
-[ -f "$NODE_DIR/config.json" ] || die "还没配对。先在 Uranus 控制台生成配对码，然后：
-  node src/index.mjs --pair <配对码>"
+[ -f "$NODE_DIR/config.json" ] || die "还没配对。先在 Uranus 控制台的「接 FaceTime 通话」里生成配对码，然后：
+  sudo bash pair.sh
+（它会提示你把配对码粘进去）"
 
 # 2. Node 在哪。和 update-vps.sh 一个思路：先问正在跑的 uranus 服务
 NODE_BIN=""
