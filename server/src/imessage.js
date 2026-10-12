@@ -3421,6 +3421,10 @@ async function handleTurn(
    * 视频那一路识别完会在自己内部把字节放掉（见 describeVideos），所以从这行
    * 往下，这一轮只剩几百字的描述在手上。
    */
+  // 这里就要拿最新配置：下面语音那一路要用 sttApi 和角色的情绪识别开关
+  const freshConfig = getConfig();
+  const freshRole = currentRole(freshConfig, runner) ?? role;
+
   const [vision, voice, video] = await Promise.all([
     describeImages(eps.vision, eps.visionPrompt, eps.maxImages, runner, images),
     describeVoices(eps.audio, eps.audioPrompt, eps.maxClips, runner, voices, {
@@ -3463,8 +3467,6 @@ async function handleTurn(
   }
 
   const llmScope = scopeOf(runner, "LLM");
-  const freshConfig = getConfig();
-  const freshRole = currentRole(freshConfig, runner) ?? role;
   const user = resolveUser(freshConfig, freshRole);
 
   /*
