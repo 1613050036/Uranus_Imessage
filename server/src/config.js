@@ -2208,8 +2208,23 @@ function normalizeSttApi(input) {
  */
 function normalizeCallNode(input) {
   const dir = input?.direction === "uranus" ? "uranus" : "node";
+  /*
+   * 节点在不在本机。只是界面上那个「节点在哪」的选择，连接逻辑不看它 ——
+   * 真正起作用的是 direction 和 trustLocal（界面选「在本机」时一并设成
+   * node + true，「不在本机」设 trustLocal = false）。
+   *
+   * 老配置没有这个字段：Uranus 去连节点、或者关了本机免配对的算不在本机，
+   * 其余算在本机。和 role.jsx:callNodeIsLocal 同一个判据。
+   */
+  const where =
+    input?.where === "local" || input?.where === "remote"
+      ? input.where
+      : dir === "uranus" || input?.trustLocal === false
+        ? "remote"
+        : "local";
   return {
     enabled: Boolean(input?.enabled),
+    where,
     direction: dir,
     // 去掉末尾的斜杠，拼路径时就不用判了
     url: str(input?.url).trim().replace(/\/+$/, ""),
@@ -2327,6 +2342,16 @@ function normalizeRoleCall(input) {
      * 见 callturn.js:listenAmbience。
      */
     hearAmbience: input?.hearAmbience !== false,
+
+    /*
+     * 看摄像头（角色看得到对方）。默认**开**。
+     *
+     * 对方一开口，节点从 FaceTime 的视频里截一帧，用角色的「识图」模型描述成一句话，
+     * 以 `[{{user}}的摄像头画面：……]` 贴进这一轮；和上一张差不多就不报。识图和
+     * 「对方说话 + 转写」同时跑，一般不拖慢回话。没开摄像头、没配识图模型就当语音通话
+     * （默认通话预设「摄像头」那一节叫模型别编）。见 callturn.js:seeFrame。
+     */
+    seeCamera: input?.seeCamera !== false,
 
     /*
      * 对方多久没说话就提醒模型一次，秒。0 = 不提醒。

@@ -10,7 +10,9 @@
  *  - **背景只在变了的时候报**：一开始就安静的不报；吵了报；接着还是吵（「同上」）
  *    不报；安静下来报一次。不然角色会每 30 秒念叨一遍「你那边好吵」。
  *  - **节流**：30 秒一次、正在听的时候不再起一个；结果晚一轮拿、拿了就清。
- *  - **拼进用户消息的样子**：背景在最前、语气贴着那句话。
+ *  - **拼进用户消息的样子**：画面、背景在最前，语气贴着那句话。
+ *  - **摄像头**：画面只在变了时报、关掉报一次、从没开过不报；识图慢就留给下一轮；
+ *    默认通话预设里那句「没看到画面别瞎编」在、上一版没改过的预设会自动换新。
  *
  * 跑：node scripts/test-callhear.mjs
  */
@@ -20,12 +22,17 @@ import {
   AMBIENCE_EVERY_MS,
   ambiencePrompt,
   callUserMessage,
+  framePrompt,
   listenAmbience,
   nextAmbience,
+  nextFrame,
+  seeFrame,
   splitToneLine,
   takeAmbience,
+  takeFrame,
   toneWord,
 } from "../server/src/callturn.js";
+import { DEFAULT_CALL_HOWTO } from "../server/src/preset.js";
 import { normalizeConfig } from "../server/src/config.js";
 
 let pass = 0;
@@ -246,6 +253,108 @@ group("拼进这一轮的用户消息");
   check("没说话那轮也带背景", quiet.includes("[背景声音：安静下来了]"), true);
 }
 
+// ───────────────────────────────── 摄像头
+
+group("画面什么时候报");
+{
+  let st = nextFrame("", "对方坐在沙发上，手里拿着一杯奶茶");
+  check("第一张：报", st, { note: "对方坐在沙发上，手里拿着一杯奶茶", last: "对方坐在沙发上，手里拿着一杯奶茶" });
+  st = nextFrame(st.last, "同上");
+  check("差不多（同上）：不报", st.note, "");
+  check("记着的还是那张", st.last, "对方坐在沙发上，手里拿着一杯奶茶");
+  st = nextFrame(st.last, "看不清。");
+  check("看不清：不报，也不把上一张冲掉", st, { note: "", last: "对方坐在沙发上，手里拿着一杯奶茶" });
+  check("多行并成一行、去引号", nextFrame("", "「对方在厨房\n在切菜」").note, "对方在厨房在切菜");
+  check("第一次不提上一张", framePrompt("").includes("上一张"), false);
+  check("之后带上上一张让它比", framePrompt("在厨房").includes("「在厨房」"), true);
+  check("叫它别猜是谁", framePrompt("").includes("不要猜画面里的人是谁"), true);
+}
+
+group("收画面、这一轮拿");
+{
+  const call = {};
+  const describe = async () => "对方在街上走，背后是商场";
+  const p = seeFrame({ call, frame: { jpeg: "QUJD" }, describe });
+  check("收到一帧就去看", Boolean(p), true);
+  check("正在看的时候不叠一个", seeFrame({ call, frame: { jpeg: "QUJD" }, describe }), null);
+
+  // 识图还没回来，这一轮去拿：要等它（最多 waitMs）
+  const got = await takeFrame(call, 1000);
+  check("等到了，这一轮带上", got, { text: "对方在街上走，背后是商场" });
+  check("拿了就清掉", await takeFrame(call, 10), null);
+
+  // 慢的识图：等满就先不带，留到下一轮
+  let release;
+  const slow = () => new Promise((r) => (release = r));
+  seeFrame({ call, frame: { jpeg: "QUJD" }, describe: slow });
+  check("识图太慢：这一轮不带", await takeFrame(call, 30), null);
+  await tick();
+  release("对方进了地铁站");
+  await tick();
+  check("下一轮拿到", await takeFrame(call, 10), { text: "对方进了地铁站" });
+
+  // 开过之后关掉：报一次
+  seeFrame({ call, frame: { off: true } });
+  check("关掉摄像头：报一次", await takeFrame(call, 10), { off: true });
+  seeFrame({ call, frame: { off: true } });
+  check("接着关着：不再报", await takeFrame(call, 10), null);
+
+  // 从来没开过：什么都不报（预设里写了「没看到画面别瞎编」）
+  const never = {};
+  seeFrame({ call: never, frame: { off: true } });
+  check("一开始就没开：不报", await takeFrame(never, 10), null);
+
+  // 识图出错不能把 job 卡住
+  const bad = {};
+  await seeFrame({ call: bad, frame: { jpeg: "QUJD" }, describe: () => Promise.reject(new Error("挂了")) });
+  check("识图出错：不卡住", bad.camera.job, null);
+
+  // 没配识图模型
+  const bare = {};
+  check("没配识图模型：不看", seeFrame({ config: {}, role: {}, call: bare, frame: { jpeg: "QUJD" } }), null);
+  check("提示只记一次", bare.camera.warned, true);
+  check("空帧不看", seeFrame({ call: {}, frame: { jpeg: "" }, describe }), null);
+}
+
+group("画面拼进用户消息");
+{
+  const m = callUserMessage({
+    kind: "said",
+    text: "你看这个",
+    userName: "niki",
+    camera: { text: "对方举着一只猫对着镜头" },
+  });
+  check("画面在前、原话在后", /\[niki的摄像头画面：对方举着一只猫对着镜头\]你看这个$/.test(m), true);
+  const off = callUserMessage({ kind: "said", text: "好", userName: "niki", camera: { off: true } });
+  check("关掉摄像头那句", off.includes("[niki关掉了摄像头]"), true);
+  const all = callUserMessage({
+    kind: "said",
+    text: "喂",
+    userName: "niki",
+    tone: "开心",
+    ambience: "街上",
+    camera: { text: "对方在笑" },
+  });
+  check("三样都有：画面、背景、语气、原话", /\[niki的摄像头画面：对方在笑\]\[背景声音：街上\]\[niki的语气：开心\]喂$/.test(all), true);
+}
+
+group("默认通话预设里那句");
+{
+  check("写了没看到画面别瞎编", DEFAULT_CALL_HOWTO.includes("不要瞎编"), true);
+  check("写了当作语音通话", DEFAULT_CALL_HOWTO.includes("直接当作语音通话即可"), true);
+  // 和 callUserMessage 拼出来的标记一致，不然模型对不上号
+  check("预设里的标记写法和实际一致", DEFAULT_CALL_HOWTO.includes("[{{user}}的摄像头画面："), true);
+
+  // 上一版（v1.20.2）没改过的正文要自动换成新的；改过的不动
+  const v1202 = DEFAULT_CALL_HOWTO.split("\n\n### 摄像头")[0];
+  const howtoOf = (content) =>
+    normalizeConfig({
+      presets: [{ id: "p", name: "通话", mode: "call", entries: [{ kind: "callHowto", content }] }],
+    }).presets.find((p) => p.id === "p")?.entries.find((e) => e.kind === "callHowto")?.content;
+  check("上一版没改过：换成带摄像头的", howtoOf(v1202), DEFAULT_CALL_HOWTO);
+  check("用户改过的：原样留着", howtoOf(v1202 + "\n我自己加的"), v1202 + "\n我自己加的");
+}
+
 // ───────────────────────────────── 配置
 
 group("开关默认值");
@@ -254,6 +363,7 @@ group("开关默认值");
   const c = cfg.roles[0].call;
   check("听语气默认开", c.hearTone, true);
   check("听背景默认开", c.hearAmbience, true);
+  check("看摄像头默认开", c.seeCamera, true);
 
   const off = normalizeConfig({
     roles: [{ id: "r1", name: "A", call: { hearTone: false, hearAmbience: false } }],

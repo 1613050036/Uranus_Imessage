@@ -25,10 +25,21 @@ export class UranusBrain {
    * @param {object} opts
    * @param {string} opts.base Uranus 的地址，如 http://127.0.0.1:8787
    * @param {string} opts.secret 配对密钥
+   * @param {typeof fetch} [opts.fetch] 换掉发请求的那一步。「Uranus 来连节点」时
+   *   传 tunnel.fetch（请求走隧道，见 tunnel.mjs）；不传就是全局 fetch
    */
-  constructor({ base, secret }) {
+  constructor({ base, secret, fetch: doFetch }) {
     this.base = String(base ?? "").replace(/\/+$/, "");
     this.secret = String(secret ?? "");
+    /*
+     * 包一层箭头函数，别直接存 globalThis.fetch：测试会在构造之后才换掉全局
+     * fetch，直接存的话拿到的是换之前那个。
+     *
+     * v1.21.0 漏了这一句（下面每个请求都调 this.fetch，它却是 undefined），
+     * 节点一个请求都发不出去 —— 没有测试真的让 brain 发过请求，所以没抓到。
+     * test/frame.test.mjs 里那两条「brain 真的发得出请求」就是为它补的。
+     */
+    this.fetch = doFetch ?? ((...a) => fetch(...a));
   }
 
   #url(path, params = {}) {
@@ -153,6 +164,32 @@ export class UranusBrain {
       if (!res.ok) logWarn("Uranus", `报告「${type}」被拒了：${res.status}`);
     } catch (e) {
       logWarn("Uranus", `报告「${type}」没送到`, e);
+    }
+  }
+
+  /**
+   * 送一帧摄像头画面（或者「摄像头关着」）过去。
+   *
+   * @param {{off?: boolean, jpeg?: string}} frame jpeg 是 base64
+   * @returns {Promise<"ok" | "unsupported" | "failed">} unsupported = 这个 Uranus
+   *   太老、没有这条路（404），调用方这通电话里就别再送了
+   */
+  async sendFrame(frame) {
+    try {
+      const res = await this.fetch(this.#url("/facetime/frame"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(frame),
+      });
+      if (res.status === 404) return "unsupported";
+      if (!res.ok) {
+        logWarn("Uranus", `摄像头画面被拒了：${res.status}`);
+        return "failed";
+      }
+      return "ok";
+    } catch (e) {
+      logDebug("Uranus", "摄像头画面没送到", e);
+      return "failed";
     }
   }
 

@@ -375,6 +375,74 @@ export function buildFakeMediaShim({
     return { live, dead, states };
   };
 
+  /* ── 截对方摄像头的一帧 ──────────────────────────────────────
+   *
+   * 角色「看得到」对方靠这个：节点在对方开口时来调一次，拿一张 640px 的 JPEG
+   * 送给 Uranus 识图（见 call.mjs 的 snapFrame）。
+   *
+   * 画面从上面留下的那几条 PeerConnection 的**接收端**拿 —— 接收端只有对方的轨，
+   * 我们自己造的那条摄像头在发送端，不会截到自己的头像。
+   *
+   * 摄像头关着有好几种样子：没有视频轨、轨被 mute、有轨但一帧都没有、或者
+   * 一直发黑帧。都当「关着」。另外回一个 16x16 的灰度指纹，节点拿它和上一张比，
+   * 差不多就不送 —— 对方坐着不动的时候每句话都识一次图是白花钱。
+   *
+   * 这段在模板字符串里，别用反引号和 美元符加花括号。
+   */
+  window.__ftSnap = async () => {
+    let track = null;
+    for (const pc of window.__ftPeers || []) {
+      let recv = [];
+      try { recv = pc.getReceivers ? pc.getReceivers() : []; } catch {}
+      for (const r of recv) {
+        const t = r && r.track;
+        if (t && t.kind === "video" && t.readyState === "live") track = t;
+      }
+    }
+    if (!track) return { off: true, why: "没有视频轨" };
+    if (track.muted) return { off: true, why: "视频轨被静音" };
+
+    let v = window.__ftSnapVideo;
+    if (!v || v.__track !== track) {
+      v = document.createElement("video");
+      v.muted = true;
+      v.playsInline = true;
+      v.srcObject = new MediaStream([track]);
+      v.__track = track;
+      window.__ftSnapVideo = v;
+      try { await v.play(); } catch {}
+    }
+    // 刚接上的轨可能还没出第一帧，等一会儿
+    for (let i = 0; i < 15 && !v.videoWidth; i += 1) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!v.videoWidth || !v.videoHeight) return { off: true, why: "没有画面" };
+
+    const tiny = document.createElement("canvas");
+    tiny.width = 16;
+    tiny.height = 16;
+    const tc = tiny.getContext("2d", { willReadFrequently: true });
+    tc.drawImage(v, 0, 0, 16, 16);
+    const px = tc.getImageData(0, 0, 16, 16).data;
+    const print = [];
+    let sum = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      const g = Math.round(px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114);
+      print.push(g);
+      sum += g;
+    }
+    // 几乎全黑 = 对方关了摄像头（FaceTime 有时候不撤轨，只发黑帧）
+    if (sum / print.length < 10) return { off: true, why: "黑屏" };
+
+    const k = Math.min(1, 640 / Math.max(v.videoWidth, v.videoHeight));
+    const c = document.createElement("canvas");
+    c.width = Math.round(v.videoWidth * k);
+    c.height = Math.round(v.videoHeight * k);
+    c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+    const url = c.toDataURL("image/jpeg", 0.7);
+    return { off: false, jpeg: url.slice(url.indexOf(",") + 1), w: c.width, h: c.height, print };
+  };
+
   /* ── 接对方的声音 ──────────────────────────────────────────
    *
    * FaceTime 把对方的音频挂在页面的 <audio>/<video> 元素上。我们从那儿接出来

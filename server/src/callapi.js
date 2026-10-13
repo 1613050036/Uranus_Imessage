@@ -39,10 +39,14 @@ export const NODE_PATHS = {
   utterance: "/facetime/utterance",
   event: "/facetime/event",
   avatar: "/facetime/avatar",
+  frame: "/facetime/frame",
 };
 
 /** 一次最多收多大的音频。16kHz 单声道 WAV，30 秒约 1MB，给到 4MB 很宽裕。 */
 const MAX_AUDIO_BYTES = 4 * 1024 * 1024;
+
+/** 一帧最大多大。640px 的 JPEG 一般三五十 KB。和 callturn.js:MAX_FRAME_BYTES 一致（不 import 它：那边拖着整条模型链路）。 */
+const MAX_FRAME_BYTES = 1024 * 1024;
 
 /** 挂在上面的那个节点。一次只有一个。 */
 let node = null; // { res, at, ip }
@@ -298,6 +302,31 @@ export function mountCall(app, loadConfig, hooks = {}) {
       logWarn(SCOPE, `头像读不出来（${name}），节点会用占位图`, e);
       res.status(404).json({ ok: false, error: "头像文件读不出来" });
     }
+  });
+
+  /* ── 摄像头：节点截一帧送过来 ────────────────────────────── */
+
+  /**
+   * 对方一开口，节点就从 FaceTime 的视频里截一帧（640px JPEG，base64 放 JSON 里），
+   * 或者报一句「摄像头关着」。**立刻回**，识图在后台跑 —— 见 callturn.js:seeFrame。
+   *
+   * 老版本的 Uranus 没有这条路，节点收到 404 就不再送了（这通电话里）。
+   */
+  app.post(NODE_PATHS.frame, (req, res) => {
+    if (!checkSecret(req, res)) return;
+    touchNode();
+    const body = req.body ?? {};
+    const jpeg = String(body.jpeg ?? "");
+    // base64 比原始字节大三分之一
+    if (jpeg.length > (MAX_FRAME_BYTES * 4) / 3 + 16) {
+      return res.status(413).json({ ok: false, error: "这一帧太大了" });
+    }
+    try {
+      hooks.onFrame?.({ off: Boolean(body.off), jpeg });
+    } catch (e) {
+      logDebug(SCOPE, "处理这一帧时出错", e);
+    }
+    res.json({ ok: true });
   });
 
   /* ── 节点报状态 ──────────────────────────────────────────── */

@@ -41,7 +41,7 @@ import {
 } from "./calltags.js";
 import { elapsedMs, recordCallTurn, sayDuration } from "./callsession.js";
 import { resolveEndpoint, resolveRoleEndpoints } from "./config.js";
-import { chatWithFallback, transcribeAudio } from "./llm.js";
+import { chatWithFallback, describeImage, transcribeAudio } from "./llm.js";
 import { logDebug, logInfo, logWarn } from "./logs.js";
 import { splitMedia, synthesizeVoice } from "./media.js";
 import { transcribe as sttTranscribe } from "./stt.js";
@@ -330,6 +330,149 @@ export function takeAmbience(call) {
   return note;
 }
 
+/* ── 摄像头：角色看得到对方 ─────────────────────────────────── */
+
+/**
+ * 对方一开口，节点就从 FaceTime 的视频里截一帧送过来（facetime-node 的
+ * call.mjs:#snapFrame）。这里用角色的「识图」模型描述成一句话，贴进**这一轮**。
+ *
+ * ── 为什么在开口时截、而不是说完时 ──
+ *
+ * 识图要一两秒。开口时截的话，它和「对方说话 + 转写」同时跑，说完转写完
+ * 多半已经看好了，这一轮直接用上，不拖慢回话。没看完的话最多再等
+ * FRAME_WAIT_MS，还不好就先不带，留给下一轮。
+ *
+ * ── 为什么描述成文字、不直接把图塞给聊天模型 ──
+ *
+ * 和 iMessage 里收到照片一个路子（imessage.js 里 describeImage 那段）：
+ * 聊天模型不一定看得懂图，识图模型是用户专门配的；而且文字能进历史和记忆，
+ * 图进不去 —— 角色下一轮还记得「你刚才在吃面」。
+ *
+ * ── 什么时候报 ──
+ *
+ * 和背景声音一样**只报变化**：提示词带上上一张的描述，差不多就回「同上」不报，
+ * 不然每句话前面都顶着一段一模一样的画面描述。关掉摄像头报一次；一开始就没开
+ * 的什么都不报 —— 默认通话预设里写了「没识别到画面就当语音通话」。
+ */
+
+/** 转写完之后，最多再等识图多久。 */
+export const FRAME_WAIT_MS = 2_000;
+
+/** 一帧最大多大。640px 的 JPEG 一般三五十 KB，给到 1MB 很宽裕。 */
+export const MAX_FRAME_BYTES = 1024 * 1024;
+
+/** 识图用的提示词。带上上一张的描述，理由同 ambiencePrompt。 */
+export function framePrompt(last = "") {
+  return (
+    "这是一通视频通话里，对方摄像头传过来的一帧画面。\n" +
+    "用一两句话（不超过 60 个字）客观描述你看到的：画面里的人在做什么、什么表情、" +
+    "手里拿着什么、在什么地方。称呼画面里的人用「对方」。\n" +
+    "黑屏、糊得看不清、或者画面里什么都看不出来，只输出三个字：看不清。\n" +
+    (last ? `上一张画面是「${last}」。如果现在和它差不多（在做的事、地方、手里的东西都没变），只输出两个字：同上。\n` : "") +
+    "只写确实看到的，不要猜画面里的人是谁，不要编。不要任何格式、引号或解释。"
+  );
+}
+
+/**
+ * 看到一帧之后，要不要告诉角色、告诉什么。纯函数。
+ *
+ * @param {string} last 上一张的描述（空 = 还没看到过）
+ * @param {string} raw 识图模型回的
+ * @returns {{note: string, last: string}}
+ */
+export function nextFrame(last, raw) {
+  const line = String(raw ?? "")
+    .trim()
+    .split(/\r?\n/)
+    .join("")
+    .replace(/^["'“”「『]+|["'“”」』]+$/g, "")
+    .trim()
+    .slice(0, 80);
+  // 看不清不算「看到了」：不报，上一张也不动（等下一帧再说）
+  if (!line || /^同上/.test(line) || /^看不清/.test(line)) return { note: "", last };
+  return { note: line, last: line };
+}
+
+/**
+ * 收到节点送来的一帧（或者「摄像头关了」）。**不等识图**，结果挂在这通电话上。
+ *
+ * @param {object} args
+ * @param {object} args.call
+ * @param {{off?: boolean, jpeg?: string}} args.frame jpeg 是 base64
+ * @param {Function} [args.describe] 测试用：替掉真的那次识图
+ * @returns {Promise<void>|null} 没在看（关着、没模型、正在看上一张）返回 null
+ */
+export function seeFrame({ config, role, call, frame, describe }) {
+  if (!call || !frame) return null;
+  const st = (call.camera ??= { last: "", pending: null, job: null, on: false, warned: false });
+
+  if (frame.off) {
+    // 开过、现在关了：报一次。从来没开过就什么都不说
+    if (st.on) {
+      st.on = false;
+      st.last = "";
+      st.pending = { off: true };
+      logInfo(SCOPE, "对方关掉了摄像头（下一轮告诉角色）");
+    }
+    return null;
+  }
+
+  const jpeg = String(frame.jpeg ?? "");
+  if (!jpeg) return null;
+  // 上一张还没看完就不叠一个 —— 对方连着说短句时节点会一直截
+  if (st.job) return null;
+
+  const eps = describe ? null : resolveRoleEndpoints(config, role);
+  if (!describe && !eps?.vision) {
+    if (!st.warned) {
+      st.warned = true;
+      logInfo(SCOPE, "开着「看摄像头」，但这个角色没配「识图」模型 —— 画面看不了，当语音通话");
+    }
+    return null;
+  }
+
+  const ask =
+    describe ??
+    ((prompt) => describeImage(eps.vision, prompt, { base64: jpeg, mimeType: "image/jpeg", name: "camera.jpg" }));
+
+  st.job = Promise.resolve()
+    .then(() => ask(framePrompt(st.last)))
+    .then((raw) => {
+      const { note, last } = nextFrame(st.last, raw);
+      st.last = last;
+      if (note) {
+        st.on = true;
+        st.pending = { text: note };
+        logInfo(SCOPE, `看到画面：${note}`);
+      } else {
+        // 「同上」也说明摄像头开着；「看不清」不算
+        if (/^同上/.test(String(raw ?? "").trim())) st.on = true;
+        logDebug(SCOPE, `画面没变（${String(raw ?? "").trim().slice(0, 30)}）`);
+      }
+    })
+    .catch((e) => logDebug(SCOPE, "这一帧没看成", e))
+    .finally(() => {
+      st.job = null;
+    });
+  return st.job;
+}
+
+/**
+ * 这一轮要告诉角色的画面。识图还在跑的话最多等 waitMs。
+ *
+ * @returns {Promise<{text?: string, off?: boolean} | null>} 拿了就清掉
+ */
+export async function takeFrame(call, waitMs = FRAME_WAIT_MS) {
+  const st = call?.camera;
+  if (!st) return null;
+  if (st.job && !st.pending) {
+    await Promise.race([st.job, new Promise((r) => setTimeout(r, waitMs))]);
+  }
+  const note = st.pending;
+  st.pending = null;
+  return note;
+}
+
 /**
  * 通话里转写用的提示词。
  *
@@ -541,6 +684,7 @@ export async function synthesizeSay({ config, role, text }) {
  * @param {boolean} [opts.micOff] 对方是不是正处在「可能关麦了」的状态
  * @param {string} [opts.tone] 这句话的语气（said 才有）
  * @param {string} [opts.ambience] 对方那头的背景声音（上一轮听出来的，见 listenAmbience）
+ * @param {{text?: string, off?: boolean} | null} [opts.camera] 摄像头画面（见 seeFrame）
  */
 export function callUserMessage({
   kind,
@@ -550,9 +694,17 @@ export function callUserMessage({
   micOff = false,
   tone = "",
   ambience = "",
+  camera = null,
 }) {
-  // 背景是「那边的情况」，放在最前面；语气贴着那句话
-  const head = callPrefix(sayDuration(elapsedMs())) + (ambience ? `[背景声音：${ambience}]` : "");
+  // 画面和背景是「那边的情况」，放在最前面；语气贴着那句话。
+  // 画面的写法和默认通话预设「摄像头」那一节里说的一致，改一边要改两边
+  const seen = camera?.off
+    ? `[${userName}关掉了摄像头]`
+    : camera?.text
+      ? `[${userName}的摄像头画面：${camera.text}]`
+      : "";
+  const head =
+    callPrefix(sayDuration(elapsedMs())) + seen + (ambience ? `[背景声音：${ambience}]` : "");
 
   if (kind === "silence") {
     return `${head}${silenceNotice(seconds, userName)}`;

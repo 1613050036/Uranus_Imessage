@@ -5421,18 +5421,28 @@ function AvatarField({ label, hint, file, fallback, onChange }) {
  * 比让他在两处分别填少一半出错机会。编码方式和节点那边的
  * `facetime-node/src/config.mjs:makePairCode` 必须一致，改一边要改两边。
  */
+/** 节点在不在本机。缺 where 的老配置：Uranus 去连节点、或者关了本机免配对的，算不在本机。 */
+function callNodeIsLocal(node) {
+  if (node?.where === "local") return true;
+  if (node?.where === "remote") return false;
+  return node?.direction !== "uranus" && node?.trustLocal !== false;
+}
+
 function CallNodeSetup({ node, updateCallNode, ready }) {
   const [copied, setCopied] = useState(false);
 
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const secret = String(node.secret ?? "").trim();
-  // 缺字段算开（老配置升上来、以及绝大多数人的情况：同机跑）。和服务端
-  // config.js:normalizeCallNode 同一个默认
-  const trustLocal = node.trustLocal !== false;
+  /*
+   * 节点在不在本机。在本机就只显示一行安装命令 —— 配对码、密钥一概不出现。
+   *
+   * 以前是「节点来连 / Uranus 去连」加一个可展开的配对码，展开条件写的是
+   * 「存过密钥就展开」—— 同机的人只要以前配对过，配对码就一直摊在那儿（用户问过）。
+   * 判据和服务端 config.js:normalizeCallNode 的 where 一致。
+   */
+  const local = callNodeIsLocal(node);
   // 「Uranus 去连节点」：Uranus 在安卓 / 家里电脑 / 小手机上、节点在 VPS 上时用
-  const reverse = node.direction === "uranus";
-  // 配对那一块默认收起 —— 同机跑的人用不上它，摊开只会让人以为非配不可
-  const [showPair, setShowPair] = useState(Boolean(secret) || !trustLocal);
+  const reverse = !local && node.direction === "uranus";
   const pairCode = secret
     ? btoa(
         // 和节点那边 makePairCode 一样：{u, s} 两个短键，再 base64
@@ -5473,49 +5483,28 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
 
       {node.enabled && (
         <Field
-          label="怎么连"
-          hint="Uranus 跑在 VPS 上、或者和节点同一台机器：用第一种。跑在安卓、家里电脑、小手机上（节点连不到它）：用第二种，节点放 VPS 或自己电脑上"
+          label="节点在哪"
+          hint="节点和 Uranus 装在同一台机器上就选「在本机」，什么都不用填"
         >
           <select
             className={inputCls}
-            value={reverse ? "uranus" : "node"}
-            onChange={(e) => updateCallNode({ direction: e.target.value })}
+            value={local ? "local" : "remote"}
+            onChange={(e) =>
+              e.target.value === "local"
+                ? // 本机：节点来连、回环免配对
+                  updateCallNode({ where: "local", direction: "node", trustLocal: true })
+                : // 不在本机：只认密钥，本机免配对那条关掉（frp 这类转发看起来和本机一样）
+                  updateCallNode({ where: "remote", trustLocal: false })
+            }
           >
-            <option value="node">节点来连 Uranus</option>
-            <option value="uranus">Uranus 去连节点</option>
+            <option value="local">节点在本机</option>
+            <option value="remote">节点不在本机</option>
           </select>
         </Field>
       )}
 
-      {node.enabled && reverse && <ReverseNodeFields node={node} updateCallNode={updateCallNode} />}
-
-      {node.enabled && !reverse && (
-        <label className="flex items-start justify-between gap-4 border-t border-line pt-5">
-          <span className="min-w-0">
-            <span className="block text-ui text-ink">本机的节点不用配对码</span>
-            <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-              开着的话，和 Uranus <strong className="text-ink-soft">同一台机器</strong>
-              上的节点装好直接跑就能连上，什么都不用填。别的机器上的节点不受影响，
-              照旧用下面的配对码。
-              <br />
-              只认真正从本机直连的：经过 nginx 这类反代转进来的、本机浏览器里
-              网页发的，都不算本机，照样要配对码。
-              <br />
-              <strong className="text-warn">用 frp、ssh 隧道这类直接转发端口的请关掉它</strong>
-              —— 那种转发不带任何标记，外面来的连接到了这里看起来和本机一模一样。
-            </span>
-          </span>
-          <Switch
-            checked={trustLocal}
-            onChange={(v) => updateCallNode({ trustLocal: v })}
-            label="本机的节点不用配对码"
-          />
-        </label>
-      )}
-
-      {node.enabled && !reverse && trustLocal && (
-        <div className="grid grid-cols-1 gap-2">
-          <p className="text-ui text-ink">节点装在这台机器上</p>
+      {node.enabled && local && (
+        <div className="grid grid-cols-1 gap-2 border-t border-line pt-5">
           <p className="text-meta leading-relaxed text-ink-faint">
             装好节点（
             <code className="mx-1 font-mono text-ink-soft">facetime-node</code>
@@ -5526,30 +5515,35 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
           </code>
           <p className="text-meta leading-relaxed text-ink-faint">
             装成后台服务，开机自启、崩了自己重启。
-            <strong className="text-ink-soft">没有别的要配了</strong>
+            <strong className="text-ink-soft">不用配对码、不用密钥</strong>
             —— 节点默认就连本机的 Uranus。连没连上去「控制台 → 通话」那一栏看。
+            <br />
+            用 frp、ssh 隧道把别处的节点转到这台机器上的，别选这个，选「节点不在本机」。
           </p>
         </div>
       )}
 
-      {node.enabled && !reverse && trustLocal && (
-        <div className="border-t border-line pt-5">
-          <button
-            type="button"
-            onClick={() => setShowPair((v) => !v)}
-            aria-expanded={showPair}
-            className="flex w-full items-center justify-between gap-4 text-left text-ui text-ink-soft transition-colors duration-150 hover:text-ink"
+      {node.enabled && !local && (
+        <Field
+          label="谁连谁"
+          hint="Uranus 在 VPS 上（节点连得到它）用第一种；Uranus 在安卓、家里电脑、小手机上（节点连不到它）用第二种"
+        >
+          <select
+            className={inputCls}
+            value={reverse ? "uranus" : "node"}
+            onChange={(e) => updateCallNode({ direction: e.target.value })}
           >
-            <span>节点在别的机器上？用配对码</span>
-            <ChevronRight
-              size={14}
-              className={`shrink-0 text-ink-faint transition-transform duration-150 ${showPair ? "rotate-90" : ""}`}
-            />
-          </button>
-        </div>
+            <option value="node">节点来连 Uranus（用配对码）</option>
+            <option value="uranus">Uranus 去连节点（填节点地址）</option>
+          </select>
+        </Field>
       )}
 
-      {node.enabled && !reverse && (!trustLocal || showPair) && (
+      {node.enabled && !local && reverse && (
+        <ReverseNodeFields node={node} updateCallNode={updateCallNode} />
+      )}
+
+      {node.enabled && !local && !reverse && (
         <div className="grid grid-cols-1 gap-4">
           <Field
             label="配对密钥"
@@ -5719,9 +5713,10 @@ export function RoleCallFields({ role, onGoto }) {
   // 「Uranus 去连节点」要地址和密钥都在
   const nodeReady = Boolean(
     node.enabled &&
-      (node.direction === "uranus"
-        ? String(node.url ?? "").trim() && String(node.secret ?? "").trim()
-        : node.trustLocal !== false || String(node.secret ?? "").trim())
+      (callNodeIsLocal(node) ||
+        (node.direction === "uranus"
+          ? String(node.url ?? "").trim() && String(node.secret ?? "").trim()
+          : String(node.secret ?? "").trim()))
   );
 
   // 通话预设是**第三批**（preset.mode === "call"），和线上线下那两批都不串
@@ -6001,7 +5996,7 @@ export function RoleCallFields({ role, onGoto }) {
                 在后台听、<strong className="text-ink-soft">不拖慢回话</strong>
                 ，所以会晚一句才说到；30 秒最多听一次，和上次差不多就不提。
                 <br />
-                {role.audioModel?.enabled ? (
+                {role.audioModel?.enabled && role.audioModel?.provider && role.audioModel?.modelId ? (
                   <>用的是这个角色的「听音」模型，每次多一个请求。</>
                 ) : (
                   <>
@@ -6015,6 +6010,33 @@ export function RoleCallFields({ role, onGoto }) {
               checked={c.hearAmbience !== false}
               onChange={(v) => patch({ hearAmbience: v })}
               label="听背景声音"
+            />
+          </label>
+
+          <label className="flex items-start justify-between gap-4 border-t border-line pt-6">
+            <span className="min-w-0">
+              <span className="block text-ui text-ink">看摄像头</span>
+              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                {userName}开着摄像头的话，角色看得到你在干什么、手里拿着什么、在哪儿。
+                你一开口就截一张画面去识图，和你说话同时进行，
+                <strong className="text-ink-soft">一般不拖慢回话</strong>
+                ；画面和上一张差不多就不再识。没开摄像头就当语音通话
+                （默认通话预设里写了「没看到画面别瞎编」）。
+                <br />
+                {role.visionModel?.enabled && role.visionModel?.provider && role.visionModel?.modelId ? (
+                  <>用的是这个角色的「识图」模型，画面变了才多一个请求。</>
+                ) : (
+                  <>
+                    <strong className="text-warn">这个角色没开「识图」模型</strong>
+                    ，看不了 —— 在上面「模型」那一栏打开它。
+                  </>
+                )}
+              </span>
+            </span>
+            <Switch
+              checked={c.seeCamera !== false}
+              onChange={(v) => patch({ seeCamera: v })}
+              label="看摄像头"
             />
           </label>
 

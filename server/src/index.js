@@ -43,6 +43,7 @@ import {
   finishCall,
   forgetHistory,
   getStatus,
+  handleCallFrame,
   handleCallTurn,
   handleDollPush,
   igSessionFor,
@@ -1381,6 +1382,7 @@ mountCustomCss(app);
  */
 mountCall(app, loadConfig, {
   onUtterance: (args) => handleCallTurn(loadConfig, args),
+  onFrame: (frame) => handleCallFrame(loadConfig, frame),
   onCallEnded: (call) => finishCall(loadConfig, call),
   onEvent: async (type, body) => {
     if (type === "connected") {

@@ -27,7 +27,7 @@ import { connectCdp, connectPage, sleep } from "./cdp.mjs";
 import { launchBrowser } from "./chrome.mjs";
 import { buildFakeMediaShim } from "./fakemedia.mjs";
 import { callAlive, dumpControls, joinCall, leaveCall } from "./facetime.mjs";
-import { logError, logInfo, logWarn } from "./logs.mjs";
+import { logDebug, logError, logInfo, logWarn } from "./logs.mjs";
 
 /** 多久查一次通话还在不在。 */
 const ALIVE_CHECK_MS = 3000;
@@ -63,6 +63,7 @@ export class Call {
    * @param {object} opts.brain 和 Uranus 说话的那一头，见文件头
    * @param {number} [opts.debugPort]
    * @param {boolean} [opts.allowBargeIn] 允不允许打断
+   * @param {boolean} [opts.seeCamera] 要不要截对方摄像头画面给 Uranus（角色看得到对方）
    * @param {number} [opts.silenceNoticeMs] 静默多久报一次，0 = 不报
    */
   constructor(opts) {
@@ -222,10 +223,65 @@ export class Call {
     this.pump = new AudioPump(this.cdp, {
       allowBargeIn: this.opts.allowBargeIn !== false,
       onUtterance: (pcm, info) => void this.#onUtterance(pcm, info),
+      onSpeechStart: () => void this.#snapFrame(),
       onBargeIn: () => void this.#onBargeIn(),
       onSilence: (ms) => this.#onSilence(ms),
     });
     this.pump.start();
+  }
+
+  /**
+   * 对方开口了：截一帧摄像头画面送给 Uranus（让角色看得到对方）。
+   *
+   * 挑「开口」这一刻而不是「说完」：Uranus 那边识图要一两秒，现在送过去的话它
+   * 和「对方说话 + 转写」同时跑，说完多半已经看好了，不拖慢回话。
+   *
+   * 三道省钱的闸，都在节点这头挡，省得截了送过去再丢：
+   *  - Uranus 说这个角色不看摄像头（join 指令里的 seeCamera）
+   *  - 和上一张差不多（16x16 灰度指纹，见 framesDiffer）
+   *  - 摄像头一直关着：只在「开 → 关」那一下报一次
+   *
+   * 出什么错都只记日志 —— 截不到画面不该影响这通电话。
+   */
+  async #snapFrame() {
+    if (this.opts.seeCamera === false || this.frameUnsupported) return;
+    if (this.state !== "live" || !this.cdp || this.snapping) return;
+    this.snapping = true;
+    try {
+      const shot = await this.cdp.evaluate("window.__ftSnap ? window.__ftSnap() : null");
+      if (!shot) return;
+
+      if (shot.off) {
+        if (this.cameraOn === false) return;
+        // 第一次就是关着的也报一次：Uranus 那头只在「开过又关」时才告诉角色
+        this.cameraOn = false;
+        this.lastPrint = null;
+        logInfo("通话", `对方的摄像头关着（${shot.why}）`);
+        const r = await this.opts.brain.sendFrame?.({ off: true });
+        if (r === "unsupported") this.#frameGone();
+        return;
+      }
+
+      if (this.lastPrint && !framesDiffer(this.lastPrint, shot.print)) {
+        logDebug("通话", "画面和上一张差不多，这次不送");
+        return;
+      }
+      this.cameraOn = true;
+      this.lastPrint = shot.print;
+      logDebug("通话", `截了一帧摄像头画面 ${shot.w}x${shot.h}，${Math.round(shot.jpeg.length / 1365)}KB`);
+      const r = await this.opts.brain.sendFrame?.({ jpeg: shot.jpeg });
+      if (r === "unsupported") this.#frameGone();
+    } catch (e) {
+      logDebug("通话", "截摄像头画面失败", e);
+    } finally {
+      this.snapping = false;
+    }
+  }
+
+  /** Uranus 太老、没有收画面那条路：这通电话里不再截了。 */
+  #frameGone() {
+    this.frameUnsupported = true;
+    logInfo("通话", "这个 Uranus 还不收摄像头画面（版本太老），这通电话不截了");
   }
 
   /**
@@ -398,6 +454,23 @@ export class Call {
       durationMs: this.elapsedMs,
     });
   }
+}
+
+/**
+ * 两张画面（16x16 灰度指纹）差得够不够多，值不值得再识一次图。
+ *
+ * 看的是每个格子灰度差的平均值。视频压缩、光线轻微抖动的那点差一般在 5 以内；
+ * 人起身、换了个房间、举起一样东西对着镜头，都远超过 12。指纹对不上（缺了、
+ * 长度不一样）一律当变了 —— 宁可多识一次，也别漏掉。
+ *
+ * @param {number[]} a
+ * @param {number[]} b
+ */
+export function framesDiffer(a, b, threshold = 12) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) return true;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff += Math.abs(a[i] - b[i]);
+  return diff / a.length > threshold;
 }
 
 /**

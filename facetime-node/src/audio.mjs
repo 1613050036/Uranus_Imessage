@@ -126,6 +126,9 @@ export class AudioPump {
           `对方说了一段，${Math.round(ev.durationMs)}ms，${describeLevel(ev.pcm)}`
         );
         this.opts.onUtterance?.(ev.pcm, { durationMs: ev.durationMs, truncated: ev.truncated });
+      } else if (ev.type === "start") {
+        // 对方开口了。截摄像头画面就挑这一刻，好让识图和他说话同时跑（见 call.mjs）
+        this.opts.onSpeechStart?.();
       } else if (ev.type === "tooShort") {
         logDebug("音频", "一声短促的动静，当噪音丢了");
       }

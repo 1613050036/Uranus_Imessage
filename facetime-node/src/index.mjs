@@ -157,6 +157,8 @@ async function runServe(args = {}) {
         avatarPath: AVATAR_PATH,
         debugPort: cfg.debugPort,
         allowBargeIn: cmd.bargeIn !== false,
+        // 老版本的 Uranus 不发这个字段：当开着，它不收的话会回 404，节点自己停
+        seeCamera: cmd.seeCamera !== false,
         silenceNoticeMs: Number(cmd.silenceNoticeMs ?? 45_000),
         brain,
       });
