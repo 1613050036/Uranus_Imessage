@@ -1114,8 +1114,6 @@ export const DEFAULT_ONLINE_HISTORY = [
  *    念出来就是一声「美元」。代码里还有两道兜底（通话不走 sendBubbles、合成前
  *    再剥一遍，见 calltags.js:stripSeparator），但提示词这道是最省事的。
  *  - **一段说完**：通话里不拆气泡，拆了也没用。
- *  - **功能可以用，但别念出来**：标记会被 splitMedia 挑出去各自执行
- *    （calltags.js:speakableFrom），所以「一边说话一边转钱」是可行的。
  *  - **给反例**：两个参考项目都发现光说「要口语化」没用，得明确指出「客服念
  *    话术」和「固定公式堆砌」这两种最常见的跑偏。
  *
@@ -1123,6 +1121,49 @@ export const DEFAULT_ONLINE_HISTORY = [
  * （media.js:1691 的 elevenTagsOk 判这件事），写死会让另外三家把标签念出来。
  */
 export const DEFAULT_CALL_HOWTO = [
+  "## 现在是在打电话",
+  "",
+  "你正在和 {{user}} 通 FaceTime。你说的每一句话都会被读成语音放给对方听 ——",
+  "这意味着**写在回复里的所有东西都会被念出声**。",
+  "",
+  "### 绝对不要写这些",
+  "",
+  "- **括号里的动作、神态、心理**。写「（笑）」就会被念成「括号笑括号」。",
+  "  想笑就直接写「哈哈」或者「噗」，那才是能听见的笑。",
+  "- **分隔符 $**。打电话不分气泡，一段话说完就行。",
+  "- **旁白和舞台提示**。没有「只见他顿了顿」这种东西，电话里只有说出口的话。",
+  "",
+  "### 电话里的人怎么说话",
+  "",
+  "- **一般两到四句**，说完就停，等对方回。不要一口气讲一大段。",
+  "- 该有语气词和停顿：「嗯……」「诶？」「等一下」「就是说……」。",
+  "- 可以说到一半改口、重复一个词、想不起来某件事。真人打电话就是这样。",
+  "- 听不清就问「什么？」—— 对方的话是语音转成文字的，转错了很正常。",
+  "",
+  "两种最常见的跑偏，别犯：",
+  "",
+  "❌ 像客服念话术：「您好，很高兴接到您的来电，请问有什么可以帮您」",
+  "❌ 套固定公式：每句都是「情绪 + 回应 + 状态 + 反问」四件套拼起来",
+  "",
+  "✅ 该是这样：「喂？……啊，等我一下，这边有点吵。」",
+  "✅ 或者这样：「嗯？你刚说什么，我没听清。」",
+  "",
+  "### 挂电话",
+  "",
+  "**你可以自己挂电话** —— 想结束通话就在回复里写 [结束通话]。",
+  "",
+  "- 该说的话先说完，把标记写在**最后面**：「那我先去忙了，晚点聊。[结束通话]」",
+  "  这句再见会正常说出口，说完才真的断线。",
+  "- 什么时候该挂，按人设自己判断：说完事了、被惹到了、那边一直没人说话、",
+  "  手头真有事要走。不用等对方同意，也不用问「那我挂了？」再等一轮。",
+  "- 别为了挂而挂。聊得正好的时候硬收尾，比不挂更出戏。",
+].join("\n");
+
+/**
+ * v1.20.1 那版「怎么打电话」的默认正文（还带着「那些功能照样能用」那一节）。
+ * 存着这一段 = 用户没改过，换成现在的 DEFAULT_CALL_HOWTO（见 normalizeEntries）。
+ */
+const LEGACY_CALL_HOWTO = [
   "## 现在是在打电话",
   "",
   "你正在和 {{user}} 通 FaceTime。你说的每一句话都会被读成语音放给对方听 ——",
@@ -1270,13 +1311,44 @@ function defaultEnabledFor(kind, mode) {
  * 线下预设里的 format 也默认关 —— 线下不发气泡、没有语音表情包那一套，
  * 而且 buildPrompt 在线下会**无条件跳过**这一条，留着开着只会让用户以为它生效了。
  */
+/**
+ * 通话默认预设里「消息格式与功能」**默认关掉**的子条目（用户定的清单）。
+ *
+ * 只是默认数据：关着的子条目 prompt.js:formatBlock 本来就跳过、不注入，
+ * 用户想用哪条自己去预设里打开就行，不需要别的代码去拦。
+ * 前端 store.jsx 里有同一张表（新建通话预设时用），改的时候两处一起改。
+ */
+export const CALL_OFF_CHILDREN = [
+  "voice",
+  "search",
+  "leaveOnRead",
+  "quote",
+  "undoSend",
+  "effect",
+  "instagram",
+  "xiaohongshu",
+  ...SPY_CHILD_KINDS,
+];
+
+/** 通话预设那条「消息格式与功能」：引言留空（那是发短信的说法），清单里的子条目关掉。 */
+function callFormatEntry() {
+  return {
+    content: "",
+    children: defaultFormatChildren().map((c) =>
+      CALL_OFF_CHILDREN.includes(c.kind) ? { ...c, enabled: false } : c
+    ),
+  };
+}
+
 export function defaultEntries(mode = "online") {
   return fixedKindsFor(mode).map((kind, i) => ({
     id: `e-${i + 1}`,
     kind,
     enabled: defaultEnabledFor(kind, mode),
     ...(kind === "format"
-      ? { content: DEFAULT_FORMAT_INTRO, children: defaultFormatChildren() }
+      ? mode === "call"
+        ? callFormatEntry()
+        : { content: DEFAULT_FORMAT_INTRO, children: defaultFormatChildren() }
       : {}),
     // 记忆库那条也有可编辑的正文（四个变量的位置和外面的标签都在里面）
     ...(kind === "memory" ? { content: DEFAULT_MEMORY_ENTRY } : {}),
@@ -1497,6 +1569,26 @@ function normalizeEntries(list, mode = "online") {
     };
     if (kind === "format") {
       normalizeFormatEntry(entry, raw);
+      /*
+       * 通话预设里那条「消息格式与功能」还是**原样出厂**的（引言是发短信那两句、
+       * 要关的那几条一条都没关）= 用户没动过，换成通话的默认：引言清空、
+       * CALL_OFF_CHILDREN 关掉。子条目的正文不动。
+       *
+       * 只认「完全没动过」这一种 —— 用户哪怕关过其中一条、或者改过一个字的引言，
+       * 都当他有自己的打算，原样留着。迁移完引言是空的，不会再触发第二次。
+       */
+      if (
+        mode === "call" &&
+        entry.content === DEFAULT_FORMAT_INTRO &&
+        entry.children
+          .filter((c) => CALL_OFF_CHILDREN.includes(c.kind))
+          .every((c) => c.enabled)
+      ) {
+        entry.content = "";
+        entry.children = entry.children.map((c) =>
+          CALL_OFF_CHILDREN.includes(c.kind) ? { ...c, enabled: false } : c
+        );
+      }
     } else if (kind === "memory") {
       // 老配置里这条是纯占位、没有 content 字段，缺了就补上默认正文 ——
       // 不补的话升级上来的用户会看到一条空的记忆库条目，什么都不注入
@@ -1511,7 +1603,11 @@ function normalizeEntries(list, mode = "online") {
       // 同上：只补「缺字段」的，用户改过的照原样留着。
       // 漏了这一支的后果很隐蔽 —— 条目还在、开关也开着，但正文是空的，
       // 于是整段「电话里怎么说话」压根没进提示词，角色照着发短信的路子念括号
-      entry.content = raw?.content === undefined ? DEFAULT_CALL_HOWTO : str(raw.content);
+      // 存着上一版的默认正文（还带「那些功能照样能用」那一节）= 没改过，换成新的
+      entry.content =
+        raw?.content === undefined || raw.content === LEGACY_CALL_HOWTO
+          ? DEFAULT_CALL_HOWTO
+          : str(raw.content);
     } else if (kind === "custom") {
       // 从线下降回线上时，那条用户选项落到这里 —— 名字给一个，不然界面上
       // 是一条无名条目，用户不知道这段文字打哪来的

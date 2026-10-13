@@ -574,6 +574,25 @@ function defaultFormatChildren() {
 }
 
 /**
+ * 通话预设里默认关掉的子条目。和 server/src/preset.js:CALL_OFF_CHILDREN
+ * 是同一张表，改的时候两处一起改。只是默认数据 —— 关着的本来就不注入。
+ */
+const CALL_OFF_CHILDREN = [
+  "voice",
+  "search",
+  "leaveOnRead",
+  "quote",
+  "undoSend",
+  "effect",
+  "instagram",
+  "xiaohongshu",
+  "spyScreen",
+  "spyView",
+  "spyControl",
+  "spyMusic",
+];
+
+/**
  * 新建预设。
  *
  * 六个固定条目的顺序、默认开关、默认参数、默认正则都和
@@ -605,8 +624,13 @@ function blankPreset(mode = "online") {
         id: newId("e"),
         kind: "format",
         enabled: false,
-        content: DEFAULT_FORMAT_INTRO,
-        children: defaultFormatChildren(),
+        // 通话预设：引言留空（那是发短信的说法），清单里那几条关掉
+        content: call ? "" : DEFAULT_FORMAT_INTRO,
+        children: call
+          ? defaultFormatChildren().map((c) =>
+              CALL_OFF_CHILDREN.includes(c.kind) ? { ...c, enabled: false } : c
+            )
+          : defaultFormatChildren(),
       },
       // onlineHistory 挨在 context 前面 —— 那批线上消息是「以前发生过的事」，
       // 摆在上文之前读起来才像一段旧事（服务端 OFFLINE_FIXED_KINDS 同序）

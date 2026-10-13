@@ -326,6 +326,44 @@ group("通话预设这条链路");
   // format 在通话里要开着 —— 那些功能是保留的，只是不念出来
   check("format 默认开着", entries.find((e) => e.kind === "format").enabled, true);
 
+  /*
+   * 通话默认预设的「消息格式与功能」（用户定的）：
+   *  - 引言清空 —— 那两句是发短信的说法（「你在用 iMessage 聊天」「用 {{sep}} 分气泡」）
+   *  - 这几条默认关：语音、联网搜索、已读不回、引用回复、撤回、特效、IG、小红书、查岗四条
+   * 只是默认数据，关着的子条目 formatBlock 本来就不注入。
+   */
+  const fmt = entries.find((e) => e.kind === "format");
+  check("通话预设的引言是空的", fmt.content, "");
+  check(
+    "默认关掉的子条目",
+    fmt.children.filter((c) => !c.enabled).map((c) => c.kind),
+    [
+      "voice",
+      "search",
+      "leaveOnRead",
+      "quote",
+      "undoSend",
+      "effect",
+      "instagram",
+      "xiaohongshu",
+      "spyScreen",
+      "spyView",
+      "spyControl",
+      "spyMusic",
+    ]
+  );
+  check(
+    "「那些功能照样能用」那一节删掉了",
+    /那些功能/.test(entries.find((e) => e.kind === "callHowto").content),
+    false
+  );
+  // 线上预设不受影响
+  check(
+    "线上预设的引言还在",
+    Boolean(defaultEntries("online").find((e) => e.kind === "format").content),
+    true
+  );
+
   // 归一化不能把默认正文吃掉（漏了这一支的话，整段提示词会静默消失）
   const norm = normalizePreset({ mode: "call", name: "x", entries }, "p1");
   check(
