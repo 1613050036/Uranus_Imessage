@@ -27,6 +27,7 @@ import {
   nextAmbience,
   nextFrame,
   seeFrame,
+  synthesizeSay,
   splitToneLine,
   takeAmbience,
   takeFrame,
@@ -353,6 +354,25 @@ group("默认通话预设里那句");
     }).presets.find((p) => p.id === "p")?.entries.find((e) => e.kind === "callHowto")?.content;
   check("上一版没改过：换成带摄像头的", howtoOf(v1202), DEFAULT_CALL_HOWTO);
   check("用户改过的：原样留着", howtoOf(v1202 + "\n我自己加的"), v1202 + "\n我自己加的");
+}
+
+// ───────────────────────────────── 角色自己挂电话
+
+group("[结束通话] 在剥标记之前就认出来");
+{
+  // 没配 TTS：合成回 null，不影响判挂断
+  const cfg = { ttsApi: {}, chat: { separator: "$" } };
+  const say = (text) => synthesizeSay({ config: cfg, role: {}, text });
+
+  let parts = await say("好，那我先挂了，晚点聊。[结束通话]");
+  check("挂断标记跟在话后面：认出来", parts.some((p) => p.hangUp), true);
+  check("念的文字里没有那个标记", parts.map((p) => p.text).join("").includes("结束通话"), false);
+
+  parts = await say("拜拜。\n\n[结束通话]");
+  check("单独一句只有标记：也要认出来（以前整句被丢掉）", parts.some((p) => p.hangUp), true);
+
+  parts = await say("再聊会儿嘛");
+  check("没写就不挂", parts.some((p) => p.hangUp), false);
 }
 
 // ───────────────────────────────── 配置

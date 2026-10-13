@@ -597,9 +597,18 @@ export async function* runCallTurn({ config, role, messages, params, signal }) {
  * 是生成器而不是普通函数，只为了「整句都是标记、没字可念」那种情况能
  * **一个都不 yield**（而不是 yield 一个空的让调用方再判一次）。
  *
- * @yields {{text: string, audio: Buffer|null, media: object[], seq?: number}}
+ * @yields {{text: string, audio: Buffer|null, media: object[], seq?: number, hangUp?: boolean}}
  */
 async function* sayOne(raw, { config, voiceId, sep, seq }) {
+  /*
+   * 角色要挂电话吗 —— **在剥标记之前**就看。
+   *
+   * 下面 speakableFrom 会把 [结束通话] 剥掉（不然会被念出来），而调用方拿到的
+   * text 是剥过的。以前挂断是在调用方对 text 拼起来那一段判的，于是永远看不到
+   * 这个标记，角色自己挂电话从来没生效过（用户实测「你挂一下」它不挂）。
+   * 所以这里单独带一个 hangUp 出去；整句只有这个标记、没字可念时也要 yield。
+   */
+  const hangUp = /[s*结束通话s*]/.test(String(raw ?? ""));
   /*
    * 功能保留，但不念出来。
    *
@@ -612,8 +621,9 @@ async function* sayOne(raw, { config, voiceId, sep, seq }) {
   const media = parts.filter((p) => p.kind !== "text");
 
   if (!speakable) {
-    // 整句只有标记（比如单独一个 [transfer:…]），不用合成，但媒体要带出去
-    if (media.length) yield { text: stripCallTags(raw), audio: null, media };
+    // 整句只有标记（比如单独一个 [transfer:…] 或 [结束通话]），不用合成，
+    // 但媒体和挂断要带出去
+    if (media.length || hangUp) yield { text: "", audio: null, media, hangUp };
     return;
   }
 
@@ -631,7 +641,7 @@ async function* sayOne(raw, { config, voiceId, sep, seq }) {
     logWarn(SCOPE, `这一句没合成出来：${speakable.slice(0, 30)}`, e);
   }
 
-  yield { text: speakable, audio, media, seq };
+  yield { text: speakable, audio, media, seq, hangUp };
 }
 
 /**

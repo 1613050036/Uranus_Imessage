@@ -10421,8 +10421,11 @@ async function speakAndRecord({ stream, ctx, config, role, call, userMsg, send, 
   const { runner } = ctx;
   const pieces = [];
   const media = [];
+  // 每句在剥标记之前判的挂断（见 callturn.js:sayOne）—— pieces 里已经没有那个标记了
+  let wantsHangUp = false;
 
   for await (const part of stream) {
+    if (part.hangUp) wantsHangUp = true;
     if (part.text) pieces.push(part.text);
     if (part.media?.length) media.push(...part.media);
     if (part.audio) {
@@ -10436,7 +10439,9 @@ async function speakAndRecord({ stream, ctx, config, role, call, userMsg, send, 
   const reply = pieces.join("");
 
   // 角色要挂断吗
-  const { hangUp, text: clean } = readHangUp(reply);
+  const read = readHangUp(reply);
+  const hangUp = wantsHangUp || read.hangUp;
+  const clean = read.text;
 
   // 存档 + 记忆 —— 和发短信走的是同一个函数
   const space = ctx.space;
