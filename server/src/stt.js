@@ -79,8 +79,9 @@ export function pickSttSource(api) {
  * @param {string} [opts.mimeType] 默认 audio/wav
  * @param {string} [opts.language] 语言提示，如 zh / en。空 = 自动
  * @param {string} [opts.scope] 日志里的名字
- * @returns {Promise<{text: string, source: string, ms: number}|null>}
- *   没配任何一家返回 null（调用方据此退回多模态那条路）
+ * @returns {Promise<{text: string, source: string, ms: number, emotion: string}|null>}
+ *   没配任何一家返回 null（调用方据此退回多模态那条路）。`emotion` 只有 Qwen 会给
+ *   （happy / sad / angry… 英文小写），别家是空串
  */
 export async function transcribe(api, audio, opts = {}) {
   const src = pickSttSource(api);
@@ -101,11 +102,17 @@ export async function transcribe(api, audio, opts = {}) {
   const withLang = { ...opts, language: opts.language || api?.language || "" };
 
   try {
-    const text = await src.run(audio, withLang);
+    // 多数家只回一段文字；Qwen 还顺带回情绪，回的是 {text, emotion}
+    const out = await src.run(audio, withLang);
     const ms = Date.now() - started;
-    const clean = String(text ?? "").trim();
-    logInfo(scope, `${src.name} 转写出 ${clean.length} 字，耗时 ${ms}ms`, clean.slice(0, 120));
-    return { text: clean, source: src.name, ms };
+    const clean = String((typeof out === "object" && out ? out.text : out) ?? "").trim();
+    const emotion = typeof out === "object" && out ? String(out.emotion ?? "") : "";
+    logInfo(
+      scope,
+      `${src.name} 转写出 ${clean.length} 字，耗时 ${ms}ms${emotion ? `，情绪 ${emotion}` : ""}`,
+      clean.slice(0, 120)
+    );
+    return { text: clean, source: src.name, ms, emotion };
   } catch (e) {
     /*
      * 失败**抛出去**，不静默退回。
@@ -320,13 +327,34 @@ async function sttQwen(cfg, audio, opts) {
     throw new Error(`Qwen 回的不是 JSON：${text.slice(0, 200)}`);
   }
 
-  const content = data?.choices?.[0]?.message?.content;
+  const message = data?.choices?.[0]?.message;
+  const content = message?.content;
+  let said;
   // 文档里写的是数组、示例里回的是字符串，两种都兜住
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content.map((c) => (typeof c === "string" ? c : (c?.text ?? ""))).join("");
+  if (typeof content === "string") said = content;
+  else if (Array.isArray(content)) {
+    said = content.map((c) => (typeof c === "string" ? c : (c?.text ?? ""))).join("");
+  } else throw new Error("Qwen 回的格式看不懂");
+
+  return { text: said, emotion: qwenEmotion(message) };
+}
+
+/**
+ * Qwen3-ASR 顺带回的情绪标签。
+ *
+ * 这家**每次都会给**，不用开、不另收钱：`message.annotations` 里有一条带
+ * `emotion` 的（surprised / neutral / happy / sad / disgusted / angry /
+ * fearful 七种）。以前只取了 content，这个一直被扔掉。
+ *
+ * 中转站多半会把 annotations 剥掉，那就是空串 —— 当没听出来，不是错。
+ */
+function qwenEmotion(message) {
+  const list = Array.isArray(message?.annotations) ? message.annotations : [];
+  for (const a of list) {
+    const e = String(a?.emotion ?? "").trim().toLowerCase();
+    if (e) return e;
   }
-  throw new Error("Qwen 回的格式看不懂");
+  return "";
 }
 
 /* ========= 讯飞 ========= */

@@ -82,9 +82,11 @@ import { pickSttSource, transcribe as sttTranscribe } from "./stt.js";
 import {
   callRecordLine,
   callUserMessage,
+  listenAmbience,
   noteTurn,
   runCallTurn,
   synthesizeSay,
+  takeAmbience,
   transcribe,
 } from "./callturn.js";
 import { fetchLinkImages, fetchLinkVideos, renderLinks } from "./linkmeta.js";
@@ -10259,9 +10261,20 @@ export async function handleCallTurn(getConfig, { audio, kind = "said", seconds 
 
   // 1. 对方说了什么
   let said = typed;
+  let tone = "";
   if (kind === "said") {
     if (!audio?.length) throw new Error("没收到音频");
-    said = await transcribe(config, role, audio);
+
+    /*
+     * 背景声音在后台听，不等 —— 结果下一轮才告诉角色（见 callturn.js:listenAmbience）。
+     * 放在转写**前面**起跑：下面「这段没人说话」那种会直接 return，而纯噪音
+     * 恰恰是最能听出背景的一段。listenAmbience 自己管节流（30 秒一次）。
+     */
+    if (role.call?.hearAmbience !== false) listenAmbience({ config, role, call, wav: audio });
+
+    const heard = await transcribe(config, role, audio, { tone: role.call?.hearTone !== false });
+    said = heard.text;
+    tone = heard.tone;
 
     /*
      * 转写出来是「无声」之类的 —— VAD 误触了（咳嗽、关门、键盘声）。
@@ -10288,7 +10301,15 @@ export async function handleCallTurn(getConfig, { audio, kind = "said", seconds 
 
   // 2. 拼成这一轮的用户消息（带上「已接通多久」那个前缀）
   const userName = resolveUser(config, role)?.name ?? "{{user}}";
-  const userMsg = callUserMessage({ kind, text: said, seconds, userName });
+  const userMsg = callUserMessage({
+    kind,
+    text: said,
+    seconds,
+    userName,
+    tone,
+    // 上一轮（或更早）在后台听出来的背景，有新的才有
+    ambience: takeAmbience(call),
+  });
 
   /*
    * ── 开场白：角色早就写好了，直接念，不打模型 ──

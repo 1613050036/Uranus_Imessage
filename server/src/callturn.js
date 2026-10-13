@@ -88,9 +88,13 @@ export function callEndpoint(config, role) {
  * @param {object} config
  * @param {object} role
  * @param {Buffer} wav 16kHz 单声道 WAV（节点那边包好的）
- * @returns {Promise<string>} 转写出来的文字；听不出来返回空串
+ * @param {object} [opts]
+ * @param {boolean} [opts.tone] 要不要顺带听语气（`role.call.hearTone`）
+ * @returns {Promise<{text: string, tone: string}>} 转写出来的文字（听不出来是空串），
+ *   以及语气（「开心」「生气」这种两三个字；平常语气或者没听出来是空串）
  */
-export async function transcribe(config, role, wav) {
+export async function transcribe(config, role, wav, opts = {}) {
+  const wantTone = opts.tone !== false;
   /*
    * ── 优先走专门的 STT ──
    *
@@ -106,7 +110,11 @@ export async function transcribe(config, role, wav) {
     logWarn(SCOPE, "专门的转写服务没转出来，退回多模态模型", e);
     return null;
   });
-  if (stt) return stt.text;
+  /*
+   * 语气：Qwen 每次都顺带回一个情绪标签，不用另外请求、不多花一毫秒。
+   * 别家专门的转写不给，那就没有 —— 不为它再打一次多模态，那会把这一轮拖慢。
+   */
+  if (stt) return { text: stt.text, tone: wantTone ? toneWord(stt.emotion) : "" };
 
   const eps = resolveRoleEndpoints(config, role);
   if (!eps.audio) {
@@ -115,7 +123,7 @@ export async function transcribe(config, role, wav) {
       "没配转写服务，这个角色也没开「听音」—— 通话里对方说的话没法转成文字。" +
         "去「连接」面板配一个转写服务（OpenAI 兼容 / Qwen / 讯飞都行）"
     );
-    return "";
+    return { text: "", tone: "" };
   }
 
   const audio = {
@@ -141,16 +149,185 @@ export async function transcribe(config, role, wav) {
      * 报告，于是它开始对着报告说话（实测第一通电话就是这样）。而且多生成
      * 这六段还要多花好几秒 —— 通话最不能忍的就是这个。
      *
-     * 所以这里写死用简洁版：只要原话。
+     * 所以这里写死用简洁版：只要原话。听语气的话只多要**一行**、而且只在
+     * 语气明显时才写（见 CALL_TONE_LINE），平常一个字都不多。
      */
-    const text = await transcribeAudio(eps.audio, CALL_AUDIO_PROMPT, audio);
-    const clean = String(text ?? "").trim();
-    logDebug(SCOPE, `听清了：${clean.slice(0, 60)}`);
-    return clean;
+    const prompt = wantTone ? CALL_AUDIO_PROMPT + CALL_TONE_LINE : CALL_AUDIO_PROMPT;
+    const raw = await transcribeAudio(eps.audio, prompt, audio);
+    const { text, tone } = splitToneLine(raw);
+    logDebug(SCOPE, `听清了：${text.slice(0, 60)}${tone ? `（语气：${tone}）` : ""}`);
+    return { text, tone: wantTone ? tone : "" };
   } catch (e) {
     logWarn(SCOPE, "这段没听清", e);
-    return "";
+    return { text: "", tone: "" };
   }
+}
+
+/**
+ * Qwen 的情绪标签 → 给角色看的词。
+ *
+ * neutral（平静）不报：绝大多数话都是它，每句都标一个「平静」只是噪音，
+ * 角色还会以为这是件值得回应的事。
+ */
+const TONE_WORDS = {
+  happy: "开心",
+  sad: "难过",
+  angry: "生气",
+  surprised: "惊讶",
+  fearful: "害怕",
+  disgusted: "嫌弃",
+};
+
+export function toneWord(emotion) {
+  return TONE_WORDS[String(emotion ?? "").trim().toLowerCase()] ?? "";
+}
+
+/**
+ * 多模态那条路要它听语气时，提示词后面多的那一行。
+ *
+ * 刻意只要**最后单独一行**、**语气明显才写**：要它每句都分析一遍语气的话，
+ * 它会回到语音条那种报告体（见上面 transcribe 里的那段），而且慢。
+ */
+const CALL_TONE_LINE =
+  "\n如果对方的语气很明显（在笑、带哭腔、在生气、很激动、很低落、在小声说话这类），" +
+  "在最后另起一行写「语气：」加两三个字；语气平常就不要写这一行。";
+
+/**
+ * 从多模态的回复里把「语气：xx」那一行拆出来。
+ *
+ * 只认**最后一行**：前面要是出现「语气」两个字，那是对方真说的话。
+ *
+ * @returns {{text: string, tone: string}}
+ */
+export function splitToneLine(raw) {
+  const lines = String(raw ?? "").trim().split(/\r?\n/);
+  const last = lines[lines.length - 1]?.trim() ?? "";
+  const m = /^[(（【[]?语气[:：]\s*([^)）】\]]{1,12})[)）】\]]?$/.exec(last);
+  if (!m || lines.length < 2) return { text: lines.join("\n").trim(), tone: "" };
+  return { text: lines.slice(0, -1).join("\n").trim(), tone: m[1].trim() };
+}
+
+/* ── 背景声音：在外面、车里、旁边有人 ─────────────────────────── */
+
+/**
+ * 隔多久听一次背景。
+ *
+ * 背景不会每句话都变，每句都听是白花钱；而且它是**晚一轮**才告诉角色的
+ * （见 listenAmbience），听得再勤也快不了。30 秒一次够看出「从屋里走到街上」。
+ */
+export const AMBIENCE_EVERY_MS = 30_000;
+
+/**
+ * 听背景声音用的提示词。
+ *
+ * 把**上一次听到的**带上，让它和那次比 —— 不然每次措辞都不一样
+ * （「街上，车声」「户外，有汽车经过」），程序分不出是真换了地方还是换了说法，
+ * 只能每 30 秒都报一次，角色就会一直念叨「你那边好吵」。
+ */
+export function ambiencePrompt(last = "") {
+  return (
+    "你在听一通电话里对方那头的背景声音，不用管对方说的内容。\n" +
+    "用一句不超过 20 个字的话描述背景：大概在什么地方（屋里、街上、车里、商场、饭馆……），" +
+    "有什么明显的声音（车流、风声、音乐、电视、旁边有别人在说话……）。\n" +
+    "背景很安静、听不出什么的话，只输出两个字：安静。\n" +
+    (last ? `上次听到的背景是「${last}」。如果现在和它差不多，只输出两个字：同上。\n` : "") +
+    "只写确实听到的声音，禁止推测和补全。不要任何格式、引号或解释。"
+  );
+}
+
+/**
+ * 听到一次背景之后，要不要告诉角色、告诉什么。纯函数，状态由调用方存。
+ *
+ *  - 「同上」或者空：没变，不报
+ *  - 「安静」：一开始就安静的不报（打电话默认就是安静的，报了反而奇怪）；
+ *    之前报过吵、现在安静了，报一次「安静下来了」
+ *  - 别的：报
+ *
+ * @param {string} last 上一次记下的背景
+ * @param {string} raw 这次模型回的
+ * @returns {{note: string, last: string}} note 空 = 这次不用告诉角色
+ */
+export function nextAmbience(last, raw) {
+  const line = String(raw ?? "")
+    .trim()
+    .split(/\r?\n/)[0]
+    .replace(/^["'“”「『]+|["'“”」』。.]+$/g, "")
+    .trim()
+    .slice(0, 30);
+  if (!line || /^同上/.test(line)) return { note: "", last };
+  if (/^安静/.test(line)) {
+    const wasNoisy = Boolean(last) && !/^安静/.test(last);
+    return { note: wasNoisy ? "安静下来了" : "", last: "安静" };
+  }
+  return { note: line, last: line };
+}
+
+/**
+ * 在后台听一下这段的背景声音。**不等它**。
+ *
+ * 结果存在这通电话上，**下一轮**拿出来告诉角色（takeAmbience）。为什么不等：
+ * 转写快（Qwen 一秒内），多模态听背景要两三秒 —— 等它的话每轮都慢这么多，
+ * 而「你那边好吵」晚一句说出来完全不碍事。
+ *
+ * 走的是角色的「听音」模型（`role.audioModel`）。没配就不听 —— 专门的转写
+ * 服务只会转字，听不出背景。
+ *
+ * @param {object} args
+ * @param {object} args.call 这通电话（callsession 里那个对象，状态就挂在它上面）
+ * @param {number} [args.now] 测试用
+ * @param {Function} [args.listen] 测试用：替掉真的那次模型请求
+ * @returns {Promise<void>|null} 这次没听（太勤、正在听、没模型）返回 null
+ */
+export function listenAmbience({ config, role, call, wav, now = Date.now(), listen }) {
+  if (!call || !wav?.length) return null;
+  const st = (call.ambience ??= { last: "", pending: "", busy: false, at: 0, warned: false });
+  if (st.busy || (st.at && now - st.at < AMBIENCE_EVERY_MS)) return null;
+
+  const eps = listen ? null : resolveRoleEndpoints(config, role);
+  if (!listen && !eps?.audio) {
+    if (!st.warned) {
+      st.warned = true;
+      logInfo(SCOPE, "开着「听背景声音」，但这个角色没配「听音」模型 —— 背景听不了，只转写原话");
+    }
+    return null;
+  }
+
+  st.busy = true;
+  st.at = now;
+  const ask =
+    listen ??
+    ((prompt) =>
+      transcribeAudio(eps.audio, prompt, {
+        base64: wav.toString("base64"),
+        mimeType: "audio/wav",
+        name: "ambience.wav",
+      }));
+
+  return Promise.resolve()
+    .then(() => ask(ambiencePrompt(st.last)))
+    .then((raw) => {
+      const { note, last } = nextAmbience(st.last, raw);
+      st.last = last;
+      if (note) {
+        st.pending = note;
+        logInfo(SCOPE, `听到背景：${note}（下一轮告诉角色）`);
+      } else {
+        logDebug(SCOPE, `背景没变（${String(raw ?? "").trim().slice(0, 30)}）`);
+      }
+    })
+    .catch((e) => logDebug(SCOPE, "这次背景没听成", e))
+    .finally(() => {
+      st.busy = false;
+    });
+}
+
+/** 把攒着的背景拿出来（拿了就清掉，同一句不说两遍）。 */
+export function takeAmbience(call) {
+  const st = call?.ambience;
+  if (!st?.pending) return "";
+  const note = st.pending;
+  st.pending = "";
+  return note;
 }
 
 /**
@@ -362,9 +539,20 @@ export async function synthesizeSay({ config, role, text }) {
  * @param {number} [opts.seconds] silence 要
  * @param {string} [opts.userName]
  * @param {boolean} [opts.micOff] 对方是不是正处在「可能关麦了」的状态
+ * @param {string} [opts.tone] 这句话的语气（said 才有）
+ * @param {string} [opts.ambience] 对方那头的背景声音（上一轮听出来的，见 listenAmbience）
  */
-export function callUserMessage({ kind, text = "", seconds = 0, userName = "{{user}}", micOff = false }) {
-  const head = callPrefix(sayDuration(elapsedMs()));
+export function callUserMessage({
+  kind,
+  text = "",
+  seconds = 0,
+  userName = "{{user}}",
+  micOff = false,
+  tone = "",
+  ambience = "",
+}) {
+  // 背景是「那边的情况」，放在最前面；语气贴着那句话
+  const head = callPrefix(sayDuration(elapsedMs())) + (ambience ? `[背景声音：${ambience}]` : "");
 
   if (kind === "silence") {
     return `${head}${silenceNotice(seconds, userName)}`;
@@ -374,7 +562,7 @@ export function callUserMessage({ kind, text = "", seconds = 0, userName = "{{us
     const mic = micOff ? `[${userName}已关闭麦克风]` : "";
     return `${head}${mic}${typedPrefix(userName)}${text}`;
   }
-  return `${head}${text}`;
+  return `${head}${tone ? `[${userName}的语气：${tone}]` : ""}${text}`;
 }
 
 /** 被打断时补进历史的那一条。让模型知道它实际说出口了什么。 */

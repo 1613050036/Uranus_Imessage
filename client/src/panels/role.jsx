@@ -5747,6 +5747,8 @@ export function RoleCallFields({ role, onGoto }) {
 
   const vs = role.voiceSend ?? {};
   const userName = resolveUser(config, role)?.name?.trim() || "用户";
+  // 通话转写走哪家（和 stt.js:pickSttSource 同一个顺序）—— 「听语气」要看它
+  const callSttName = sttSourceName(config.sttApi);
 
   return (
     <div className="grid grid-cols-1 gap-6">
@@ -5955,6 +5957,64 @@ export function RoleCallFields({ role, onGoto }) {
               checked={c.bargeIn !== false}
               onChange={(v) => patch({ bargeIn: v })}
               label="允许打断"
+            />
+          </label>
+
+          {/*
+            * 听语气 / 听背景。两个都默认开，但各有前提 —— 前提不满足时开关照样
+            * 能开，只是什么都听不出来。所以底下按当前配置说清楚「现在能不能用」，
+            * 别让用户开了等半天以为是角色不理他。判据和 callturn.js 一致。
+            */}
+          <label className="flex items-start justify-between gap-4 border-t border-line pt-6">
+            <span className="min-w-0">
+              <span className="block text-ui text-ink">听语气</span>
+              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                {userName}笑着说、带着哭腔说、生气地说，角色能听出来（平常语气不提）。
+                <br />
+                {callSttName === "Qwen3-ASR" ? (
+                  <>
+                    现在用的是 Qwen3-ASR，它转写时<strong className="text-ink-soft">顺带就给情绪</strong>
+                    ，不多花钱、不多等。
+                  </>
+                ) : callSttName ? (
+                  <>
+                    现在用的转写服务（{callSttName}）<strong className="text-warn">不给情绪</strong>
+                    ，开着也听不出来。要听语气换成 Qwen3-ASR（「连接 → 语音转文字」）。
+                  </>
+                ) : (
+                  <>没配转写服务，走的是「听音」模型，它会在语气明显时顺带写一句。</>
+                )}
+              </span>
+            </span>
+            <Switch
+              checked={c.hearTone !== false}
+              onChange={(v) => patch({ hearTone: v })}
+              label="听语气"
+            />
+          </label>
+
+          <label className="flex items-start justify-between gap-4 border-t border-line pt-6">
+            <span className="min-w-0">
+              <span className="block text-ui text-ink">听背景声音</span>
+              <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+                {userName}在街上、车里、饭馆，或者旁边有别人在说话，角色能知道。
+                在后台听、<strong className="text-ink-soft">不拖慢回话</strong>
+                ，所以会晚一句才说到；30 秒最多听一次，和上次差不多就不提。
+                <br />
+                {role.audioModel?.enabled ? (
+                  <>用的是这个角色的「听音」模型，每次多一个请求。</>
+                ) : (
+                  <>
+                    <strong className="text-warn">这个角色没开「听音」模型</strong>
+                    ，听不了 —— 专门的转写服务只转字、听不出背景。在上面「模型」那一栏打开它。
+                  </>
+                )}
+              </span>
+            </span>
+            <Switch
+              checked={c.hearAmbience !== false}
+              onChange={(v) => patch({ hearAmbience: v })}
+              label="听背景声音"
             />
           </label>
 
