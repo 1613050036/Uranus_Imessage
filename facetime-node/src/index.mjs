@@ -117,7 +117,7 @@ async function runServe(args = {}) {
       fetch: (url, init) => tunnel.fetch(url, init),
     });
     process.stdout.write(
-      "\n在 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里选「Uranus 去连节点」，填：\n" +
+      "\n在 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里，「节点在哪」选「节点不在本机」、「谁连谁」选「Uranus 去连节点」，填：\n" +
         `  节点地址：http://<这台机器的域名或公网 IP>:${tunnel.port}\n` +
         `  配对密钥：${cfg.secret}\n` +
         "（小手机版不能填 IP，得填一个指向这台机器的域名，见 README）\n\n"
@@ -126,7 +126,7 @@ async function runServe(args = {}) {
     if (!cfg.secret && !isLocalUranus(cfg.uranus)) {
       process.stderr.write(
         `\nUranus 不在这台机器上（${cfg.uranus}），得先配对。\n` +
-          "去 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里生成一串配对码，然后：\n" +
+          "去 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里，「节点在哪」选「节点不在本机」、「谁连谁」选「节点来连 Uranus」，复制配对码，然后：\n" +
           "  node src/index.mjs --pair <配对码>\n" +
           "Uranus 没有公网地址（安卓、家里电脑）的话，改用：\n" +
           "  node src/index.mjs --listen 8788\n\n"

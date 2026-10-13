@@ -37,7 +37,7 @@ if [ -f "$NODE_DIR/config.json" ]; then
     ""|http://127.*|https://127.*|http://localhost*|https://localhost*|http://\[::1\]*|https://\[::1\]*) ;;
     *)
       [ -n "$HAS_SECRET" ] || die "config.json 里 Uranus 在别的机器上（$URANUS_URL），但还没配对。
-在 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里点「节点在别的机器上？用配对码」，然后：
+在 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里，「节点在哪」选「节点不在本机」、「谁连谁」选「节点来连 Uranus」，复制配对码，然后：
   sudo bash pair.sh"
       ;;
   esac

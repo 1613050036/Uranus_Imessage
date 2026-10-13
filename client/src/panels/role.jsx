@@ -5423,6 +5423,8 @@ function AvatarField({ label, hint, file, fallback, onChange }) {
  */
 /** 节点在不在本机。缺 where 的老配置：Uranus 去连节点、或者关了本机免配对的，算不在本机。 */
 function callNodeIsLocal(node) {
+  // 小手机：后端在 Cloudflare 上，节点不可能和它在同一台机器
+  if (WORKER) return false;
   if (node?.where === "local") return true;
   if (node?.where === "remote") return false;
   return node?.direction !== "uranus" && node?.trustLocal !== false;
@@ -5481,7 +5483,7 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
         />
       </label>
 
-      {node.enabled && (
+      {node.enabled && !WORKER && (
         <Field
           label="节点在哪"
           hint="节点和 Uranus 装在同一台机器上就选「在本机」，什么都不用填"
@@ -5977,7 +5979,7 @@ export function RoleCallFields({ role, onGoto }) {
                     ，开着也听不出来。要听语气换成 Qwen3-ASR（「连接 → 语音转文字」）。
                   </>
                 ) : (
-                  <>没配转写服务，走的是「听音」模型，它会在语气明显时顺带写一句。</>
+                  <>没配转写服务，走的是「语音识别 API」，它会在语气明显时顺带写一句。</>
                 )}
               </span>
             </span>
@@ -5997,10 +5999,10 @@ export function RoleCallFields({ role, onGoto }) {
                 ，所以会晚一句才说到；30 秒最多听一次，和上次差不多就不提。
                 <br />
                 {role.audioModel?.enabled && role.audioModel?.provider && role.audioModel?.modelId ? (
-                  <>用的是这个角色的「听音」模型，每次多一个请求。</>
+                  <>用的是这个角色的「语音识别 API」，30 秒最多多一个请求。</>
                 ) : (
                   <>
-                    <strong className="text-warn">这个角色没开「听音」模型</strong>
+                    <strong className="text-warn">这个角色没开「语音识别 API」</strong>
                     ，听不了 —— 专门的转写服务只转字、听不出背景。在上面「模型」那一栏打开它。
                   </>
                 )}
@@ -6024,10 +6026,10 @@ export function RoleCallFields({ role, onGoto }) {
                 （默认通话预设里写了「没看到画面别瞎编」）。
                 <br />
                 {role.visionModel?.enabled && role.visionModel?.provider && role.visionModel?.modelId ? (
-                  <>用的是这个角色的「识图」模型，画面变了才多一个请求。</>
+                  <>用的是这个角色的「识图 API」，画面变了才多一个请求。</>
                 ) : (
                   <>
-                    <strong className="text-warn">这个角色没开「识图」模型</strong>
+                    <strong className="text-warn">这个角色没开「识图 API」</strong>
                     ，看不了 —— 在上面「模型」那一栏打开它。
                   </>
                 )}
