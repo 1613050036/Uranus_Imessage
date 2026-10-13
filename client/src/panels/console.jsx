@@ -2000,11 +2000,28 @@ export function CallPanel() {
           </span>
           {!node.enabled && <span className="text-ink-faint">· 开关没打开</span>}
           {/* 本机的节点不用密钥；只有连本机也要密钥、又没生成时才算缺东西 */}
-          {node.enabled && !node.trustLocal && !node.hasSecret && (
+          {node.enabled && node.direction !== "uranus" && !node.trustLocal && !node.hasSecret && (
             <span className="text-warn">· 还没生成配对密钥</span>
+          )}
+          {/*
+            * 「Uranus 去连节点」时，节点在不在线分两层：隧道连上没有、节点的
+            * 控制通道挂上来没有。隧道没通的话「不在线」一句话说不清卡在哪 ——
+            * 把隧道那一层的原因摆出来（地址错、端口没放行、密钥不对都在这儿）。
+            */}
+          {node.enabled && node.direction === "uranus" && (!node.url || !node.hasSecret) && (
+            <span className="text-warn">· 节点地址或配对密钥没填</span>
           )}
           {node.enabled && node.direction === "uranus" && node.url && (
             <span className="text-ink-faint">· 连到 {node.url}</span>
+          )}
+          {node.enabled && node.direction === "uranus" && node.tunnel?.active && (
+            node.tunnel.connected ? (
+              <span className="text-ink-faint">· 隧道通了</span>
+            ) : (
+              <span className="text-warn">
+                · 隧道没通{node.tunnel.error ? `（${node.tunnel.error}），在自动重连` : "，正在连"}
+              </span>
+            )
           )}
         </div>
 

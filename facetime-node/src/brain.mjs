@@ -77,7 +77,7 @@ export class UranusBrain {
 
     let res;
     try {
-      res = await fetch(url, {
+      res = await this.fetch(url, {
         method: "POST",
         headers: { "Content-Type": "audio/wav" },
         body,
@@ -125,7 +125,7 @@ export class UranusBrain {
    */
   async fetchAvatar(roleId = "") {
     try {
-      const res = await fetch(this.#url("/facetime/avatar", { roleId }), {
+      const res = await this.fetch(this.#url("/facetime/avatar", { roleId }), {
         signal: AbortSignal.timeout(10_000),
       });
       if (!res.ok) {
@@ -145,7 +145,7 @@ export class UranusBrain {
   /** 报一声状态。失败只记日志 —— 它不该把通话搞死。 */
   async report(type, data = {}) {
     try {
-      const res = await fetch(this.#url("/facetime/event"), {
+      const res = await this.fetch(this.#url("/facetime/event"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type, ...data }),
@@ -190,7 +190,7 @@ export class UranusBrain {
       while (!stopped) {
         ctl = new AbortController();
         try {
-          const res = await fetch(this.#url("/facetime/stream"), { signal: ctl.signal });
+          const res = await this.fetch(this.#url("/facetime/stream"), { signal: ctl.signal });
           if (!res.ok) {
             /*
              * 404 的含义是「功能没开、或者没设配对密钥」（Uranus 那边故意不
@@ -213,6 +213,16 @@ export class UranusBrain {
             onCommand(ev);
           }
         } catch (e) {
+          /*
+           * 「Uranus 来连节点」那条路上，Uranus 没连上来时 tunnel.fetch 自己已经
+           * 等了 30 秒才报 TUNNEL_DOWN —— 这里再退避就是白等，而且每 30 秒刷一条
+           * warn 没意义（它多半只是在重启）。直接回去接着等。
+           */
+          if (e?.code === "TUNNEL_DOWN") {
+            logDebug("Uranus", e.message);
+            delay = 1000;
+            continue;
+          }
           if (!stopped) logWarn("Uranus", "控制通道断了，等会儿重连", e);
         }
         if (stopped) break;

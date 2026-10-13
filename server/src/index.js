@@ -91,6 +91,7 @@ import { mountTheater } from "./theater.js";
 import { mountPhone } from "./phonecheck.js";
 import { mountReminders } from "./reminderapi.js";
 import { mountCall, sendToNode } from "./callapi.js";
+import { syncCallTunnel } from "./calltunnel.js";
 import { endCall, markConnected } from "./callsession.js";
 import { mountCustomCss } from "./customcss.js";
 import {
@@ -757,6 +758,8 @@ app.get("/api/config", (_req, res) => {
 app.put("/api/config", async (req, res) => {
   const saved = saveConfig(req.body);
   logInfo("配置", "配置已保存，正在让连接对齐新配置");
+  // 「Uranus 去连节点」：方向 / 地址 / 密钥变了才会断开重连，见 calltunnel.js
+  syncCallTunnel({ loadConfig });
   // 只动该动的连接：改了 A 的人设不该把 B 的号码踢下线
   try {
     await syncBridges(loadConfig);
@@ -4223,6 +4226,8 @@ app.listen(PORT, () => {
   console.log(`  → http://localhost:${PORT}`);
   console.log(`  → 配置目录: ${getDataDir()}\n`);
   logInfo("系统", `后端已启动，监听 ${PORT} 端口`);
+  // 配置里选了「Uranus 去连节点」的话，现在就连出去
+  syncCallTunnel({ loadConfig, port: PORT });
   // Node 只在启动时读一次系统时区：timedatectl 改完不重启服务，这里还是旧的
   logInfo("系统", `服务器时区：${serverTimeZone()}（当前 ${new Date().toString().slice(16, 24)}）`);
 

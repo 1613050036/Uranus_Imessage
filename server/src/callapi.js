@@ -28,6 +28,7 @@
 
 import { getCall, callStatus, endCall, touchNode } from "./callsession.js";
 import { clearCallLog, readCallLog } from "./calllog.js";
+import { callTunnelStatus } from "./calltunnel.js";
 import { logDebug, logInfo, logWarn } from "./logs.js";
 
 const SCOPE = "通话";
@@ -333,6 +334,8 @@ export function mountCall(app, loadConfig, hooks = {}) {
         trustLocal: cfg.trustLocal !== false,
         url: cfg.direction === "uranus" ? String(cfg.url ?? "") : "",
         online: nodeOnline(),
+        // 「Uranus 去连节点」那条隧道连上没有、没连上的话卡在哪
+        tunnel: callTunnelStatus(),
       },
       call: callStatus(),
       // 最近通话。状态和记录一起回，界面上那一栏只打一次接口

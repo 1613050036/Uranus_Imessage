@@ -5429,6 +5429,8 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
   // 缺字段算开（老配置升上来、以及绝大多数人的情况：同机跑）。和服务端
   // config.js:normalizeCallNode 同一个默认
   const trustLocal = node.trustLocal !== false;
+  // 「Uranus 去连节点」：Uranus 在安卓 / 家里电脑 / 小手机上、节点在 VPS 上时用
+  const reverse = node.direction === "uranus";
   // 配对那一块默认收起 —— 同机跑的人用不上它，摊开只会让人以为非配不可
   const [showPair, setShowPair] = useState(Boolean(secret) || !trustLocal);
   const pairCode = secret
@@ -5470,6 +5472,24 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
       </label>
 
       {node.enabled && (
+        <Field
+          label="怎么连"
+          hint="Uranus 跑在 VPS 上、或者和节点同一台机器：用第一种。跑在安卓、家里电脑、小手机上（节点连不到它）：用第二种，节点放 VPS 或自己电脑上"
+        >
+          <select
+            className={inputCls}
+            value={reverse ? "uranus" : "node"}
+            onChange={(e) => updateCallNode({ direction: e.target.value })}
+          >
+            <option value="node">节点来连 Uranus</option>
+            <option value="uranus">Uranus 去连节点</option>
+          </select>
+        </Field>
+      )}
+
+      {node.enabled && reverse && <ReverseNodeFields node={node} updateCallNode={updateCallNode} />}
+
+      {node.enabled && !reverse && (
         <label className="flex items-start justify-between gap-4 border-t border-line pt-5">
           <span className="min-w-0">
             <span className="block text-ui text-ink">本机的节点不用配对码</span>
@@ -5493,7 +5513,7 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
         </label>
       )}
 
-      {node.enabled && trustLocal && (
+      {node.enabled && !reverse && trustLocal && (
         <div className="grid grid-cols-1 gap-2">
           <p className="text-ui text-ink">节点装在这台机器上</p>
           <p className="text-meta leading-relaxed text-ink-faint">
@@ -5512,7 +5532,7 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
         </div>
       )}
 
-      {node.enabled && trustLocal && (
+      {node.enabled && !reverse && trustLocal && (
         <div className="border-t border-line pt-5">
           <button
             type="button"
@@ -5529,7 +5549,7 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
         </div>
       )}
 
-      {node.enabled && (!trustLocal || showPair) && (
+      {node.enabled && !reverse && (!trustLocal || showPair) && (
         <div className="grid grid-cols-1 gap-4">
           <Field
             label="配对密钥"
@@ -5620,6 +5640,64 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
 }
 
 /**
+ * 「Uranus 去连节点」那几个框：节点地址、配对密钥。
+ *
+ * 这条路是给**没有公网地址的 Uranus** 的（安卓、家里电脑），以及小手机 ——
+ * 节点放在 VPS 上开个端口，Uranus 主动连过去。密钥是**节点那边生成的**
+ * （第一次 `--listen` 时打在终端里），这里照抄，所以没有「随机生成」按钮。
+ *
+ * 小手机那条限制要写出来：Cloudflare 的 Worker 不能直接连 IP，只能连域名。
+ * 不说的话用户填了 IP、一直连不上，日志里也只有一句「连不上」。
+ */
+function ReverseNodeFields({ node, updateCallNode }) {
+  const url = String(node.url ?? "");
+  const looksIp = /^(https?:\/\/)?\d{1,3}(\.\d{1,3}){3}(:\d+)?\/?$/i.test(url.trim());
+  const badScheme = url.trim() && !/^https?:\/\//i.test(url.trim());
+
+  return (
+    <div className="grid grid-cols-1 gap-4 border-t border-line pt-5">
+      <p className="text-meta leading-relaxed text-ink-faint">
+        先在节点那台机器（VPS、或者你自己的电脑）上跑
+        <code className="mx-1 font-mono text-ink-soft">node src/index.mjs --listen 8788</code>
+        ，它会打出配对密钥。再把下面两个框填上，保存后 Uranus 自己连过去，
+        断了也会自己重连。连没连上去「控制台 → 通话」看。
+        <br />
+        节点那台机器的防火墙 / 安全组要放行这个端口。
+      </p>
+
+      <Field label="节点地址" hint="节点那台机器的地址加端口，比如 http://ft.example.com:8788">
+        <input
+          className={`${inputCls} font-mono`}
+          value={url}
+          placeholder="http://ft.example.com:8788"
+          onChange={(e) => updateCallNode({ url: e.target.value })}
+        />
+        {badScheme && (
+          <p className="text-meta leading-relaxed text-warn">要带上 http:// 或 https:// 开头。</p>
+        )}
+        {looksIp && (
+          <p className="text-meta leading-relaxed text-ink-faint">
+            填 IP 安卓和电脑上的 Uranus 能用；
+            <strong className="text-warn">小手机不行</strong>
+            —— Cloudflare 不让 Worker 直接连 IP。小手机得填一个指向节点那台机器的域名
+            （在 Cloudflare 上加记录的话要选「仅 DNS」，不要开代理的小黄云，否则 8788 这类端口过不去）。
+          </p>
+        )}
+      </Field>
+
+      <Field label="配对密钥" hint="节点第一次 --listen 时打出来的那串，也存在节点的 config.json 里">
+        <input
+          className={`${inputCls} font-mono`}
+          value={String(node.secret ?? "")}
+          placeholder="从节点那边复制过来"
+          onChange={(e) => updateCallNode({ secret: e.target.value })}
+        />
+      </Field>
+    </div>
+  );
+}
+
+/**
  * 接 FaceTime 通话。
  *
  * 三层结构和「发语音」一样（role.jsx:1091 那条）：**开关在角色、节点在全局
@@ -5638,8 +5716,12 @@ export function RoleCallFields({ role, onGoto }) {
 
   const node = config.callNode ?? {};
   // 本机的节点不需要密钥；不在本机才要。和服务端 callapi.js:checkSecret 同一个判据
+  // 「Uranus 去连节点」要地址和密钥都在
   const nodeReady = Boolean(
-    node.enabled && (node.trustLocal !== false || String(node.secret ?? "").trim())
+    node.enabled &&
+      (node.direction === "uranus"
+        ? String(node.url ?? "").trim() && String(node.secret ?? "").trim()
+        : node.trustLocal !== false || String(node.secret ?? "").trim())
   );
 
   // 通话预设是**第三批**（preset.mode === "call"），和线上线下那两批都不串

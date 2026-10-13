@@ -20,6 +20,7 @@ import { Call } from "./call.mjs";
 import { connectCdp, connectPage, sleep } from "./cdp.mjs";
 import { launchBrowser } from "./chrome.mjs";
 import { AVATAR_PATH, isLocalUranus, loadConfig, parsePairCode, saveConfig } from "./config.mjs";
+import { TunnelServer, makeSecret } from "./tunnel.mjs";
 import { buildFakeMediaShim } from "./fakemedia.mjs";
 import { dumpControls, installMediaHook, joinCall } from "./facetime.mjs";
 import { logError, logInfo, logWarn, setLogLevel } from "./logs.mjs";
@@ -29,6 +30,7 @@ const USAGE = `
 
   node src/index.mjs                   常驻，等 Uranus 派活
   node src/index.mjs --pair <配对码>   配地址和密钥（在 Uranus 控制台生成）
+  node src/index.mjs --listen 8788     开端口等 Uranus 来连（Uranus 在安卓 / 家里电脑上时用）
   node src/index.mjs --dump            排查用：把 FaceTime 页面的元素打出来
 
 加 --debug 看详细日志。
@@ -42,6 +44,7 @@ function parseArgs(argv) {
       out.mode = "pair";
       out.pair = argv[++i] ?? "";
     } else if (a === "--dump") out.mode = "dump";
+    else if (a === "--listen") out.listen = Number(argv[++i] ?? 8788) || 8788;
     else if (a === "--join") out.join = true;
     else if (a === "--name") out.name = argv[++i] ?? out.name;
     else if (a === "--debug") setLogLevel("debug");
@@ -71,8 +74,13 @@ function ask(prompt) {
 
 /* ── 常驻：挂在 Uranus 上等派活 ────────────────────────────── */
 
-async function runServe() {
+async function runServe(args = {}) {
   const cfg = loadConfig();
+  // --listen 写进 config.json，之后装成服务直接跑也是这个模式
+  if (args.listen && cfg.listen !== args.listen) {
+    cfg.listen = args.listen;
+    saveConfig(cfg);
+  }
 
   /*
    * ── 同机的话不用配对 ──
@@ -83,21 +91,54 @@ async function runServe() {
    *
    * 只有 Uranus 在别的机器上、又没配对过，才是真的缺东西 —— 那时候才拦。
    */
-  if (!cfg.secret && !isLocalUranus(cfg.uranus)) {
-    process.stderr.write(
-      `\nUranus 不在这台机器上（${cfg.uranus}），得先配对。\n` +
-        "去 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里关掉本机模式、\n" +
-        "生成一串配对码，然后：\n" +
-        "  node src/index.mjs --pair <配对码>\n\n"
+  /*
+   * ── 两种连法 ──
+   *
+   * 默认：节点去连 Uranus（Uranus 要有节点够得着的地址：同机、VPS、小手机）。
+   * 开了 listen：节点开端口等 **Uranus 来连**（Uranus 在安卓手机、家里电脑上，
+   * 没有公网地址，节点放在 VPS 上）。连上之后节点照样用 brain 发请求，只是
+   * 请求从隧道里送过去，见 tunnel.mjs。
+   */
+  let brain;
+  let tunnel = null;
+  if (cfg.listen) {
+    if (!cfg.secret) {
+      // 这个端口是对公网开着的，没密钥谁都能连。第一次开就自己生成一个存下来
+      cfg.secret = makeSecret();
+      saveConfig(cfg);
+      logInfo("节点", "第一次开「Uranus 来连节点」，生成了一个配对密钥，存进 config.json 了");
+    }
+    tunnel = new TunnelServer({ port: cfg.listen, secret: cfg.secret });
+    await tunnel.start();
+    // base 只是占位 —— 请求走隧道，Uranus 在哪由隧道决定
+    brain = new UranusBrain({
+      base: "http://uranus.tunnel",
+      secret: cfg.secret,
+      fetch: (url, init) => tunnel.fetch(url, init),
+    });
+    process.stdout.write(
+      "\n在 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里选「Uranus 去连节点」，填：\n" +
+        `  节点地址：http://<这台机器的域名或公网 IP>:${tunnel.port}\n` +
+        `  配对密钥：${cfg.secret}\n` +
+        "（小手机版不能填 IP，得填一个指向这台机器的域名，见 README）\n\n"
     );
-    process.exit(1);
+  } else {
+    if (!cfg.secret && !isLocalUranus(cfg.uranus)) {
+      process.stderr.write(
+        `\nUranus 不在这台机器上（${cfg.uranus}），得先配对。\n` +
+          "去 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里生成一串配对码，然后：\n" +
+          "  node src/index.mjs --pair <配对码>\n" +
+          "Uranus 没有公网地址（安卓、家里电脑）的话，改用：\n" +
+          "  node src/index.mjs --listen 8788\n\n"
+      );
+      process.exit(1);
+    }
+    brain = new UranusBrain({ base: cfg.uranus, secret: cfg.secret });
+    logInfo(
+      "节点",
+      `盯着 ${cfg.uranus}，等它派活${cfg.secret ? "" : "（本机模式，没用配对码）"}`
+    );
   }
-
-  const brain = new UranusBrain({ base: cfg.uranus, secret: cfg.secret });
-  logInfo(
-    "节点",
-    `盯着 ${cfg.uranus}，等它派活${cfg.secret ? "" : "（本机模式，没用配对码）"}`
-  );
 
   /** 正在进行的那通电话。一次只接一通。 */
   let call = null;
@@ -158,6 +199,7 @@ async function runServe() {
     logInfo("节点", "收工");
     listener.stop();
     call?.hangUp("节点退出");
+    void tunnel?.stop();
     setTimeout(() => process.exit(0), 500);
   };
   process.on("SIGINT", bye);
@@ -243,7 +285,7 @@ const run =
       ? () => runDump(args)
       : args.mode === "help"
         ? async () => process.stdout.write(USAGE)
-        : runServe;
+        : () => runServe(args);
 
 run().catch((e) => {
   logError("节点", e?.message ?? String(e), e);

@@ -42,6 +42,8 @@ export function loadConfig() {
   if (process.env.FT_URANUS) cfg.uranus = process.env.FT_URANUS;
   if (process.env.FT_SECRET) cfg.secret = process.env.FT_SECRET;
   if (process.env.FT_DEBUG_PORT) cfg.debugPort = Number(process.env.FT_DEBUG_PORT);
+  if (process.env.FT_LISTEN) cfg.listen = Number(process.env.FT_LISTEN);
+  cfg.listen = Number.isInteger(Number(cfg.listen)) && Number(cfg.listen) > 0 ? Number(cfg.listen) : 0;
 
   cfg.uranus = String(cfg.uranus).replace(/\/+$/, "");
   return cfg;
