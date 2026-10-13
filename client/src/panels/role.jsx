@@ -5701,14 +5701,21 @@ export function RoleCallFields({ role, onGoto }) {
 
           <Field
             label="通话预设"
-            hint="留空 = 用内置的那份。它和线上、线下预设是三批独立的东西"
+            hint="只列通话那一批 —— 它和线上、线下预设是三批独立的东西"
           >
             <select
               className={inputCls}
               value={c.presetRef ?? ""}
               onChange={(e) => patch({ presetRef: e.target.value })}
             >
-              <option value="">内置的默认通话预设</option>
+              {/* 和线上 / 线下那两个下拉框同一个说法：没选 = 用这一批的第一份
+                  （服务端 preset.js:resolvePreset 就是这么挑的）。一份都没有时
+                  才回落到内置兜底 */}
+              <option value="">
+                {presets.length
+                  ? `（默认用第一份：${presetLabel(presets[0])}）`
+                  : "（还没有通话预设，用内置的那份）"}
+              </option>
               {presets.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name || "没名字的预设"}
@@ -5721,7 +5728,17 @@ export function RoleCallFields({ role, onGoto }) {
             通话预设里那条「怎么打电话」管的是电话里该怎么说话：
             <strong className="text-ink-soft">不写括号动作</strong>
             （TTS 会把「（笑）」一个字一个字念出来）、不拆气泡、一段两到四句、
-            要有语气词。内置那份已经写好了，想改就新建一份通话预设。
+            要有语气词，以及角色想挂电话时写
+            <code className="mx-1 font-mono text-ink-soft">[结束通话]</code>
+            。想改措辞，去
+            <button
+              type="button"
+              onClick={() => onGoto?.("preset")}
+              className="link-slide mx-1 text-ink"
+            >
+              「预设」
+            </button>
+            里改「通话默认预设」那份。
           </p>
 
           <Field

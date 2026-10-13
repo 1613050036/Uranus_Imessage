@@ -469,7 +469,94 @@ export function ensureLayout() {
 }
 
 /**
- * 把 assets/presets/ 里那两份种子拷进刚建出来的 data/presets/。
+ * 「通话默认预设」补发过了没有。见 topUpCallPreset。
+ *
+ * 放在 DATA_DIR 根上、不叫 .json —— 放进 presets/ 的话会被 writeCollection 的
+ * 清扫当成过期预设删掉。
+ */
+const CALL_SEED_MARK = path.join(DATA_DIR, ".seeded-call-preset");
+
+/**
+ * 给**已经装过的人**补一份「通话默认预设」。只补一次。
+ *
+ * ── 为什么要补 ──
+ *
+ * 种子只在 data/presets/ 第一次被建出来时拷（seedPresets），而通话是后来才
+ * 加的 —— 所以在那之前装好的每一台机器，预设列表里都**永远没有**通话预设。
+ * 提示词其实一直有（makeDefaultPreset 那份内置兜底），但它不在列表里，
+ * 用户看不见、也改不了。用户的原话：「我还是没有看到默认的通话预设」。
+ *
+ * ── 规矩 ──
+ *
+ *  - **只补一次**，补完写一个标记。用户之后把它删了，是他的选择，不再补回来
+ *    （和 seedPresets「文件夹在了就当老用户」同一条规矩）。
+ *  - 列表里已经有任何一份通话预设（用户自己建过）就不补，只写标记。
+ *  - 新装的机器 seedPresets 已经拷了三份，走到这儿会看到通话预设已在，只写标记。
+ *  - 文件名用「现有最大序号 + 1」，排在列表最后，不打乱用户自己排好的顺序。
+ *
+ * **只能从 loadConfig 调**，不能放进 ensureLayout：writeToDisk 也调 ensureLayout，
+ * 紧接着 writeCollection 会把「这次没写过的 .json」清扫掉 —— 在那条路上补进来
+ * 的文件会被当场删掉，而标记已经写了，就再也补不回来。
+ *
+ * 失败只 warn：没有它照样能打电话（回落到内置兜底），只是列表里看不到。
+ */
+export function topUpCallPreset() {
+  if (fs.existsSync(CALL_SEED_MARK)) return;
+  const mark = () => {
+    try {
+      fs.writeFileSync(
+        CALL_SEED_MARK,
+        "这个文件表示「通话默认预设」已经补发过一次。删掉它，下次启动会再补一份（前提是预设里一份通话预设都没有）。\r\n",
+        "utf-8"
+      );
+    } catch (e) {
+      logWarn("配置", "通话预设的补发标记写不进去", e);
+    }
+  };
+
+  const modeOf = (file) => {
+    try {
+      return JSON.parse(fs.readFileSync(file, "utf-8"))?.mode;
+    } catch {
+      return undefined;
+    }
+  };
+
+  let existing;
+  try {
+    existing = fs.readdirSync(PRESETS_DIR).filter((n) => n.toLowerCase().endsWith(".json"));
+  } catch {
+    return; // 预设文件夹都还没有：等 ensureLayout 建好、seedPresets 拷完再说
+  }
+  if (existing.some((n) => modeOf(path.join(PRESETS_DIR, n)) === "call")) return mark();
+
+  let seed;
+  try {
+    seed = fs
+      .readdirSync(BUILTIN_PRESET_DIR)
+      .filter((n) => n.toLowerCase().endsWith(".json"))
+      .find((n) => modeOf(path.join(BUILTIN_PRESET_DIR, n)) === "call");
+  } catch {
+    return; // 精简安装没有 assets/presets/，当没这回事（也不写标记，装回来还能补）
+  }
+  if (!seed) return;
+
+  const next = existing.reduce((m, n) => Math.max(m, Number.isFinite(orderOf(n)) ? orderOf(n) : 0), 0) + 1;
+  const target = path.join(PRESETS_DIR, `${String(next).padStart(2, "0")}-${seed.replace(/^\d+-/, "")}`);
+  try {
+    fs.copyFileSync(path.join(BUILTIN_PRESET_DIR, seed), target, fs.constants.COPYFILE_EXCL);
+    logInfo("配置", "这一版起有了内置的「通话默认预设」，已经放进预设列表，可以直接改");
+  } catch (e) {
+    if (e?.code !== "EEXIST") {
+      logWarn("配置", "通话默认预设补不进去", e);
+      return; // 不写标记，下次启动再试
+    }
+  }
+  mark();
+}
+
+/**
+ * 把 assets/presets/ 里那几份种子（线上 / 线下 / 通话）拷进刚建出来的 data/presets/。
  *
  * **只在 data/presets/ 压根不存在时调**（见 ensureLayout 顶上那个 freshPresets）。
  * 「文件夹已经在了」一律当老用户处理，包括它是空的 —— 用户把预设全删光是他的

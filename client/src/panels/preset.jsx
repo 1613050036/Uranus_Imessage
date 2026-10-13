@@ -144,7 +144,7 @@ export function PresetPanel({ onGoto }) {
               <strong className="text-ink-soft">「怎么打电话」</strong>
               ：电话里不写括号动作、不拆气泡、一段两到四句，以及
               <strong className="text-ink-soft">角色想挂电话就写 [结束通话]</strong>
-              。内置那份已经写好了，想改措辞就新建一份通话预设改它。
+              。左边列表里那份标着「通话」的「通话默认预设」就是它，直接点开改。
             </p>
           </div>
         ) : (
@@ -418,7 +418,8 @@ export function PresetEntriesFold({ preset, onGoto }) {
                   {(e.kind === "custom" ||
                     e.kind === "format" ||
                     e.kind === "onlineHistory" ||
-                    e.kind === "userChoice") && (
+                    e.kind === "userChoice" ||
+                    e.kind === "callHowto") && (
                     <button
                       type="button"
                       onClick={() => setEditId(editId === e.id ? "" : e.id)}
@@ -649,6 +650,50 @@ export function PresetEntryEditor({ preset, entry, onGoto }) {
           包起来的那一段，或者整段回复<span className="text-ink-soft">结尾</span>
           连续的几行编号 / 短横线。所以正文里那句标记要求删掉也还能摘出来。
           最多取四条，一条都没摘到时就当这轮没有选项 —— 剧情正文照样发出来。
+        </p>
+      </div>
+    );
+  }
+
+  /*
+   * 「怎么打电话」（通话预设）和「线上聊天记录」（线下预设）：都只有一段正文。
+   *
+   * 这两条以前**有铅笔没编辑器** —— 铅笔按钮在（或者压根没给），点开是空的，
+   * 因为这个函数只认 format / userChoice / custom，其余一律 return null。
+   * 用户要改通话提示词（包括让角色自己挂电话的那句）根本无处下手。
+   */
+  if (entry.kind === "callHowto" || entry.kind === "onlineHistory") {
+    const call = entry.kind === "callHowto";
+    return (
+      <div className="grid grid-cols-1 gap-4">
+        <Field
+          label="正文"
+          hint={
+            call
+              ? "整段包在 <Phone_Call> 里，紧跟在「消息格式与功能」后面。{{user}} / {{char}} 会替换成名字"
+              : "整段包在 <线上聊天记录> 里。{{线上聊天记录}} 那一行会换成真实的线上记录，{{user}} / {{char}} 会替换成名字"
+          }
+        >
+          <textarea
+            className={`${inputCls} min-h-[260px] resize-y font-mono text-meta leading-relaxed`}
+            value={entry.content ?? ""}
+            onChange={(e) => updatePresetEntry(preset.id, entry.id, { content: e.target.value })}
+          />
+        </Field>
+        <p className="border-l-2 border-line py-1.5 pl-3 text-meta leading-relaxed text-ink-faint">
+          {call ? (
+            <>
+              角色能自己挂电话，靠的是正文里那句
+              <code className="mx-1 bg-sunken px-1">[结束通话]</code>
+              的说明 ——<span className="text-ink-soft">删掉它，角色就不知道自己能挂</span>
+              。「别写括号动作」那条也别删：TTS 会把「（笑）」一个字一个字念出来。
+            </>
+          ) : (
+            <>
+              <code className="mr-1 bg-sunken px-1">{"{{线上聊天记录}}"}</code>
+              那一行删掉 = 这一条不要记录。一条线上记录都没有时整条不产出。
+            </>
+          )}
         </p>
       </div>
     );

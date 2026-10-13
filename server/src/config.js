@@ -14,6 +14,7 @@ import {
   migrateLegacyLayout,
   readCollection,
   readJson,
+  topUpCallPreset,
   writeCollection,
   writeJson,
 } from "./datadir.js";
@@ -3878,6 +3879,9 @@ export function loadConfig() {
   // 抢在 app.listen 的回调之前进来
   migrateDataLayout();
   ensureLayout();
+  // 老用户补一份「通话默认预设」，只补一次。必须在读盘之前、而且只能在这条
+  // 读的路上做 —— 理由见 datadir.js:topUpCallPreset
+  topUpCallPreset();
   cachedConfig = normalizeConfig(readRawFromDisk());
   return cachedConfig;
 }
