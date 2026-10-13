@@ -19,7 +19,7 @@ import { UranusBrain } from "./brain.mjs";
 import { Call } from "./call.mjs";
 import { connectCdp, connectPage, sleep } from "./cdp.mjs";
 import { launchBrowser } from "./chrome.mjs";
-import { AVATAR_PATH, loadConfig, parsePairCode, saveConfig } from "./config.mjs";
+import { AVATAR_PATH, isLocalUranus, loadConfig, parsePairCode, saveConfig } from "./config.mjs";
 import { buildFakeMediaShim } from "./fakemedia.mjs";
 import { dumpControls, installMediaHook, joinCall } from "./facetime.mjs";
 import { logError, logInfo, logWarn, setLogLevel } from "./logs.mjs";
@@ -73,16 +73,31 @@ function ask(prompt) {
 
 async function runServe() {
   const cfg = loadConfig();
-  if (!cfg.secret) {
+
+  /*
+   * ── 同机的话不用配对 ──
+   *
+   * 默认地址就是 http://127.0.0.1:8787，Uranus 那边默认开着「本机模式」
+   * （从回环地址来的节点不校验密钥）。所以同机这条路**装好直接跑**，
+   * 不用生成密钥、不用粘配对码。
+   *
+   * 只有 Uranus 在别的机器上、又没配对过，才是真的缺东西 —— 那时候才拦。
+   */
+  if (!cfg.secret && !isLocalUranus(cfg.uranus)) {
     process.stderr.write(
-      "\n还没配对。去 Uranus 控制台的「通话」里生成一串配对码，然后：\n" +
+      `\nUranus 不在这台机器上（${cfg.uranus}），得先配对。\n` +
+        "去 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里关掉本机模式、\n" +
+        "生成一串配对码，然后：\n" +
         "  node src/index.mjs --pair <配对码>\n\n"
     );
     process.exit(1);
   }
 
   const brain = new UranusBrain({ base: cfg.uranus, secret: cfg.secret });
-  logInfo("节点", `盯着 ${cfg.uranus}，等它派活`);
+  logInfo(
+    "节点",
+    `盯着 ${cfg.uranus}，等它派活${cfg.secret ? "" : "（本机模式，没用配对码）"}`
+  );
 
   /** 正在进行的那通电话。一次只接一通。 */
   let call = null;

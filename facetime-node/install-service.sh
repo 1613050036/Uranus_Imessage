@@ -2,6 +2,9 @@
 #
 # 把通话节点装成一个 systemd 服务：开机自启、崩了自己重启。
 #
+# 和 Uranus 同机的话**直接跑这一个就完了**，不用配对。节点在别的机器上才要先
+# 跑 pair.sh。
+#
 # 装完之后**再也不用碰命令行** —— 在 Uranus 控制台里点开关就行。
 #
 # 用法：
@@ -23,9 +26,25 @@ die() { printf '\n\033[31m%s\033[0m\n\n' "$1" >&2; exit 1; }
 # ── 先把该有的都检查一遍，别装完才发现跑不起来 ──────────────
 
 # 1. 配对了没
-[ -f "$NODE_DIR/config.json" ] || die "还没配对。先在 Uranus 控制台的「接 FaceTime 通话」里生成配对码，然后：
-  sudo bash pair.sh
-（它会提示你把配对码粘进去）"
+#
+# 和 Uranus 同机的话**不用配对**：节点默认连 http://127.0.0.1:8787，Uranus 那边
+# 默认开着「本机的节点不用配对码」。所以没有 config.json 不是错，是同机的正常状态。
+# 只在配置里写了别的机器、又没有密钥时才拦 —— 那种节点起来也连不上。
+if [ -f "$NODE_DIR/config.json" ]; then
+  URANUS_URL="$(grep -oE '"uranus"[[:space:]]*:[[:space:]]*"[^"]*"' "$NODE_DIR/config.json" | sed -E 's/.*"([^"]*)"$/\1/' || true)"
+  HAS_SECRET="$(grep -oE '"secret"[[:space:]]*:[[:space:]]*"[^"]+"' "$NODE_DIR/config.json" || true)"
+  case "$URANUS_URL" in
+    ""|http://127.*|https://127.*|http://localhost*|https://localhost*|http://\[::1\]*|https://\[::1\]*) ;;
+    *)
+      [ -n "$HAS_SECRET" ] || die "config.json 里 Uranus 在别的机器上（$URANUS_URL），但还没配对。
+在 Uranus 控制台「角色 → 接 FaceTime 通话 → 通话节点」里点「节点在别的机器上？用配对码」，然后：
+  sudo bash pair.sh"
+      ;;
+  esac
+  say "用的是已有的 config.json（Uranus：${URANUS_URL:-http://127.0.0.1:8787}）"
+else
+  say "没有 config.json —— 按同机部署来，连 http://127.0.0.1:8787，不用配对"
+fi
 
 # 2. Node 在哪。和 update-vps.sh 一个思路：先问正在跑的 uranus 服务
 NODE_BIN=""

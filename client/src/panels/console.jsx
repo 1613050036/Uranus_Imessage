@@ -1883,3 +1883,223 @@ export function CloudBackupPanel() {
     </Card>
   );
 }
+
+/* ================= 通话 ================= */
+
+/** 毫秒 → 「3 分 12 秒」。和服务端 callsession.js:sayDuration 一个说法。 */
+function sayDuration(ms) {
+  const total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m ? `${m} 分 ${s} 秒` : `${s} 秒`;
+}
+
+/** 通话记录里那一行的日期：今天只写时分，更早的带上月日。 */
+function callWhen(iso) {
+  const d = zoned(new Date(iso));
+  const now = zoned();
+  const p = (n) => String(n).padStart(2, "0");
+  const hm = `${p(d.h)}:${p(d.mi)}`;
+  const sameDay = d.y === now.y && d.m === now.m && d.d === now.d;
+  return sameDay ? hm : `${d.m}/${d.d} ${hm}`;
+}
+
+/**
+ * 通话状态 + 最近通话。
+ *
+ * ── 为什么整块会消失 ──
+ *
+ * 绝大多数人不用 FaceTime 通话（那还得另外跑一个节点）。给他们在控制台上
+ * 常驻一块「没有通话」的空卡片，纯粹是噪音 —— 用户的原话是「有的人不一定
+ * 会想用这个，看起来有点麻烦了」。
+ *
+ * 所以：**通话节点没开、而且一条记录都没有，整块不渲染**。开了就出现，
+ * 用过就留着（翻得到以前打过谁）。
+ *
+ * ── 为什么只在有电话时才轮询 ──
+ *
+ * 通话中要看秒数跳，所以 3 秒问一次；没在通话时只在挂载和操作后各问一次。
+ * 不这么分的话，一个开着控制台的浏览器会一天到晚对着后端打空轮询。
+ */
+export function CallPanel() {
+  const { config } = useConfig();
+  const [data, setData] = useState(null); // { node, call, recent }
+  const [busy, setBusy] = useState("");
+  const [note, setNote] = useState(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const load = useMemo(
+    () => () =>
+      api("/api/call/status")
+        .then(setData)
+        .catch(() => {
+          /* 后端没起来 / 这一版没有这个接口：当没有通话，别在控制台上报错 */
+        }),
+    []
+  );
+
+  const active = Boolean(data?.call?.active);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    // 只在通话中轮询，见函数头
+    if (!active) return undefined;
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [active, load]);
+
+  async function hangUp() {
+    setBusy("hangup");
+    setNote(null);
+    try {
+      const r = await api("/api/call/hangup", { method: "POST" });
+      setData((d) => ({ ...(d ?? {}), ...r }));
+      setNote({ ok: true, text: "已挂断" });
+    } catch (e) {
+      setNote({ ok: false, text: String(e?.message ?? e) });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function clearLog() {
+    setConfirmClear(false);
+    setBusy("clear");
+    setNote(null);
+    try {
+      const r = await api("/api/call/log/clear", { method: "POST" });
+      setData((d) => ({ ...(d ?? {}), recent: r.recent ?? [] }));
+      setNote({ ok: true, text: "记录清空了" });
+    } catch (e) {
+      setNote({ ok: false, text: String(e?.message ?? e) });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const recent = data?.recent ?? [];
+  const node = data?.node ?? {};
+  // 没开节点、也没打过电话 —— 这台机器压根不用这个功能，整块不出现
+  if (!node.enabled && !recent.length && !active) return null;
+
+  const call = data?.call ?? {};
+
+  return (
+    <Card
+      title="通话"
+      desc="FaceTime 通话的当前状态和最近记录。说了什么在 iMessage 的聊天记录里"
+    >
+      <div className="grid grid-cols-1 gap-6">
+        {/* 节点在不在 */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-meta">
+          <span className={node.online ? "text-good" : "text-ink-faint"}>
+            {node.online ? "● 通话节点在线" : "○ 通话节点不在线"}
+          </span>
+          {!node.enabled && <span className="text-ink-faint">· 开关没打开</span>}
+          {/* 本机的节点不用密钥；只有连本机也要密钥、又没生成时才算缺东西 */}
+          {node.enabled && !node.trustLocal && !node.hasSecret && (
+            <span className="text-warn">· 还没生成配对密钥</span>
+          )}
+          {node.enabled && node.direction === "uranus" && node.url && (
+            <span className="text-ink-faint">· 连到 {node.url}</span>
+          )}
+        </div>
+
+        {/* 正在通话 */}
+        {active ? (
+          <div className="grid grid-cols-1 gap-3 border border-line bg-sunken p-6">
+            <div className="flex flex-wrap items-baseline justify-between gap-3">
+              <p className="text-ui text-ink">
+                <strong>{call.roleName || "角色"}</strong>
+                <span className="mx-2 text-ink-faint">←</span>
+                <span className="font-mono text-meta text-ink-soft">{call.peer}</span>
+              </p>
+              <Button variant="outline" disabled={busy === "hangup"} onClick={hangUp}>
+                {busy === "hangup" ? "挂断中…" : "挂断"}
+              </Button>
+            </div>
+            <p className="text-meta text-ink-faint">
+              {call.state === "live" ? "通话中" : "正在接通"} ·{" "}
+              {sayDuration(call.elapsedMs)} · {call.turns ?? 0} 轮
+              {/* 节点超过十几秒没来报到，多半是它那头没了 */}
+              {call.nodeSeenMsAgo > 15000 && (
+                <span className="text-warn">
+                  {" "}
+                  · 节点已经 {Math.round(call.nodeSeenMsAgo / 1000)} 秒没动静了
+                </span>
+              )}
+            </p>
+          </div>
+        ) : (
+          <p className="text-meta text-ink-faint">现在没有正在进行的通话。</p>
+        )}
+
+        {/* 最近通话 */}
+        <div className="grid grid-cols-1 gap-3 border-t border-line pt-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-ui text-ink">最近通话</p>
+            {recent.length > 0 && (
+              <Button variant="ghost" disabled={busy === "clear"} onClick={() => setConfirmClear(true)}>
+                <Trash2 size={14} />
+                清空
+              </Button>
+            )}
+          </div>
+
+          {recent.length === 0 ? (
+            <p className="text-meta leading-relaxed text-ink-faint">
+              还没有通话记录。接通过的电话会记在这儿 —— 谁、什么时候、多久、几轮、
+              怎么结束的。<strong className="text-ink-soft">说了什么不在这里</strong>
+              ，在 iMessage 的聊天记录里（挂断时那边会留一条「通话结束 · …」）。
+            </p>
+          ) : (
+            <div className="grid grid-cols-1">
+              {recent.map((c) => (
+                <div
+                  key={c.id}
+                  className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-b border-line py-2.5 last:border-b-0"
+                >
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    <span className="text-ui text-ink">{c.roleName || "角色"}</span>
+                    <span className="truncate font-mono text-meta text-ink-faint">{c.peer}</span>
+                  </span>
+                  <span className="text-meta text-ink-faint">
+                    {callWhen(c.startedAt)} · {sayDuration(c.durationMs)} · {c.turns} 轮
+                    {c.reason ? ` · ${c.reason}` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {note && <ResultNote state={note.ok ? "ok" : "fail"} message={note.text} />}
+      </div>
+
+      {confirmClear && (
+        // 和上面「重启整个服务？」同一个写法：说明放 desc，按钮放 footer
+        <Modal
+          title="清空通话记录？"
+          desc={`只清掉这份「最近通话」流水（${recent.length} 条）。`}
+          onClose={() => setConfirmClear(false)}
+          footer={
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConfirmClear(false)}>
+                取消
+              </Button>
+              <Button onClick={clearLog}>确定清空</Button>
+            </div>
+          }
+        >
+          <p className="text-ui leading-relaxed text-ink-soft">
+            <strong className="text-ink">聊天记录不动</strong>
+            —— 通话里说的话在 iMessage 的会话存档里，这里只是一张「什么时候跟谁通过话」的表。
+          </p>
+        </Modal>
+      )}
+    </Card>
+  );
+}

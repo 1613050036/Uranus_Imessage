@@ -33,7 +33,8 @@ export class UranusBrain {
 
   #url(path, params = {}) {
     const u = new URL(this.base + path);
-    u.searchParams.set("secret", this.secret);
+    // 本机模式下没有密钥，那就别带一个空的 secret= 上去
+    if (this.secret) u.searchParams.set("secret", this.secret);
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== "") u.searchParams.set(k, String(v));
     }

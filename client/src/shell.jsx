@@ -20,6 +20,7 @@ import { CommandsButton } from "./panels/commands.jsx";
 import {
   AccountPanel,
   BackupPanel,
+  CallPanel,
   CloudBackupPanel,
   ConsolePanel,
   ServicePanel,
@@ -702,6 +703,8 @@ export function AppShell() {
                           比重启和备份更靠前，而且新用户装完最先该来这儿看一眼 */}
                       <AccountPanel />
                       <ServicePanel />
+                      {/* 通话：没开节点、也没打过电话时它自己不渲染（见 CallPanel） */}
+                      <CallPanel />
                       <BackupPanel />
                       <CloudBackupPanel />
                       <CustomCssPanel />

@@ -108,6 +108,17 @@ export const MAINTENANCE_PATH = path.join(DATA_DIR, "maintenance.json");
  * 删掉这个文件最多让下一轮多打一次网络。
  */
 export const WEATHER_CACHE_PATH = path.join(DATA_DIR, "weather-cache.json");
+/**
+ * 通话记录：谁、什么时候、打了多久、几轮、怎么结束的。见 calllog.js。
+ *
+ * **只存这几个数，不存说了什么** —— 说的话早就跟着 `appendTurn` 进了会话
+ * 存档（通话和短信共用同一条历史，这是用户钉死的）。在这儿再存一份就是
+ * 两份会各自漂移的同一件事。
+ *
+ * 等于手机上那个「最近通话」列表：翻得到什么时候通过话、聊了多久，
+ * 想看说了什么就去聊天记录里翻那一段。
+ */
+export const CALL_LOG_PATH = path.join(DATA_DIR, "calls.json");
 export const CHARACTERS_DIR = path.join(DATA_DIR, "characters");
 export const WORLDS_DIR = path.join(DATA_DIR, "worlds");
 export const USER_DIR = path.join(DATA_DIR, "user");

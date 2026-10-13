@@ -5426,6 +5426,11 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
 
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const secret = String(node.secret ?? "").trim();
+  // 缺字段算开（老配置升上来、以及绝大多数人的情况：同机跑）。和服务端
+  // config.js:normalizeCallNode 同一个默认
+  const trustLocal = node.trustLocal !== false;
+  // 配对那一块默认收起 —— 同机跑的人用不上它，摊开只会让人以为非配不可
+  const [showPair, setShowPair] = useState(Boolean(secret) || !trustLocal);
   const pairCode = secret
     ? btoa(
         // 和节点那边 makePairCode 一样：{u, s} 两个短键，再 base64
@@ -5465,6 +5470,66 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
       </label>
 
       {node.enabled && (
+        <label className="flex items-start justify-between gap-4 border-t border-line pt-5">
+          <span className="min-w-0">
+            <span className="block text-ui text-ink">本机的节点不用配对码</span>
+            <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+              开着的话，和 Uranus <strong className="text-ink-soft">同一台机器</strong>
+              上的节点装好直接跑就能连上，什么都不用填。别的机器上的节点不受影响，
+              照旧用下面的配对码。
+              <br />
+              只认真正从本机直连的：经过 nginx 这类反代转进来的、本机浏览器里
+              网页发的，都不算本机，照样要配对码。
+              <br />
+              <strong className="text-warn">用 frp、ssh 隧道这类直接转发端口的请关掉它</strong>
+              —— 那种转发不带任何标记，外面来的连接到了这里看起来和本机一模一样。
+            </span>
+          </span>
+          <Switch
+            checked={trustLocal}
+            onChange={(v) => updateCallNode({ trustLocal: v })}
+            label="本机的节点不用配对码"
+          />
+        </label>
+      )}
+
+      {node.enabled && trustLocal && (
+        <div className="grid grid-cols-1 gap-2">
+          <p className="text-ui text-ink">节点装在这台机器上</p>
+          <p className="text-meta leading-relaxed text-ink-faint">
+            装好节点（
+            <code className="mx-1 font-mono text-ink-soft">facetime-node</code>
+            那个程序）之后，在它的目录里跑一次：
+          </p>
+          <code className="block overflow-x-auto whitespace-nowrap border border-line bg-paper px-3.5 py-3 font-mono text-meta text-ink-soft">
+            sudo bash install-service.sh
+          </code>
+          <p className="text-meta leading-relaxed text-ink-faint">
+            装成后台服务，开机自启、崩了自己重启。
+            <strong className="text-ink-soft">没有别的要配了</strong>
+            —— 节点默认就连本机的 Uranus。连没连上去「控制台 → 通话」那一栏看。
+          </p>
+        </div>
+      )}
+
+      {node.enabled && trustLocal && (
+        <div className="border-t border-line pt-5">
+          <button
+            type="button"
+            onClick={() => setShowPair((v) => !v)}
+            aria-expanded={showPair}
+            className="flex w-full items-center justify-between gap-4 text-left text-ui text-ink-soft transition-colors duration-150 hover:text-ink"
+          >
+            <span>节点在别的机器上？用配对码</span>
+            <ChevronRight
+              size={14}
+              className={`shrink-0 text-ink-faint transition-transform duration-150 ${showPair ? "rotate-90" : ""}`}
+            />
+          </button>
+        </div>
+      )}
+
+      {node.enabled && (!trustLocal || showPair) && (
         <div className="grid grid-cols-1 gap-4">
           <Field
             label="配对密钥"
@@ -5572,7 +5637,10 @@ export function RoleCallFields({ role, onGoto }) {
   const patch = (part) => updateRole(role.id, { call: { ...c, ...part } });
 
   const node = config.callNode ?? {};
-  const nodeReady = Boolean(node.enabled && String(node.secret ?? "").trim());
+  // 本机的节点不需要密钥；不在本机才要。和服务端 callapi.js:checkSecret 同一个判据
+  const nodeReady = Boolean(
+    node.enabled && (node.trustLocal !== false || String(node.secret ?? "").trim())
+  );
 
   // 通话预设是**第三批**（preset.mode === "call"），和线上线下那两批都不串
   const presets = presetsFor(config, "call");

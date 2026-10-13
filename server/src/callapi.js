@@ -27,6 +27,7 @@
  */
 
 import { getCall, callStatus, endCall, touchNode } from "./callsession.js";
+import { clearCallLog, readCallLog } from "./calllog.js";
 import { logDebug, logInfo, logWarn } from "./logs.js";
 
 const SCOPE = "通话";
@@ -82,16 +83,47 @@ export function mountCall(app, loadConfig, hooks = {}) {
     const cfg = loadConfig()?.callNode ?? {};
     const want = String(cfg.secret ?? "").trim();
 
-    if (!cfg.enabled || !want) {
+    if (!cfg.enabled) {
       /*
        * 回 404 而不是 403：别告诉扫端口的人这儿有东西。
        * 但**日志里要说明白** —— 节点那头只看得到一个 404，而 404 既可能是
        * 「地址填错了」也可能是「功能没开」，不说的话用户只能干瞪眼。
        * 这条和 doll 那边（index.js:1570 附近）是同一个处理。
        */
+      logWarn(SCOPE, "有节点来连，但通话功能没开 —— 回了 404");
+      res.status(404).end();
+      return false;
+    }
+
+    /*
+     * ── 本机的节点不用配对码 ──
+     *
+     * 回环地址直连进来的放行，不看密钥。**外面来的照旧要密钥** —— 这是
+     * 「多一条路」，不是「换一条路」：已经配对过的远程节点一点不受影响。
+     *
+     * 第一版写成了「开着就只收本机、外面来的密钥对了也拒」，那会把已经
+     * 用配对码连着的节点（配对码里的地址常常是公网 IP，同机连自己的公网
+     * IP 来源也不是回环）一更新就踢掉。改成现在这样，不会有人因为升级断线。
+     *
+     * 为什么敢对回环放行：回环在这儿不是一道真的防线。能在这台机器上跑
+     * 进程的人直接读 data.config.json 就拿到了全部 API 密钥，比插进一通电话
+     * 严重得多。为一个挡不住任何东西的边界，让每个本机用户都走一遍生成
+     * 密钥、复制、粘贴，不划算。经过反代的请求不算回环，见 isLoopback。
+     */
+    if (cfg.trustLocal !== false && isLoopback(req)) return true;
+
+    if (!want) {
+      /*
+       * 没设密钥、又不是本机直连来的。回 404 的理由同上（别暴露这儿有东西），
+       * 日志说清楚是哪种情况 —— 「节点在别的机器上却没配对」和「本机的被
+       * 当成外部（多半是填了局域网 IP 或者经过了反代）」修法完全不同。
+       */
       logWarn(
         SCOPE,
-        `有节点来连，但${!cfg.enabled ? "通话功能没开" : "还没设配对密钥"} —— 回了 404`
+        cfg.trustLocal !== false
+          ? `有节点从 ${remoteOf(req)} 来连，不是本机直连、又还没设配对密钥 —— 回了 404。` +
+              "节点在别的机器上的话去生成一串配对码；在本机的话，节点的 config.json 里 uranus 要填 http://127.0.0.1:8787"
+          : "有节点来连，但「本机的节点不用配对码」关着、又还没设配对密钥 —— 回了 404"
       );
       res.status(404).end();
       return false;
@@ -297,10 +329,14 @@ export function mountCall(app, loadConfig, hooks = {}) {
         enabled: Boolean(cfg.enabled),
         direction: cfg.direction ?? "node",
         hasSecret: Boolean(String(cfg.secret ?? "").trim()),
+        // 本机的节点不用密钥 —— 前端据此决定要不要提示「还没生成配对密钥」
+        trustLocal: cfg.trustLocal !== false,
         url: cfg.direction === "uranus" ? String(cfg.url ?? "") : "",
         online: nodeOnline(),
       },
       call: callStatus(),
+      // 最近通话。状态和记录一起回，界面上那一栏只打一次接口
+      recent: readCallLog().slice(0, 20),
     });
   });
 
@@ -308,11 +344,97 @@ export function mountCall(app, loadConfig, hooks = {}) {
     const call = getCall();
     if (!call) return res.json({ ok: true, call: { active: false } });
 
+    /*
+     * 控制台手动挂断**不 drain** —— 人点这个按钮就是要它立刻停下来
+     * （角色自己写 `[结束通话]` 那条才等它把话说完，见 call.mjs:hangUp）。
+     */
     sendToNode("hangup", { reason: "控制台挂断" });
     await hooks.onCallEnded?.(endCall("控制台挂断"));
-    res.json({ ok: true, call: callStatus() });
+    res.json({ ok: true, call: callStatus(), recent: readCallLog().slice(0, 20) });
+  });
+
+  app.post("/api/call/log/clear", (req, res) => {
+    const ok = clearCallLog();
+    res.status(ok ? 200 : 500).json({ ok, recent: readCallLog() });
   });
 }
+
+/**
+ * 这个请求是从哪个地址来的。日志和回环判断共用。
+ *
+ * 看 socket 上的地址，不看 `req.ip` —— 后者在开了 Express 的 trust proxy
+ * 之后会改读 X-Forwarded-For，那是谁都能伪造的。现在没开，但别让本机模式
+ * 的安全性取决于一个别处的开关。
+ */
+function remoteOf(req) {
+  return String(req?.socket?.remoteAddress ?? req?.ip ?? "");
+}
+
+/**
+ * 这个请求是不是从本机来的。
+ *
+ * 要认三种写法：IPv4 的 `127.0.0.0/8`、IPv6 的 `::1`，以及 Node 在双栈
+ * 监听下给的 IPv4 映射地址 `::ffff:127.0.0.1`（**最常见的就是这个**，
+ * 日志里那些 `::ffff:…` 就是它）。
+ *
+ * 故意**不**走 `req.ips` / `X-Forwarded-For`：那是反代填的，谁都能伪造。
+ * 这里要的是「TCP 连接真的来自本机」，只能看 socket 上那个地址。
+ * 反代后面跑 Uranus 又想用本机模式的话，反代和节点本来也都在本机。
+ */
+function isLoopback(req) {
+  /*
+   * ── 经过反代的一律不算本机 ──
+   *
+   * VPS 上常见的部署是 nginx / Caddy 在前面、Uranus 在 127.0.0.1 后面。
+   * 那样**外网来的每个请求**到了 Uranus 这儿，socket 地址都是 127.0.0.1 ——
+   * 只看地址的话，本机模式等于对整个公网敞开。
+   *
+   * 反代一定会带转发头（不带的反代几乎不存在，而且它自己的日志也要用），
+   * 本机节点直连则一个都不带。所以见到任何转发头就当外部请求处理，
+   * 不管它声称自己来自哪里 —— 这里只拿它当「有没有经过反代」的信号，
+   * 不信它的内容。
+   */
+  const h = req?.headers ?? {};
+  if (h["x-forwarded-for"] || h["x-real-ip"] || h["forwarded"] || h["x-forwarded-host"]) {
+    return false;
+  }
+
+  /*
+   * ── 浏览器发来的也不算 ──
+   *
+   * 回环还有第二个口子：这台机器上开着的**任何网页**都能往 127.0.0.1:8787
+   * 发请求（CSRF），DNS 重绑定也是同一个路子。来源地址照样是回环。
+   *
+   * 节点用的是 Node 自带的 fetch，实测它**不带** Origin、也不带
+   * Sec-Fetch-Site；浏览器对跨源请求一定带 Origin，对 localhost 一定带
+   * Sec-Fetch-*Site*。所以见到这两个就当外部请求 —— 它照样能用配对密钥进来，
+   * 只是不能白嫖本机这条路。
+   *
+   * Host 也查一下：DNS 重绑定时浏览器认为是同源（可能不带 Origin），但 Host
+   * 是攻击者的域名，不是 127.0.0.1 / localhost。
+   */
+  if (h["origin"] || h["sec-fetch-site"]) return false;
+  const host = String(h["host"] ?? "")
+    .replace(/:\d+$/, "")
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase();
+  /*
+   * **必须认完整的 IPv4 字面量**，不能只看「127.」前缀：
+   * `127.0.0.1.evil.example` 是个合法域名，恰恰就是 DNS 重绑定会用的那种
+   * 名字。前缀匹配会把它放进来，这道检查就白做了。
+   */
+  if (host && host !== "localhost" && host !== "::1" && !LOOPBACK_V4.test(host)) return false;
+
+  const raw = remoteOf(req);
+  if (!raw) return false;
+  // 去掉 IPv6 映射前缀和可能带的 zone id（fe80::1%eth0 那种）
+  const ip = raw.replace(/^::ffff:/i, "").split("%")[0];
+  if (ip === "::1") return true;
+  return LOOPBACK_V4.test(ip);
+}
+
+/** 127.0.0.0/8 的完整字面量。只认四段数字，见 isLoopback 里的说明。 */
+const LOOPBACK_V4 = /^127(\.\d{1,3}){3}$/;
 
 /** 测试用。 */
 export function resetNodeForTest() {

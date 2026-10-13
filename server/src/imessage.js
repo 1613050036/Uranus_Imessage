@@ -70,6 +70,7 @@ import {
   startCall,
   takeGreeting,
 } from "./callsession.js";
+import { noteCall } from "./calllog.js";
 import {
   findFaceTimeLink,
   inviteNotice,
@@ -10441,6 +10442,13 @@ async function speakAndRecord({ stream, ctx, config, role, call, userMsg, send, 
  */
 export async function finishCall(getConfig, call) {
   if (!call) return;
+
+  /*
+   * 通话记录（控制台那个「最近通话」列表）先记 —— 它不依赖会话上下文，
+   * 哪怕下面 callContext 没找着（角色被删了、会话对不上）也该留下这一条。
+   */
+  noteCall(call);
+
   const ctx = await callContext(getConfig, call.roleId, call.spaceId);
   if (!ctx) return;
   const { runner } = ctx;
