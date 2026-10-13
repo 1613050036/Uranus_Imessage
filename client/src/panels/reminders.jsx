@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Pencil, Plus, Trash2 } from "lucide-react";
-import { api } from "../store.jsx";
-import { Button, Card, Field, Modal, NumberField, ResultNote, Switch, inputCls } from "../ui.jsx";
+import { backendHas } from "../edition.js";
+import { api, useConfig } from "../store.jsx";
+import { BackendTooOld, Button, Card, Field, Modal, NumberField, ResultNote, Switch, inputCls } from "../ui.jsx";
 
 /**
  * 侧边栏「提醒」（后端见 server/src/reminder.js、reminderapi.js）。三节：
@@ -535,6 +536,9 @@ function EditModal({ item, roles, onClose, onSaved }) {
 }
 
 export function RemindersPanel() {
+  const { savedConfig } = useConfig();
+  // 小手机后端太旧时根本没有 /api/reminders，别去打它（以前这里报 500）
+  const supported = backendHas(savedConfig, "reminder");
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(null);
@@ -549,11 +553,14 @@ export function RemindersPanel() {
   }, []);
 
   useEffect(() => {
+    if (!supported) return undefined;
     refresh();
     // 角色在聊天里随时会设新的；面板开着时隔一阵拉一次
     const t = setInterval(refresh, 30_000);
     return () => clearInterval(t);
-  }, [refresh]);
+  }, [refresh, supported]);
+
+  if (!supported) return <BackendTooOld what="定时提醒" />;
 
   if (error && !data) return <ResultNote state="fail" message={error} />;
   if (!data) return <p className="text-eyebrow uppercase text-ink-meta">读取中</p>;

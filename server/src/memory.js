@@ -91,7 +91,7 @@ export function extractKeywords(text) {
 /**
  * 检索前从查询里剔掉的词：几乎每条记忆都会出现的名字之类。
  *
- * 用户报的问题：记忆里到处都是 Dante、niki、Charlie，查询里也是 ——
+ * 用户报的问题：记忆里到处都是 Dante、小明、Ken，查询里也是 ——
  * 关键词那 0.3 分人人都能拿到，向量也被名字拉得彼此相近，于是门槛形同虚设，
  * 一堆不相干的记忆被一起捞回来。从**查询**这一侧剔掉就够了：记忆那侧的名字
  * 对所有记忆是一样的，不再影响谁比谁更像这次的话题。
@@ -109,14 +109,14 @@ export function ignoredWords(extra, names = []) {
     seen.add(t.toLowerCase());
     out.push(t);
   }
-  // 长的先剔：「Charlie Chen」整个剔掉，别先被「Charlie」切成半截
+  // 长的先剔：「Ken Chen」整个剔掉，别先被「Ken」切成半截
   return out.sort((a, b) => b.length - a.length);
 }
 
 /**
  * 从一段文本里剔掉这些词，不分大小写。
  *
- * 英文词按整词剔（niki 不该把 nikita 剔成 ta），中文直接按子串。
+ * 英文词按整词剔（小明 不该把 小明ta 剔成 ta），中文直接按子串。
  * 剔掉的位置换成空格，免得两边的字粘成一个新的 2-gram。
  */
 export function stripIgnoredWords(text, words) {

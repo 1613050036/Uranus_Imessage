@@ -27,13 +27,24 @@ import {
   userLabel,
   worldBookLabel,
 } from "../labels.js";
-import { WORKER } from "../edition.js";
+import { WORKER, backendHas } from "../edition.js";
 import { offlineMediaUrl, uploadOfflineAvatar } from "../offlinemedia.js";
 import { SaveBar, useSection } from "../section.jsx";
 import { RoleMcpFields } from "./mcp.jsx";
 import { RoleOrderFields } from "./order.jsx";
 import { api, apiDownload, useConfig } from "../store.jsx";
-import { Button, Card, Field, Fold, Modal, NumberField, ResultNote, Switch, inputCls } from "../ui.jsx";
+import {
+  BackendTooOld,
+  Button,
+  Card,
+  Field,
+  Fold,
+  Modal,
+  NumberField,
+  ResultNote,
+  Switch,
+  inputCls,
+} from "../ui.jsx";
 import {
   Brain,
   Check,
@@ -2512,7 +2523,7 @@ function RoleLocationSendFields({ role }) {
           <span className="block text-ui text-ink">分享位置</span>
           <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
             模型写
-            <code className="mx-1 bg-sunken px-1">[location:南宁万象城:22.8170,108.3665]</code>
+            <code className="mx-1 bg-sunken px-1">[location:上海外滩:31.2397,121.4998]</code>
             时发一张苹果地图卡片过去，对方点一下直接打开地图。地名可以是编的 ——
             这就是这个功能的用途，让角色能说自己现在在哪儿。
             <br />
@@ -6539,7 +6550,7 @@ export function CityField({ label, hint, value, info, onChange }) {
           className={`${inputCls} ${dead ? "border-warn text-warn" : ""}`}
           value={value ?? ""}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="例如：南宁 / San Francisco / Tokyo"
+          placeholder="例如：上海 / San Francisco / Tokyo"
         />
       </Field>
       {dead && (
@@ -7121,7 +7132,9 @@ export function RoleEnvFields({ role }) {
 
 /** 角色详情：折叠的人设 + 折叠的单独配置 + 绑定项目。 */
 export function RoleDetail({ role, onBack, onGoto, bridge }) {
-  const { config, updateRole, removeRole, bindProject } = useConfig();
+  const { config, savedConfig, updateRole, removeRole, bindProject } = useConfig();
+  // 小手机：后端比控制台旧的话，它没有的那几栏只放一句提示（见 edition.js:backendHas）
+  const has = (feature) => backendHas(savedConfig, feature);
   const [applying, setApplying] = useState(false);
   const patch = (p) => updateRole(role.id, p);
 
@@ -7760,7 +7773,11 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
           desc="用自己的声音接你从 iPhone 打来的电话"
           badge={onOff(role.call?.enabled)}
         >
-          <RoleCallFields role={role} onGoto={onGoto} />
+          {has("call") ? (
+            <RoleCallFields role={role} onGoto={onGoto} />
+          ) : (
+            <BackendTooOld what="接 FaceTime 通话" />
+          )}
         </Fold>
 
         <Fold
@@ -7805,7 +7822,7 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
 
         <Fold
           title="分享位置"
-          desc="写 [location:南宁万象城] 发一张地图卡片，地名可以是编的"
+          desc="写 [location:上海外滩] 发一张地图卡片，地名可以是编的"
           badge={onOff(role.locationSend?.enabled)}
         >
           <RoleLocationSendFields role={role} />
@@ -7824,7 +7841,11 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
           desc="让角色帮你点瑞幸、麦当劳：token 在这儿填，角色只负责挑，下单要你给订单卡片点回应"
           badge={onOff(role.luckin?.enabled || role.mcd?.enabled)}
         >
-          <RoleOrderFields role={role} onGoto={onGoto} />
+          {has("order") ? (
+            <RoleOrderFields role={role} onGoto={onGoto} />
+          ) : (
+            <BackendTooOld what="点单" />
+          )}
         </Fold>
 
         <Fold
@@ -7832,7 +7853,11 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
           desc="说「明天提醒我带钥匙」，角色写个标记，到点自己来找你；设好的都在侧边栏「提醒」里"
           badge={onOff(role.reminder?.enabled)}
         >
-          <RoleReminderFields role={role} onGoto={onGoto} />
+          {has("reminder") ? (
+            <RoleReminderFields role={role} onGoto={onGoto} />
+          ) : (
+            <BackendTooOld what="定时提醒" />
+          )}
         </Fold>
 
         {/*
@@ -7845,7 +7870,7 @@ export function RoleDetail({ role, onBack, onGoto, bridge }) {
           desc="手机塞玩偶里抱一下，角色就收到「{{user}}抱了一下共感娃娃」—— 传感器用手机上的 phyphox"
           badge={onOff(role.hug?.enabled)}
         >
-          <RoleHugFields role={role} />
+          {has("doll") ? <RoleHugFields role={role} /> : <BackendTooOld what="共感娃娃" />}
         </Fold>
 
         {/*

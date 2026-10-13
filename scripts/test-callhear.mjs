@@ -234,22 +234,22 @@ group("节流、晚一轮拿");
 
 group("拼进这一轮的用户消息");
 {
-  const said = callUserMessage({ kind: "said", text: "你在干嘛", userName: "niki", tone: "开心" });
-  check("语气贴着那句话", said.endsWith("[niki的语气：开心]你在干嘛"), true);
+  const said = callUserMessage({ kind: "said", text: "你在干嘛", userName: "ming", tone: "开心" });
+  check("语气贴着那句话", said.endsWith("[ming的语气：开心]你在干嘛"), true);
 
   const both = callUserMessage({
     kind: "said",
     text: "喂",
-    userName: "niki",
+    userName: "ming",
     tone: "生气",
     ambience: "街上，有车流声",
   });
-  check("背景在前、语气在后", /\[背景声音：街上，有车流声\]\[niki的语气：生气\]喂$/.test(both), true);
+  check("背景在前、语气在后", /\[背景声音：街上，有车流声\]\[ming的语气：生气\]喂$/.test(both), true);
 
-  const plain = callUserMessage({ kind: "said", text: "好", userName: "niki" });
+  const plain = callUserMessage({ kind: "said", text: "好", userName: "ming" });
   check("都没有就什么都不加", /\]好$/.test(plain) && !plain.includes("语气") && !plain.includes("背景"), true);
 
-  const quiet = callUserMessage({ kind: "silence", seconds: 50, userName: "niki", ambience: "安静下来了" });
+  const quiet = callUserMessage({ kind: "silence", seconds: 50, userName: "ming", ambience: "安静下来了" });
   check("没说话那轮也带背景", quiet.includes("[背景声音：安静下来了]"), true);
 }
 
@@ -321,21 +321,21 @@ group("画面拼进用户消息");
   const m = callUserMessage({
     kind: "said",
     text: "你看这个",
-    userName: "niki",
+    userName: "ming",
     camera: { text: "对方举着一只猫对着镜头" },
   });
-  check("画面在前、原话在后", /\[niki的摄像头画面：对方举着一只猫对着镜头\]你看这个$/.test(m), true);
-  const off = callUserMessage({ kind: "said", text: "好", userName: "niki", camera: { off: true } });
-  check("关掉摄像头那句", off.includes("[niki关掉了摄像头]"), true);
+  check("画面在前、原话在后", /\[ming的摄像头画面：对方举着一只猫对着镜头\]你看这个$/.test(m), true);
+  const off = callUserMessage({ kind: "said", text: "好", userName: "ming", camera: { off: true } });
+  check("关掉摄像头那句", off.includes("[ming关掉了摄像头]"), true);
   const all = callUserMessage({
     kind: "said",
     text: "喂",
-    userName: "niki",
+    userName: "ming",
     tone: "开心",
     ambience: "街上",
     camera: { text: "对方在笑" },
   });
-  check("三样都有：画面、背景、语气、原话", /\[niki的摄像头画面：对方在笑\]\[背景声音：街上\]\[niki的语气：开心\]喂$/.test(all), true);
+  check("三样都有：画面、背景、语气、原话", /\[ming的摄像头画面：对方在笑\]\[背景声音：街上\]\[ming的语气：开心\]喂$/.test(all), true);
 }
 
 group("默认通话预设里那句");

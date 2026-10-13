@@ -333,7 +333,7 @@ export function wgsToGcj(lat, lon) {
 }
 
 /**
- * 地址栏里直接写了坐标就认出来：`22.8170,108.3665`，或者苹果地图的链接
+ * 地址栏里直接写了坐标就认出来：`31.2397,121.4998`，或者苹果地图的链接
  * （`coordinate=` / `ll=` / `q=纬,经`）。苹果地图在国内给的本来就是 GCJ-02，不用换。
  */
 export function parseCoords(text) {

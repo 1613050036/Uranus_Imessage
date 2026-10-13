@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { RotateCcw, Save } from "lucide-react";
-import { api } from "./store.jsx";
-import { Button, Card, ResultNote } from "./ui.jsx";
+import { backendHas } from "./edition.js";
+import { api, useConfig } from "./store.jsx";
+import { BackendTooOld, Button, Card, ResultNote } from "./ui.jsx";
 
 /**
  * 自定义 CSS（后端 server/src/customcss.js，存在 data/custom-css.json）。
@@ -106,6 +107,9 @@ const TABS = [
 
 /** 「控制台 → 自定义 CSS」那一节。 */
 export function CustomCssPanel() {
+  const { savedConfig } = useConfig();
+  // 小手机后端太旧时没有 /api/custom-css，见 edition.js:backendHas
+  const supported = backendHas(savedConfig, "customCss");
   const [saved, setSaved] = useState(null); // { console, phone }
   const [draft, setDraft] = useState({ console: "", phone: "" });
   const [tab, setTab] = useState("console");
@@ -114,13 +118,14 @@ export function CustomCssPanel() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (!supported) return;
     api("/api/custom-css")
       .then((r) => {
         setSaved(r);
         setDraft(r);
       })
       .catch((e) => setNote({ state: "fail", message: String(e?.message ?? e) }));
-  }, []);
+  }, [supported]);
 
   async function save(kind, css) {
     setBusy(true);
@@ -140,6 +145,14 @@ export function CustomCssPanel() {
 
   const t = TABS.find((x) => x.id === tab);
   const dirty = saved && draft[tab] !== saved[tab];
+
+  if (!supported) {
+    return (
+      <Card title="自定义 CSS">
+        <BackendTooOld what="自定义 CSS" />
+      </Card>
+    );
+  }
 
   return (
     <Card

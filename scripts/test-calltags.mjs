@@ -92,30 +92,30 @@ group("给模型的那几句话");
    * 所以这里单独钉第一行，而不是整段。第二行（让它顺便把开场白写了）
    * 是后加的，措辞可以调，但那两个标记名得在里面。
    */
-  const invite = inviteNotice("niki");
+  const invite = inviteNotice("ming");
   check(
     "邀请的第一行（用户钉死的措辞）",
     invite.split("\n")[0],
-    "[niki向你发起Facetime通话邀请，回复[接受通话]即可进入通话，[拒绝通话]则会拒绝，请按照人设来进行回应，不要ooc]"
+    "[ming向你发起Facetime通话邀请，回复[接受通话]即可进入通话，[拒绝通话]则会拒绝，请按照人设来进行回应，不要ooc]"
   );
   check("邀请里让它顺便写开场白", /第一句话/.test(invite), true);
   check("并且说清了那句话不发短信", /不会以短信发出/.test(invite), true);
   check("通话中的时间戳", callPrefix("3 分 12 秒"), "[Facetime已接通 3 分 12 秒]");
-  check("打字发来的", typedPrefix("niki"), "[niki在imessage发来的信息]");
+  check("打字发来的", typedPrefix("ming"), "[ming在imessage发来的信息]");
   check(
     "好久没说话",
-    silenceNotice(45, "niki"),
-    "[niki已经45秒没有说话了，可能是关闭了麦克风，请根据人设以及上下文作出回应]"
+    silenceNotice(45, "ming"),
+    "[ming已经45秒没有说话了，可能是关闭了麦克风，请根据人设以及上下文作出回应]"
   );
   check(
     "被打断（说出口了几句）",
-    interruptedNotice(["喂？", "听得到吗"], 2, "niki"),
-    "[niki插话打断了你，对方只听到了你说的「喂？听得到吗」，后面2句没说出口]"
+    interruptedNotice(["喂？", "听得到吗"], 2, "ming"),
+    "[ming插话打断了你，对方只听到了你说的「喂？听得到吗」，后面2句没说出口]"
   );
   check(
     "被打断（一句都没说出口）",
-    interruptedNotice([], 3, "niki"),
-    "[niki插话打断了你，对方还没听到你说的话，后面3句没说出口]"
+    interruptedNotice([], 3, "ming"),
+    "[ming插话打断了你，对方还没听到你说的话，后面3句没说出口]"
   );
 }
 
@@ -252,7 +252,7 @@ group("一次只能一通");
 
   const c = startCall({
     roleId: "r1",
-    roleName: "Charlie",
+    roleName: "Ken",
     sessionId: "s1",
     peer: "+8613800138000",
     spaceId: "chat1",
@@ -292,7 +292,7 @@ group("给控制台看的那份状态");
 
   startCall({
     roleId: "r1",
-    roleName: "Charlie",
+    roleName: "Ken",
     sessionId: "s1",
     peer: "+8613800138000",
     spaceId: "chat1",
@@ -301,7 +301,7 @@ group("给控制台看的那份状态");
   markConnected();
   const st = callStatus();
   check("active", st.active, true);
-  check("带着角色名", st.roleName, "Charlie");
+  check("带着角色名", st.roleName, "Ken");
   check("带着轮数", st.turns, 0);
   // 链接等于一把能加入通话的钥匙，不该摆在接口里
   check("不含链接", "link" in st, false);
@@ -378,9 +378,9 @@ group("通话预设这条链路");
       { id: "p-call", name: "我的通话预设", mode: "call", entries },
     ],
     roles: [
-      { id: "r1", name: "Charlie", presetRef: "p-online", call: { enabled: true, presetRef: "p-call" } },
+      { id: "r1", name: "Ken", presetRef: "p-online", call: { enabled: true, presetRef: "p-call" } },
     ],
-    users: [{ id: "u1", name: "niki" }],
+    users: [{ id: "u1", name: "ming" }],
   });
   const role = config.roles[0];
 
@@ -428,7 +428,7 @@ group("开场白：接的那一轮就写好，接通时直接念");
   resetForTest();
   startCall({
     roleId: "r",
-    roleName: "Charlie",
+    roleName: "Ken",
     sessionId: "s",
     peer: "+1",
     spaceId: "sp",

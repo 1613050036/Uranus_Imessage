@@ -265,7 +265,7 @@ async function sttQwen(cfg, audio, opts) {
   const messages = [];
   /*
    * 专有名词表。只在用户填了「提示词」时才发 —— 这一条必须是第一条，
-   * 而且写的该是词表（「Charlie、niki、南宁」）而不是指令。
+   * 而且写的该是词表（「Ken、小明、上海」）而不是指令。
    */
   const glossary = String(cfg.prompt ?? "").trim();
   if (glossary) messages.push({ role: "system", content: glossary.slice(0, 400) });

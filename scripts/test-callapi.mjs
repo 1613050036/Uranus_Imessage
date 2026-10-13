@@ -236,7 +236,7 @@ function endedCall(over = {}) {
   return {
     id: `call-${Math.random().toString(36).slice(2, 8)}`,
     roleId: "r1",
-    roleName: "Charlie",
+    roleName: "Ken",
     peer: "+10000000000",
     sessionId: "s1",
     startedAt,

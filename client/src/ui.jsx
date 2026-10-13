@@ -268,6 +268,23 @@ export function ResultNote({ state, message, icon: Icon = ShieldCheck }) {
 }
 
 /**
+ * 「小手机后端太旧，还没有这个功能」。见 edition.js:backendHas。
+ *
+ * 只在小手机版出现。替掉那一栏的设置 —— 留着设置的话，填了存不进去
+ * （旧后端把不认识的字段丢掉），看起来像是开关坏了。
+ */
+export function BackendTooOld({ what }) {
+  return (
+    <div className="border-l-2 border-warn py-1.5 pl-3 text-meta leading-relaxed text-ink-soft">
+      <strong className="text-warn">你的小手机后端版本太旧，还没有「{what}」。</strong>
+      <br />
+      控制台已经更新了，但后端要各自重新部署才会跟上。在那之前这一栏设置不了、也不会生效；
+      其他功能照常能用。
+    </div>
+  );
+}
+
+/**
  * 小开关。方形轨道 + 方形滑块 —— 全站只有两档圆角（列表项 6px、次按钮胶囊形），
  * 圆头开关会凭空多出第三种形状。开 = 实心 #18181b，关 = 1px 描边。
  */

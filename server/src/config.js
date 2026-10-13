@@ -1843,7 +1843,7 @@ function normalizeCardSend(input) {
 /**
  * 分享位置：只有开关。
  *
- * 模型写 `[location:南宁万象城]`，服务端拼一条 maps.apple.com 的网址、照卡片
+ * 模型写 `[location:上海外滩]`，服务端拼一条 maps.apple.com 的网址、照卡片
  * 那条路发出去（见 card.js:mapsUrlFor 和 imessage.js:sendLocationPart）。
  * iMessage 没有「原生位置气泡」那种 content 类型，能做到的就是一张点开跳地图
  * 的链接卡片。

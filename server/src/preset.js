@@ -15,6 +15,8 @@
  */
 
 import { clicheRules } from "./cliche.js";
+import { createHash } from "node:crypto";
+
 import { clampInt, clampNum, pickId, str } from "./normalize.js";
 
 /** 固定条目的种类，顺序 = 新建预设时的默认排列。 */
@@ -565,7 +567,7 @@ export const DEFAULT_FORMAT_CHILDREN = {
       "不写坐标的话卡片缩略图是一张对不上的通用地图。" +
       "编出来的小店、小区这种地图搜不到的地方更要写坐标。" +
       "坐标不用精确到门牌号，那一带的经纬度就行。",
-    "示例：「刚到{{sep}}[location:南宁万象城:22.8170,108.3665]{{sep}}你到哪了？」",
+    "示例：「刚到{{sep}}[location:上海外滩:31.2397,121.4998]{{sep}}你到哪了？」",
     "实在想不起某地的坐标时也可以只写地名：[location:地名]，" +
       "链接照样能点开搜到这个地方，只是缩略图不准。",
     "规则：位置卡片要单独占一条气泡，可以在它前后用 {{sep}} 接一句自己的话；" +
@@ -1488,6 +1490,21 @@ function migrateSpyChildren(list, byKind) {
   }
 }
 
+/**
+ * 老版本的默认正文，只存 SHA-256。
+ *
+ * 和上面 legacyContent 一个用途（存着这段 = 没改过，换成新的），区别是原文
+ * **不能留在源码里**：「分享位置」以前的示例用的是作者本人所在城市的真实地名和
+ * 坐标，属于隐私。只存哈希照样认得出「没改过」，又不会把那句话再带进仓库。
+ */
+const LEGACY_CHILD_HASHES = {
+  location: ["daf280bc2165192d060daf6ffd6d2dceaf5db3c7a7289fa23f3ed7afa8985b1f"],
+};
+
+function sha256(text) {
+  return createHash("sha256").update(String(text)).digest("hex");
+}
+
 function normalizeFormatChildren(list) {
   const byKind = new Map();
   for (const raw of Array.isArray(list) ? list : []) {
@@ -1513,6 +1530,10 @@ function normalizeFormatChildren(list) {
       typeof raw?.content === "string" ? raw.content : DEFAULT_FORMAT_CHILDREN[kind];
     // 存着接链路之前那句默认正文 = 没改过，换成新格式
     if (content === legacyContent[kind]) content = DEFAULT_FORMAT_CHILDREN[kind];
+    // 只存了哈希的老默认正文（原文里有不该留在源码里的东西，见 LEGACY_CHILD_HASHES）
+    if (typeof content === "string" && LEGACY_CHILD_HASHES[kind]?.includes(sha256(content))) {
+      content = DEFAULT_FORMAT_CHILDREN[kind];
+    }
     return {
       id: `f-${kind}`,
       kind,

@@ -90,7 +90,7 @@ console.log("\n=== 1. 密码规则 ===");
   checkThat("缺大写时报错里提到大写", /大写/.test(c("abcdefgh")));
 
   const u = A.checkUsername;
-  check("普通用户名通过", u("niki"), "");
+  check("普通用户名通过", u("ming"), "");
   check("中文用户名通过（本地后台，没理由只让用英文）", u("小尼"), "");
   checkThat("空用户名不行", Boolean(u("   ")));
   checkThat("超长用户名不行", Boolean(u("x".repeat(33))));
@@ -142,7 +142,7 @@ console.log("\n=== 3. 密码怎么存 ===");
 {
   reset();
   A.login("Uranus", "Uranus");
-  const set = A.changeCredentials({ username: "niki", password: "SecretPass1" });
+  const set = A.changeCredentials({ username: "ming", password: "SecretPass1" });
   check("改成自己的账号密码：成功", set.ok, true);
 
   const text = raw();
@@ -160,7 +160,7 @@ console.log("\n=== 3. 密码怎么存 ===");
   const first = JSON.parse(text).password;
   reset();
   A.login("Uranus", "Uranus");
-  A.changeCredentials({ username: "niki", password: "SecretPass1" });
+  A.changeCredentials({ username: "ming", password: "SecretPass1" });
   const second = JSON.parse(raw()).password;
   checkThat("同一个密码两次的盐不同", first.salt !== second.salt);
   checkThat("所以哈希也不同", first.hash !== second.hash);
@@ -171,11 +171,11 @@ console.log("\n=== 4. 会话凭据 ===");
 {
   reset();
   A.login("Uranus", "Uranus");
-  const set = A.changeCredentials({ username: "niki", password: "SecretPass1" });
+  const set = A.changeCredentials({ username: "ming", password: "SecretPass1" });
   const token = set.token;
 
   const good = A.authenticate(asCookie(token));
-  check("刚签的凭据认得过", [good.ok, good.user], [true, "niki"]);
+  check("刚签的凭据认得过", [good.ok, good.user], [true, "ming"]);
   check("已经设过密码了，不再是 mustChange", good.mustChange, false);
 
   check("没有 cookie：不认", A.authenticate("").ok, false);
@@ -186,12 +186,12 @@ console.log("\n=== 4. 会话凭据 ===");
   const tampered = `${token.slice(0, -1)}${token.slice(-1) === "a" ? "b" : "a"}`;
   check("签名被改过：不认", A.authenticate(asCookie(tampered)).ok, false);
   // 换个用户名重签也不行（签名里绑着用户名）
-  const swapped = token.replace(/^niki\./, "someone.");
+  const swapped = token.replace(/^ming\./, "someone.");
   check("换掉用户名：不认", A.authenticate(asCookie(swapped)).ok, false);
 
   // 改密码要让别的设备掉线 —— 靠的是「密码哈希进了签名」，不是黑名单
   const again = A.changeCredentials({
-    username: "niki",
+    username: "ming",
     password: "AnotherPass2",
     current: "SecretPass1",
   });
@@ -201,7 +201,7 @@ console.log("\n=== 4. 会话凭据 ===");
 
   // 改用户名同理
   const renamed = A.changeCredentials({
-    username: "niki2",
+    username: "ming2",
     password: "AnotherPass2",
     current: "AnotherPass2",
   });
@@ -222,7 +222,7 @@ console.log("\n=== 5. 忘记密码的出路 ===");
 {
   reset();
   A.login("Uranus", "Uranus");
-  A.changeCredentials({ username: "niki", password: "SecretPass1" });
+  A.changeCredentials({ username: "ming", password: "SecretPass1" });
   checkThat("设过密码之后不再是 mustChange", !A.mustChangeCredentials());
 
   // 文件头写明的办法：把 password 那一行改成 null
@@ -231,7 +231,7 @@ console.log("\n=== 5. 忘记密码的出路 ===");
   checkThat("password 清成 null：回到默认状态", A.mustChangeCredentials());
   check("又能用默认账号密码进去了", A.login("Uranus", "Uranus").ok, true);
   check("清空之后用户名也回到 Uranus", A.currentUsername(), "Uranus");
-  check("原来的密码不好使了", A.login("niki", "SecretPass1").ok, false);
+  check("原来的密码不好使了", A.login("ming", "SecretPass1").ok, false);
 
   // 手改坏了的几种形态都得能兜住，不能让人卡在门外
   for (const [what, body] of [
@@ -252,18 +252,18 @@ console.log("\n=== 6. 改账号密码 ===");
 {
   reset();
   A.login("Uranus", "Uranus");
-  A.changeCredentials({ username: "niki", password: "SecretPass1" });
+  A.changeCredentials({ username: "ming", password: "SecretPass1" });
 
   // 设过密码之后必须验当前密码 —— 不然摸到一台没锁屏的机器就能把主人关在门外
-  const noCurrent = A.changeCredentials({ username: "niki", password: "NewPass123" });
+  const noCurrent = A.changeCredentials({ username: "ming", password: "NewPass123" });
   check("不给当前密码：拒绝", noCurrent.ok, false);
   checkThat("说的是当前密码不对", /当前密码/.test(String(noCurrent.error)));
   check("当前密码错：拒绝", A.changeCredentials({
-    username: "niki",
+    username: "ming",
     password: "NewPass123",
     current: "错的",
   }).ok, false);
-  check("原来的密码还好使（失败的改动没落盘）", A.login("niki", "SecretPass1").ok, true);
+  check("原来的密码还好使（失败的改动没落盘）", A.login("ming", "SecretPass1").ok, true);
 
   // 新密码同样要过那两条规则
   for (const [what, pw] of [
@@ -272,7 +272,7 @@ console.log("\n=== 6. 改账号密码 ===");
     ["空的", ""],
   ]) {
     check(`新密码${what}：拒绝`, A.changeCredentials({
-      username: "niki",
+      username: "ming",
       password: pw,
       current: "SecretPass1",
     }).ok, false);
@@ -286,15 +286,15 @@ console.log("\n=== 6. 改账号密码 ===");
 
   // 用户名两头的空格要收掉，不然登录时打不出来那个名字
   const trimmed = A.changeCredentials({
-    username: "  niki  ",
+    username: "  ming  ",
     password: "GoodPass1",
     current: "SecretPass1",
   });
-  check("用户名首尾空格被收掉", trimmed.username, "niki");
+  check("用户名首尾空格被收掉", trimmed.username, "ming");
   check("改完发了一条新凭据（不然用户自己当场掉线）", Boolean(trimmed.token), true);
   check("新凭据当场可用", A.authenticate(asCookie(trimmed.token)).ok, true);
-  check("新密码能登录", A.login("niki", "GoodPass1").ok, true);
-  check("旧密码不能登录了", A.login("niki", "SecretPass1").ok, false);
+  check("新密码能登录", A.login("ming", "GoodPass1").ok, true);
+  check("旧密码不能登录了", A.login("ming", "SecretPass1").ok, false);
 }
 
 console.log("\n=== 7. 闸门覆盖面 ===");

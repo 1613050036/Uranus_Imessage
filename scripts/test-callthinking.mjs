@@ -224,7 +224,7 @@ function configWithBooks(roleOverrides) {
     roles: [
       {
         id: "r1",
-        name: "Charlie",
+        name: "Ken",
         description: "人设",
         worldBookRefs: ["b-online"],
         ...roleOverrides,
@@ -236,7 +236,7 @@ function configWithBooks(roleOverrides) {
 /** 把拼好的提示词压成一段文本，好 includes。 */
 async function callPromptText(config) {
   const role = config.roles[0];
-  const built = await buildPrompt(config, role, { name: "niki", description: "" }, [], "", {
+  const built = await buildPrompt(config, role, { name: "ming", description: "" }, [], "", {
     mode: "call",
     presetRef: "",
   });
@@ -265,7 +265,7 @@ group("短信那条路不受通话的勾选影响");
 {
   const config = configWithBooks({ call: { enabled: true, worldBookRefs: ["b-call"] } });
   const role = config.roles[0];
-  const built = await buildPrompt(config, role, { name: "niki", description: "" }, [], "");
+  const built = await buildPrompt(config, role, { name: "ming", description: "" }, [], "");
   const text = built.messages.map((m) => String(m.content ?? "")).join("\n");
   check("线上还是用线上那本", text.includes("线上世界书命中了"), true);
   check("通话挑的那本不进线上", text.includes("通话世界书命中了"), false);

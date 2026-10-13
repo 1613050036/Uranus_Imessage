@@ -260,12 +260,12 @@ group("提示词：中文默认给一句简体的");
   // 用户填了就用他的，别偷偷在后面拼一句
   const f = fakeFetch({ body: "ok" });
   await transcribe(
-    { language: "zh", openai: { enabled: true, key: "k", prompt: "Charlie、niki、南宁" } },
+    { language: "zh", openai: { enabled: true, key: "k", prompt: "Ken、ming、上海" } },
     Buffer.from("x")
   );
   f.restore();
   const body = f.calls[0].init.body.toString("utf8");
-  check("用用户那句", body.includes('name="prompt"\r\n\r\nCharlie、niki、南宁'), true);
+  check("用用户那句", body.includes('name="prompt"\r\n\r\nKen、ming、上海'), true);
   check("不把默认那句拼上去", body.includes("简体中文"), false);
 }
 {
@@ -363,13 +363,13 @@ group("Qwen3-ASR 的请求形状（踩过两次的坑）");
   // 专有名词走 system，而且必须是第一条
   const f = fakeFetch({ body: JSON.stringify({ choices: [{ message: { content: "喂" } }] }) });
   await transcribe(
-    { language: "zh", qwen: { enabled: true, key: "k", prompt: "Charlie、niki、南宁" } },
+    { language: "zh", qwen: { enabled: true, key: "k", prompt: "Ken、ming、上海" } },
     Buffer.from("x")
   );
   f.restore();
   const body = JSON.parse(f.calls[0].init.body);
   check("第一条是 system", body.messages[0].role, "system");
-  check("内容就是那串词", body.messages[0].content, "Charlie、niki、南宁");
+  check("内容就是那串词", body.messages[0].content, "Ken、ming、上海");
   check("音频还在最后那条", body.messages.at(-1).role, "user");
 }
 {

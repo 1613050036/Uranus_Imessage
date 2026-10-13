@@ -250,7 +250,7 @@ group("接真的 callapi 路由（线上就是这条路）");
   const reader = stream.body.getReader();
   const dec = new TextDecoder();
   let got = "";
-  sendToNode("join", { link: "https://facetime.apple.com/join#x", name: "Charlie" });
+  sendToNode("join", { link: "https://facetime.apple.com/join#x", name: "Ken" });
   const deadline = Date.now() + 3000;
   while (!got.includes("\"join\"") && Date.now() < deadline) {
     const { value, done } = await Promise.race([

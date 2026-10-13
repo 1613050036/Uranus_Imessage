@@ -364,14 +364,14 @@ console.log("\n=== 19. peerAllowed：看发起方自己那份名单 ===");
       { id: "r-3", name: "Zed", instagram: { enabled: false, peers: ["r-1"] } },
     ],
   };
-  const niki = cfg.roles[0];
+  const ming = cfg.roles[0];
   const charlie = cfg.roles[1];
   const zed = cfg.roles[2];
-  check("小明 勾了 阿瑞 → 能互动", ig.peerAllowed(cfg, niki, "阿瑞"), true);
+  check("小明 勾了 阿瑞 → 能互动", ig.peerAllowed(cfg, ming, "阿瑞"), true);
   check("单向就够（阿瑞 没勾 小明 也不影响上面那条）", ig.peerAllowed(cfg, charlie, "小明"), false);
   check("没开 IG 的角色不参与", ig.peerAllowed(cfg, zed, "小明"), false);
-  check("勾了但对方不存在", ig.peerAllowed(cfg, niki, "不存在的人"), false);
-  check("不能对用户用这个（用户不是 peer）", ig.peerAllowed(cfg, niki, "user"), false);
+  check("勾了但对方不存在", ig.peerAllowed(cfg, ming, "不存在的人"), false);
+  check("不能对用户用这个（用户不是 peer）", ig.peerAllowed(cfg, ming, "user"), false);
 }
 
 console.log("\n=== 20. 坏数据不炸、不删 ===");
@@ -1076,14 +1076,14 @@ const llmPort = fakeLlm.address().port;
   check("回用户的帖子不会再排队（要不要回是用户的事）", store.readQueue().length, 0);
 
   // ── 角色对角色：不发短信，但要记上下文，并且可能把对面叫起来 ──
-  const nikisPost = store.addPost("小明", {
+  const mingsPost = store.addPost("小明", {
     caption: "角色间用",
     createdAt: new Date(TQ - 3600e3).toISOString(),
     comments: [{ id: "c-ch", owner: "阿瑞", text: "这组绝了" }],
   });
   const actsBefore2 = store.readActivity().length;
   nextReply = "[comment:恭喜]$这段不该发出去";
-  const peerOut = await doTask({ roleId: "r-1", kind: "charComment", postOwner: "小明", postId: nikisPost.id, commentId: "c-ch" }, { roll: zero });
+  const peerOut = await doTask({ roleId: "r-1", kind: "charComment", postOwner: "小明", postId: mingsPost.id, commentId: "c-ch" }, { roll: zero });
   check("评论发了，短信按规矩不发", [peerOut.action, peerOut.comment, peerOut.dm], ["comment", "恭喜", ""]);
   check("mark 里引了对方那句", peerOut.mark, "[Instagram] 阿瑞 在 Instagram 上跟你说：这组绝了");
   check("recordPeer 开着 → 记上下文", peerOut.record, true);
@@ -1418,14 +1418,14 @@ check("默认不同步用户自己的号（用户定的）", accts.defaultSettin
 check("图床默认 cloudinary", accts.defaultSettings().imageHost.provider, "cloudinary");
 
 accts.writeAccount("小明", { token: "IGQ-fake", userId: "1789", username: "@NiKi_Real" });
-check("绑完读回来", accts.readAccount("小明").username, "niki_real");
+check("绑完读回来", accts.readAccount("小明").username, "ming_real");
 check("用户名规范化：去 @ 转小写", accts.normalizeUsername(" @Foo.Bar_1 "), "foo.bar_1");
 check("用户名剔非法字符", accts.normalizeUsername("中文abc!!"), "abc");
 check("没绑过的角色给默认值而不是 null", accts.readAccount("Zed").token, "");
 check("token 清空 = 整条删掉", accts.writeAccount("小明", { token: "" }), null);
 checkThat("删完 accounts 里就没这个键了", !accts.readAccounts().accounts.小明);
 
-accts.writeAccount("小明", { token: "IGQ-fake", userId: "1789", username: "niki_real" });
+accts.writeAccount("小明", { token: "IGQ-fake", userId: "1789", username: "ming_real" });
 accts.writeRealSettings({ intervalHours: 6 });
 check("改间隔不动图床", accts.readRealSettings().imageHost.cloudName, "");
 accts.writeRealSettings({ imageHost: { cloudName: "demo" } });
@@ -1524,11 +1524,11 @@ check("已经过期了续不了（只能重粘）", accts.needsRefresh({ token: 
 
 console.log("\n=== 36. allowedFrom：空名单 = 谁都不理，自己人永远算 ===");
 const wl = { allowFrom: [{ name: "阿 A", username: "friend_a" }] };
-const own = { accounts: { 小明: { username: "niki_real" } }, user: { username: "me_big" } };
+const own = { accounts: { 小明: { username: "ming_real" } }, user: { username: "me_big" } };
 check("名单里的放行", accts.allowedFrom("friend_a", wl, own), true);
 check("陌生人不放行", accts.allowedFrom("stranger", wl, own), false);
 check("空名单谁都不放行", accts.allowedFrom("stranger", { allowFrom: [] }, own), false);
-check("角色自己的小号永远算（角色互评靠这条）", accts.allowedFrom("niki_real", { allowFrom: [] }, own), true);
+check("角色自己的小号永远算（角色互评靠这条）", accts.allowedFrom("ming_real", { allowFrom: [] }, own), true);
 check("你的大号永远算", accts.allowedFrom("@Me_Big", { allowFrom: [] }, own), true);
 check("空用户名不放行", accts.allowedFrom("", wl, own), false);
 
@@ -1679,7 +1679,7 @@ store.writePosts("Zed", []);
 console.log("\n=== 44. realOverview：**一个凭据都不许回前端** ===");
 accts.writeRealSettings({ imageHost: { cloudName: "demo", apiKey: "KEY-123", apiSecret: "SEC-456" } });
 accts.writeUserAccount({ token: "IGQ-user-token", userId: "9", username: "me_big" });
-accts.writeAccount("小明", { token: "IGQ-role-token", userId: "1789", username: "niki_real" });
+accts.writeAccount("小明", { token: "IGQ-role-token", userId: "1789", username: "ming_real" });
 
 const ov = real.realOverview({ roles: [{ id: "r-a", name: "小明", instagram: { enabled: true, syncReal: true } }] });
 const ovJson = JSON.stringify(ov);
@@ -1696,7 +1696,7 @@ check("角色那条带着 bound / username / syncReal", [
   ov.accounts[0].bound,
   ov.accounts[0].username,
   ov.accounts[0].syncReal,
-], [true, "niki_real", true]);
+], [true, "ming_real", true]);
 check("你的大号那条也带 bound", ov.user.bound, true);
 
 /*

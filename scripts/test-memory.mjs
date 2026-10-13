@@ -464,7 +464,7 @@ const { buildQuery } = await import("../server/src/prompt.js");
 
 const PFX =
   "[米洛发送当地时间 CST : 2026-09-22 19:25:58 | 周二, 工作日 | " +
-  "米洛当地天气: 南宁 多云 28.7°C; Charlie当地天气: 旧金山 晴 18°C]";
+  "米洛当地天气: 上海 多云 28.7°C; Ken当地天气: 旧金山 晴 18°C]";
 const convo = [
   { role: "user", content: `${PFX}你觉得叫你什么好` },
   { role: "assistant", content: "Mr Lucien可以" },

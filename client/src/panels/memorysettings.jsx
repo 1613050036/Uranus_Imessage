@@ -201,12 +201,12 @@ function MemorySettings({ onGoto }) {
               className={`${inputCls} min-h-[5rem] font-mono text-xs leading-relaxed`}
               value={(cfg.ignoreWords ?? []).join("\n")}
               onChange={(e) => patch({ ignoreWords: e.target.value.split("\n") })}
-              placeholder={"Dante\nniki\nCharlie"}
+              placeholder={"Dante\n小明\nKen"}
             />
           </Field>
           <p className="-mt-3 text-meta leading-relaxed text-ink-faint">
             只从<strong className="text-ink-soft">查询</strong>里剔，记忆本身不改，也不用重新算向量。
-            英文按整词剔（填 niki 不会把 nikita 剔成 ta），中文按字面剔。
+            英文按整词剔（填 Ann 不会把 Anna 剔成 a），中文按字面剔。
             剔完什么都不剩的那一轮（比如只是在叫名字）直接跳过检索，近 N 天那一路照常注入。
           </p>
 

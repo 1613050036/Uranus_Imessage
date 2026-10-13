@@ -14,7 +14,8 @@ import {
 } from "../labels.js";
 import { SaveBar, useSection } from "../section.jsx";
 import { api, useConfig } from "../store.jsx";
-import { Button, Card, Field, Fold, Modal, ResultNote, Switch, inputCls } from "../ui.jsx";
+import { BackendTooOld, Button, Card, Field, Fold, Modal, ResultNote, Switch, inputCls } from "../ui.jsx";
+import { backendHas } from "../edition.js";
 import { ParamSlider } from "./preset.jsx";
 import {
   Brain,
@@ -1589,7 +1590,7 @@ export function TtsSection() {
  * 开了「情绪识别」的角色仍然走多模态 —— 那些东西专门的 STT 给不出来。
  */
 export function SttSection() {
-  const { config, updateSttApi } = useConfig();
+  const { config, savedConfig, updateSttApi } = useConfig();
   const stt = config.sttApi ?? {};
   const oa = stt.openai ?? {};
   const qw = stt.qwen ?? {};
@@ -1602,6 +1603,10 @@ export function SttSection() {
 
   return (
     <Card title="语音转文字（STT）" desc="把对方说的话转成文字。全局一份，所有角色共用">
+      {/* 小手机后端太旧时这一块存不进去，见 edition.js:backendHas */}
+      {!backendHas(savedConfig, "stt") ? (
+        <BackendTooOld what="语音转文字" />
+      ) : (
       <Fold
         title="三家转写服务"
         badge={source || "未启用"}
@@ -1796,7 +1801,7 @@ export function SttSection() {
                     className={inputCls}
                     value={qw.prompt ?? ""}
                     onChange={(e) => patch("qwen", { prompt: e.target.value })}
-                    placeholder="例如：Charlie、niki、南宁"
+                    placeholder="例如：角色名、你的名字、常提到的地名"
                   />
                 </Field>
                 <p className="text-meta leading-relaxed text-ink-faint">
@@ -1857,6 +1862,7 @@ export function SttSection() {
           </div>
         </div>
       </Fold>
+      )}
     </Card>
   );
 }
