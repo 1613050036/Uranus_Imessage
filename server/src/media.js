@@ -787,6 +787,27 @@ export function extForMime(mimeType) {
   return EXT_FOR_MIME[String(mimeType ?? "").trim().toLowerCase()] ?? ".png";
 }
 
+/*
+ * ISOBMFF 的 brand → 具体是哪种图（下面 sniffImageType 用）。
+ *
+ * `heic`/`heix` 是单张 HEVC 图，`hevc`/`hevx` 是图片序列，`heim`/`heis`/
+ * `hevm`/`hevs` 是多视角和缩放序列 —— 对我们都一样：一张图，送去识别。
+ * `mif1`/`msf1` 是 HEIF 的通用 brand（不保证内层编码是 HEVC），有些安卓机
+ * 和修图软件存出来就是这个，报 image/heif 更准确，Gemini 两种都收。
+ */
+const HEIC_BRANDS = new Set(["heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs"]);
+const HEIF_BRANDS = new Set(["mif1", "msf1"]);
+const AVIF_BRANDS = new Set(["avif", "avis"]);
+
+/**
+ * 上面这三种**不交给 ffmpeg**，原样送去识别；残缺校验也走 ISOBMFF 那条路。
+ *
+ * 一句话：打包的 ffmpeg 6.1 解不了图块网格结构的 HEIC/AVIF，会悄悄压出
+ * 一片死色（退出码 0、stderr 不吭声），而 Gemini 原生就收这几种。
+ * 详见 shrinkForVision 里 HEIC 那段。
+ */
+const NO_FFMPEG_STILLS = new Set(["image/heic", "image/heif", "image/avif"]);
+
 /**
  * 从**字节**里认图片类型，认不出返回 null（后缀带点，和 REF_EXTS 一个形状）。
  *
@@ -812,6 +833,27 @@ export function sniffImageType(buf) {
   if (buf.toString("ascii", 0, 3) === "GIF") {
     return { mimeType: "image/gif", ext: ".gif" };
   }
+  /*
+   * HEIC / HEIF / AVIF —— iPhone 直出的照片就是这个。
+   *
+   * 这几种都装在 ISOBMFF 容器里（和 mp4 同一套 box 结构），开头是
+   * `[4 字节 box 大小]ftyp[4 字节 brand]`，靠 brand 区分是图还是视频。
+   * mp4 / mov 的 brand 是 `isom` / `mp42` / `qt  ` 这些，不在下面的表里，
+   * 所以视频不会被误认成图片。
+   *
+   * **加这一条是在修一个实机 bug**：以前这里认不出 HEIC、返回 null，
+   * 于是 shrinkForVision 把它当 png 丢给 ffmpeg，而打包的 ffmpeg 6.1
+   * 解不了 iPhone 那种切成图块的 HEIC —— 它只解出一小条、其余填成平色、
+   * 然后**退出码 0**，一张「灰蒙蒙的图」就这么被当成好图送去识别，
+   * 模型照着那片灰一本正经地描述一通。详见 NO_FFMPEG_STILLS 和
+   * shrinkForVision 里 HEIC 那段。
+   */
+  if (buf.length >= 12 && buf.toString("ascii", 4, 8) === "ftyp") {
+    const brand = buf.toString("ascii", 8, 12);
+    if (HEIC_BRANDS.has(brand)) return { mimeType: "image/heic", ext: ".heic" };
+    if (HEIF_BRANDS.has(brand)) return { mimeType: "image/heif", ext: ".heif" };
+    if (AVIF_BRANDS.has(brand)) return { mimeType: "image/avif", ext: ".avif" };
+  }
   return null;
 }
 
@@ -833,13 +875,18 @@ export function sniffImageType(buf) {
  * 残缺字节交出来（理由见那边的注释）。所以识别前再验一道尾巴 —— 这道**不**
  * 依赖任何外部报的数字，只看这份字节自己说不说得通。
  *
- * ── 为什么只认 JPEG 和 PNG ──
+ * ── 认得出的几种 ──
  *
- * 这两种有明确、固定、就在最后几个字节的结束标记：JPEG 的 EOI（FFD9）、
- * PNG 的 IEND 块。WebP / GIF 的结构没这么干脆（WebP 靠 RIFF 长度字段、
- * GIF 的 trailer 只有一个字节 0x3B，太容易在残缺数据里偶然命中），认不准
- * 的一律返回 true —— 这道校验的职责是「抓住确凿的残缺」，不是「证明完整」。
- * 宁可漏掉几张也不能把好图误杀，那样代价是角色看不见对方发的图。
+ * JPEG 和 PNG 有明确、固定、就在最后几个字节的结束标记：JPEG 的 EOI（FFD9）、
+ * PNG 的 IEND 块。HEIC / HEIF / AVIF 没有结束标记，但它们是 ISOBMFF 容器，
+ * 顶层 box 自报长度，截断了就会有一个 box 声明的末尾落在文件外面 —— 那是
+ * 确凿的残缺（见 isobmffComplete）。这条对 HEIC 尤其要紧：它压根不进 ffmpeg
+ * （见 shrinkForVision），这里是唯一一道能拦住半份 HEIC 的闸。
+ *
+ * WebP / GIF 的结构没这么干脆（WebP 靠 RIFF 长度字段、GIF 的 trailer 只有
+ * 一个字节 0x3B，太容易在残缺数据里偶然命中），认不准的一律返回 true ——
+ * 这道校验的职责是「抓住确凿的残缺」，不是「证明完整」。宁可漏掉几张也不能
+ * 把好图误杀，那样代价是角色看不见对方发的图。
  *
  * JPEG 的 FFD9 往后找一小段而不是死抠最后两个字节：有些相机和聊天软件会在
  * EOI 后面追 EXIF 缩略图或者填充字节，抠死了会把完整的图判成残缺。
@@ -865,7 +912,54 @@ export function imageLooksComplete(buf) {
     if (buf.length < 12) return false;
     return buf.subarray(buf.length - 8, buf.length - 4).toString("ascii") === "IEND";
   }
+  if (NO_FFMPEG_STILLS.has(hit.mimeType)) return isobmffComplete(buf);
   return true;
+}
+
+/**
+ * 走一遍 ISOBMFF 的顶层 box 链，看最后一个 box 收不收得住。
+ *
+ * 容器长这样：一串 `[4 字节 size][4 字节 type][...内容]`，size 把**自己这 8 个
+ * 字节头也算在内**。完整的文件里最后一个 box 的末尾正好落在文件末尾；
+ * 截断的文件里，装着图像数据的 `mdat`（通常是最后、也是最大的那个 box）会
+ * 声明一个落在文件外面的末尾 —— 那就是确凿的残缺。
+ *
+ * 两个特殊的 size 按规范处理：`1` 表示真长度在后面 8 个字节里（64 位，
+ * 大文件用），`0` 表示「一直到文件结尾」（合法，判完整）。
+ *
+ * 和这个文件里其它校验一个口径：**只抓确凿的残缺**。box 头读不完整、长度
+ * 不合规、或者走着走着对不上了，一律返回 true 交给下游 —— 这几种都可能是
+ * 我们对格式的理解不够，而误杀一张好图的代价是角色看不见对方发的图。
+ *
+ * @param {Buffer} buf 图片字节
+ * @returns {boolean} 确凿残缺时 false
+ */
+function isobmffComplete(buf) {
+  let at = 0;
+  // 加个上限防着畸形文件里的 0 长度 box 把我们钉在原地（真实文件个位数个顶层 box）
+  for (let guard = 0; guard < 64; guard += 1) {
+    if (at === buf.length) return true; // 正好收在文件末尾
+    if (at + 8 > buf.length) return false; // 连个 box 头都凑不齐 —— 断在半截上
+
+    let size = buf.readUInt32BE(at);
+    let head = 8;
+    if (size === 1) {
+      // 64 位长度：紧跟在 type 后面的 8 个字节
+      if (at + 16 > buf.length) return false;
+      const big = buf.readBigUInt64BE(at + 8);
+      if (big > BigInt(Number.MAX_SAFE_INTEGER)) return true; // 读不动就不表态
+      size = Number(big);
+      head = 16;
+    } else if (size === 0) {
+      return true; // 「一直到文件结尾」，按定义就是完整的
+    }
+
+    if (size < head) return true; // 不合规，不表态
+    const end = at + size;
+    if (end > buf.length) return false; // 这个 box 的末尾在文件外面 —— 确凿残缺
+    at = end;
+  }
+  return true; // box 多到不正常，不表态
 }
 
 /**
@@ -1332,9 +1426,49 @@ const VISION_MAX_SIDE = 1600;
  * @returns {Promise<{buffer: Buffer, mimeType: string}>} 压不动时原样退回
  */
 export async function shrinkForVision(buffer, { mimeType = "", name = "", scope }) {
-  const fallback = () => ({ buffer, mimeType: mimeType || "image/jpeg" });
   const kb = (n) => (n / 1024).toFixed(0);
-  if (!buffer?.length || buffer.length <= VISION_SHRINK_MIN) return fallback();
+  const sniffed = sniffImageType(buffer);
+  /*
+   * 退回原图时 mimeType 以**字节**为准，调用方给的只当兜底。
+   *
+   * iMessage 那边报的 mimeType 经常和内容对不上（这张实机 HEIC 报的是
+   * image/jpeg），而退回原图意味着这份字节要原样送去识别 —— 带着一个错的
+   * mimeType 上去，Gemini 按 JPEG 解一份 HEIC 只会报个看不懂的错。
+   */
+  const fallback = () => ({ buffer, mimeType: sniffed?.mimeType || mimeType || "image/jpeg" });
+  if (!buffer?.length) return fallback();
+
+  /*
+   * HEIC / HEIF / AVIF 不进 ffmpeg，原样送去识别。
+   *
+   * 打包的 ffmpeg（ffmpeg-static 6.1）**解不了** iPhone 直出的 HEIC：那种图
+   * 在容器里是切成图块的网格，6.1 把每块当成独立的流，只解出第一块、其余
+   * 填成平色，然后退出码 0、stderr 里一句不吭。实机表现是一张 1.1MB 的
+   * HEIC 被「压」成 12KB，画面是一整片灰，模型照着那片灰描述一通
+   * （用户报的「我发图他说看到灰蒙蒙的一片」）。
+   *
+   * 上面那道 DECODE_BROKEN 接不住它 —— 那条正则认的是 mjpeg / png 解码器
+   * 的措辞，HEVC 这条路压根不喊。所以只能在**进去之前**拦。
+   *
+   * 代价很小：Gemini 原生收 image/heic 和 image/heif，而 HEIC 本身就是高压缩
+   * 格式，一张 1.1MB 的原图直接上传只多花一两秒。真要压的话得先有能解它的
+   * ffmpeg（8.x 起才有 HEVC 静态图解码，而且对 tiled HEIC 仍然不稳），
+   * 不如直送。
+   *
+   * AVIF 一起拦：ffmpeg 6.1 有 libaom 解码器，但 AVIF 的容器结构和 HEIC 一样
+   * 支持图块网格，没有实机日志能证明它解得对 —— 而 Gemini 收 AVIF，
+   * 不值得为省一两秒去赌。
+   */
+  if (sniffed && NO_FFMPEG_STILLS.has(sniffed.mimeType)) {
+    logDebug(
+      scope,
+      `这张图是 ${sniffed.mimeType}${name ? `「${name}」` : ""}（${kb(buffer.length)}KB），` +
+        `打包的 ffmpeg 解不了它（会压出一片死色），按原图送去识别`
+    );
+    return fallback();
+  }
+
+  if (buffer.length <= VISION_SHRINK_MIN) return fallback();
 
   try {
     const bin = await ffmpegPath();
