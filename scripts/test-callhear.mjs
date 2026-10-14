@@ -13,6 +13,10 @@
  *  - **拼进用户消息的样子**：画面、背景在最前，语气贴着那句话。
  *  - **摄像头**：画面只在变了时报、关掉报一次、从没开过不报；识图慢就留给下一轮；
  *    默认通话预设里那句「没看到画面别瞎编」在、上一版没改过的预设会自动换新。
+ *  - **角色自己挂电话**：`[结束通话]` 认得出来，而**普通的话认不出来** ——
+ *    v1.21.9 那条判断的反斜杠被吃掉成了字符类，于是带 s 的英文句子句句都判成挂断。
+ *  - **语气标签**：TTS 认的时候留给它念，不认的照旧剥掉；指令标记哪一家都要剥。
+ *  - **语言和口音**：跟着角色栏「发送语音」那两项，别短信里英音、电话里美音。
  *
  * 跑：node scripts/test-callhear.mjs
  */
@@ -22,6 +26,7 @@ import {
   AMBIENCE_EVERY_MS,
   ambiencePrompt,
   callUserMessage,
+  callVoice as callVoiceOf,
   framePrompt,
   listenAmbience,
   nextAmbience,
@@ -64,6 +69,23 @@ function fakeFetch(body) {
       return JSON.stringify(body);
     },
   });
+  return () => {
+    globalThis.fetch = orig;
+  };
+}
+
+/**
+ * 掐掉 fetch，一律失败。
+ *
+ * 给那些「要走到 synthesizeVoice 但不关心合成结果」的用例：填了假密钥的配置
+ * 会真的去打 ElevenLabs（回 401），离线自测不该出网。合成失败不影响要验的
+ * 东西 —— `part.text` 就是送给 TTS 的那段。
+ */
+function deadFetch() {
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("离线自测不出网");
+  };
   return () => {
     globalThis.fetch = orig;
   };
@@ -346,13 +368,19 @@ group("默认通话预设里那句");
   // 和 callUserMessage 拼出来的标记一致，不然模型对不上号
   check("预设里的标记写法和实际一致", DEFAULT_CALL_HOWTO.includes("[{{user}}的摄像头画面："), true);
 
-  // 上一版（v1.20.2）没改过的正文要自动换成新的；改过的不动
+  // 语气标签那一节：ElevenLabs v3 起认方括号标签，得告诉模型可以写
+  check("写了语气标签怎么用", DEFAULT_CALL_HOWTO.includes("[sighs]"), true);
+  check("说明标签不会被念出来", DEFAULT_CALL_HOWTO.includes("不会被念出来"), true);
+
+  // 以前哪一版没改过的正文都要自动换成新的；改过的不动
   const v1202 = DEFAULT_CALL_HOWTO.split("\n\n### 摄像头")[0];
+  const v1219 = DEFAULT_CALL_HOWTO.split("\n\n### 语气")[0];
   const howtoOf = (content) =>
     normalizeConfig({
       presets: [{ id: "p", name: "通话", mode: "call", entries: [{ kind: "callHowto", content }] }],
     }).presets.find((p) => p.id === "p")?.entries.find((e) => e.kind === "callHowto")?.content;
-  check("上一版没改过：换成带摄像头的", howtoOf(v1202), DEFAULT_CALL_HOWTO);
+  check("v1.20.2 没改过：换成新的", howtoOf(v1202), DEFAULT_CALL_HOWTO);
+  check("v1.21.9 没改过：换成带语气的", howtoOf(v1219), DEFAULT_CALL_HOWTO);
   check("用户改过的：原样留着", howtoOf(v1202 + "\n我自己加的"), v1202 + "\n我自己加的");
 }
 
@@ -373,6 +401,85 @@ group("[结束通话] 在剥标记之前就认出来");
 
   parts = await say("再聊会儿嘛");
   check("没写就不挂", parts.some((p) => p.hangUp), false);
+
+  /*
+   * v1.21.9 的回归：那条判断在 callturn.js 里被抄成了 `/[s*结束通话s*]/` ——
+   * 反斜杠全丢了，于是它是个**字符类**，匹配 s、星号、以及「结束通话」里任意
+   * 一个字。英文回复几乎句句带 s，表现是角色说完第一句就莫名挂断。
+   */
+  parts = await say("Signal in here is terrible tonight.");
+  check("英文里的 s 不该被当成挂断", parts.some((p) => p.hangUp), false);
+
+  parts = await say("这事说来话长，改天再说");
+  check("「说」「话」这些字不该被当成挂断", parts.some((p) => p.hangUp), false);
+
+  parts = await say("要不我们通个话?");
+  check("「通话」两个字也不算", parts.some((p) => p.hangUp), false);
+}
+
+group("语气标签：TTS 认的时候留给它念");
+{
+  // 这一组会走到 synthesizeVoice —— 掐掉 fetch，别真打 ElevenLabs
+  const restore = deadFetch();
+  const chat = { separator: "$" };
+  // ElevenLabs 的 v3 及以后认方括号标签（media.js:elevenTagsOk）
+  const v3 = { ttsApi: { elevenlabs: { enabled: true, key: "k", model: "eleven_v3" } }, chat };
+  const v2 = {
+    ttsApi: { elevenlabs: { enabled: true, key: "k", model: "eleven_multilingual_v2" } },
+    chat,
+  };
+  const textOf = (parts) => parts.map((p) => p.text).join("");
+
+  // 没有网络，合成一定失败 —— 但 part.text 就是送给 TTS 的那段，够判了
+  let parts = await synthesizeSay({ config: v3, role: {}, text: "[sighs] 算了，不说这个了。" });
+  check("v3：标签留着", textOf(parts).includes("[sighs]"), true);
+
+  parts = await synthesizeSay({ config: v2, role: {}, text: "[sighs] 算了，不说这个了。" });
+  check("v2 不认：照旧剥掉", textOf(parts).includes("sighs"), false);
+  check("v2：正文还在", textOf(parts).includes("算了"), true);
+
+  // 指令标记在哪一家都不能留
+  parts = await synthesizeSay({ config: v3, role: {}, text: "我看看[查岗实时电脑屏幕]等下" });
+  check("中文指令标记照旧剥掉", textOf(parts).includes("查岗"), false);
+
+  parts = await synthesizeSay({ config: v3, role: {}, text: "好啊[leave_on_read]" });
+  check("带下划线的不算语气标签", textOf(parts).includes("leave_on_read"), false);
+
+  /*
+   * 整句只剩一个标签：留着送进 ElevenLabs 会直接 400
+   * （「Input at position 0 has empty text」），所以当没字可念。
+   */
+  parts = await synthesizeSay({ config: v3, role: {}, text: "[chuckles]" });
+  check("整句只有标签：不去合成", parts.length, 0);
+  restore();
+}
+
+group("通话跟着「发送语音」那套语言和口音");
+{
+  /*
+   * 角色栏里填了 en-GB + strong British accent，短信里的语音条是英音、
+   * 电话里却是美音 —— 通话这条路压根没把这两项传给 synthesizeVoice。
+   * 没有网络没法验到上游，这里验的是「配置真的取到了」。
+   */
+  const role = {
+    voiceSend: { voiceId: "v1", language: "en-GB", accent: "strong British accent" },
+  };
+  const got = callVoiceOf({ ttsApi: { elevenlabs: { enabled: true, key: "k", model: "eleven_v3" } } }, role);
+  check("音色、语言、口音都取到了", [got.voiceId, got.language, got.accent], [
+    "v1",
+    "en-GB",
+    "strong British accent",
+  ]);
+  check("v3 认标签：keepTone 开", got.keepTone, true);
+
+  const v2 = callVoiceOf(
+    { ttsApi: { elevenlabs: { enabled: true, key: "k", model: "eleven_turbo_v2_5" } } },
+    role
+  );
+  check("v2 不认：keepTone 关", v2.keepTone, false);
+
+  // 一家都没配：keepTone 关，不该抛
+  check("没配 TTS 也不炸", callVoiceOf({ ttsApi: {} }, role).keepTone, false);
 }
 
 // ───────────────────────────────── 配置

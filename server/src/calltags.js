@@ -206,15 +206,35 @@ export function stripSeparator(text, sep = "$") {
  *
  * @param {Array<{kind: string, text: string}>} parts splitMedia 的产物
  * @param {string} [sep] 气泡分隔符
+ * @param {object} [opts]
+ * @param {boolean} [opts.keepTone] 语气标签留给 TTS（这一家认的时候，见 stripSpoken）
  * @returns {string} 拼好的、可以直接送 TTS 的文本
  */
-export function speakableFrom(parts, sep = "$") {
+export function speakableFrom(parts, sep = "$", { keepTone = false } = {}) {
   const text = (parts ?? [])
     .filter((p) => p?.kind === "text")
     .map((p) => String(p.text ?? "").trim())
     .filter(Boolean)
     .join(" ");
-  return stripSeparator(stripSpoken(stripCallTags(text)), sep);
+  return stripSeparator(stripSpoken(stripCallTags(text), { keepTone }), sep);
+}
+
+/**
+ * 这个方括号标记是**语气标签**吗（`[sighs]`、`[warmly]`、`[chuckles]`）。
+ *
+ * 判据：一个纯 ASCII 字母的词，不长。指令标记一律落在外面 —— 它们要么带冒号
+ * （`[search:天气]`）、要么是中文（`[查岗实时电脑屏幕]`）、要么带下划线
+ * （`[leave_on_read]`）。媒体类的压根到不了这儿：`splitMedia` 已经把它们切成
+ * 非 text 的 part 了。
+ *
+ * **刻意只认单个词**：`[strong British accent]` 这种带空格的不在这儿管 ——
+ * 口音是配置里那一项，由 `media.js:synthesizeVoice` 自己拼在整条前面，不是
+ * 模型写出来的。而放开空格会连带改掉「方括号里有空格的当正文」那条老规矩
+ * （`[he said]` 本来是要念出来的）。
+ */
+function isToneTag(body) {
+  const s = String(body ?? "").trim();
+  return s.length > 0 && s.length <= 24 && /^[A-Za-z]+$/.test(s);
 }
 
 /**
@@ -233,8 +253,19 @@ export function speakableFrom(parts, sep = "$") {
  * 这里用一条**通用**规则而不是去 import 那五六个模块各自的剥除函数：
  * 那样每加一个新标记就要记得在这儿也加一次，而漏掉的表现是角色突然念出
  * 一串方括号。通用规则对「以后新增的标记」天生免疫。
+ *
+ * ── keepTone：语气标签要留给 TTS ──
+ *
+ * `[warmly]`、`[sighs]` 这类是**写给 TTS 的**，ElevenLabs v3 及以后认（见
+ * `media.js:elevenTagsOk`）。那种情况下剥掉就白丢一分情绪 —— 发语音条那条路
+ * 本来就是留着的（`media.js:synthesizeVoice` 按 `keepTags` 决定），通话这条路
+ * 以前一律剥，于是通话里角色永远没有语气。认不认标签由调用方判，这里只管
+ * 「留还是不留」。
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.keepTone] 留下语气标签（见 isToneTag）
  */
-export function stripSpoken(text) {
+export function stripSpoken(text, { keepTone = false } = {}) {
   return (
     String(text ?? "")
       /*
@@ -243,8 +274,13 @@ export function stripSpoken(text) {
        * 只剥**整个方括号里不含空格**的那些 —— 真要说的话里也可能有方括号
        * （「他发来一条[图片]」），但那种里面通常带空格或标点。这个判据不完美，
        * 不过念错一个方括号比漏剥一个指令标记轻得多。
+       *
+       * keepTone 时多一道：纯英文单词的那些是语气标签，原样留着（见 isToneTag）。
        */
-      .replace(/[[［]\s*[^\s\]］]{1,40}\s*[\]］]/g, " ")
+      .replace(/[[［]\s*[^\s\]］]{1,40}\s*[\]］]/g, (whole) => {
+        const body = whole.replace(/^[[［]\s*|\s*[\]］]$/g, "");
+        return keepTone && isToneTag(body) ? `[${body}]` : " ";
+      })
       .replace(/[ \t]{2,}/g, " ")
       .trim()
   );

@@ -10470,15 +10470,19 @@ async function speakAndRecord({ stream, ctx, config, role, call, userMsg, send, 
   }
 
   if (hangUp) {
-    logInfo(scope, "角色自己挂了");
     /*
      * `drain` = 先把话说完再挂。
      *
      * `[结束通话]` 前面几乎总还有一句「再见」，而挂断指令走的是控制通道、
      * 和送音频那条响应是两条独立的通道 —— 不等的话节点会在那句话还在播的
      * 时候关掉浏览器，对方听到半个字然后断线。见 call.mjs:#drainSpeech。
+     *
+     * 这一轮**一个字都没说**（整段只有那个标记）就不用等：那是「不吭声直接
+     * 挂」，drain 下去只是白等队列确认一遍。
      */
-    sendToNode("hangup", { reason: "角色挂断", drain: true });
+    const spoke = Boolean(clean);
+    logInfo(scope, spoke ? "角色自己挂了（说完这句就挂）" : "角色自己挂了（没说话，直接挂）");
+    sendToNode("hangup", { reason: "角色挂断", drain: spoke });
   }
 }
 

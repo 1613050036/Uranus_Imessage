@@ -33,6 +33,7 @@
 import {
   callPrefix,
   interruptedNotice,
+  readHangUp,
   silenceNotice,
   speakableFrom,
   splitSentences,
@@ -43,7 +44,7 @@ import { elapsedMs, recordCallTurn, sayDuration } from "./callsession.js";
 import { resolveEndpoint, resolveRoleEndpoints } from "./config.js";
 import { chatWithFallback, describeImage, transcribeAudio } from "./llm.js";
 import { logDebug, logInfo, logWarn } from "./logs.js";
-import { splitMedia, synthesizeVoice } from "./media.js";
+import { pickTtsSource, splitMedia, stripToneTags, synthesizeVoice } from "./media.js";
 import { transcribe as sttTranscribe } from "./stt.js";
 
 const SCOPE = "通话";
@@ -506,7 +507,7 @@ const CALL_AUDIO_PROMPT =
 export async function* runCallTurn({ config, role, messages, params, signal }) {
   const { endpoint, fallback } = callEndpoint(config, role);
   const sep = config?.chat?.separator ?? "$";
-  const voiceId = role?.voiceSend?.voiceId ?? "";
+  const voice = callVoice(config, role);
 
   /*
    * 流式接收，攒够一句就吐出去。
@@ -584,7 +585,7 @@ export async function* runCallTurn({ config, role, messages, params, signal }) {
     const raw = ready.shift();
     if (signal?.aborted) break;
 
-    yield* sayOne(raw, { config, voiceId, sep, seq: seq++ });
+    yield* sayOne(raw, { config, voiceId: voice.voiceId, sep, seq: seq++, voice });
   }
 
   await task;
@@ -599,7 +600,7 @@ export async function* runCallTurn({ config, role, messages, params, signal }) {
  *
  * @yields {{text: string, audio: Buffer|null, media: object[], seq?: number, hangUp?: boolean}}
  */
-async function* sayOne(raw, { config, voiceId, sep, seq }) {
+async function* sayOne(raw, { config, voiceId, sep, seq, voice }) {
   /*
    * 角色要挂电话吗 —— **在剥标记之前**就看。
    *
@@ -607,8 +608,13 @@ async function* sayOne(raw, { config, voiceId, sep, seq }) {
    * text 是剥过的。以前挂断是在调用方对 text 拼起来那一段判的，于是永远看不到
    * 这个标记，角色自己挂电话从来没生效过（用户实测「你挂一下」它不挂）。
    * 所以这里单独带一个 hangUp 出去；整句只有这个标记、没字可念时也要 yield。
+   *
+   * **判据必须用 calltags.js 那一份**，别在这里另写一条正则：抄过来的那条
+   * 反斜杠被吃掉了（`/[s*结束通话s*]/` 其实是个字符类），于是只要这一句里出现
+   * 小写 s、星号，或者「结束通话」里任意一个字，就判成要挂 —— 英文回复几乎
+   * 句句带 s，表现是角色说完第一句就莫名挂断，而上下文里压根找不到那个标记。
    */
-  const hangUp = /[s*结束通话s*]/.test(String(raw ?? ""));
+  const { hangUp } = readHangUp(raw);
   /*
    * 功能保留，但不念出来。
    *
@@ -617,8 +623,24 @@ async function* sayOne(raw, { config, voiceId, sep, seq }) {
    * —— 打电话时角色突然想转个钱，这很真实，只是不该念出「transfer 冒号 4000」。
    */
   const parts = splitMedia(raw);
-  const speakable = speakableFrom(parts, sep);
+  /*
+   * 语气标签留不留，跟着这一家 TTS 认不认走（见 callVoice）。认的话
+   * `[warmly]` / `[sighs]` 原样交给它念 —— 发语音条那条路一直是这个待遇，
+   * 通话这条以前一律剥，于是电话里的角色永远没有语气。
+   */
+  const speakable = speakableFrom(parts, sep, { keepTone: Boolean(voice?.keepTone) });
   const media = parts.filter((p) => p.kind !== "text");
+
+  /*
+   * 整句只剩语气标签（切句切出来一个光秃秃的 `[sighs]`）—— 当没字可念。
+   *
+   * 留着标签送进 ElevenLabs 会直接 400：它把方括号当 speaker tag 剥掉之后
+   * 什么都不剩（「Input at position 0 has empty text」）。
+   */
+  if (speakable && !stripToneTags(speakable)) {
+    if (media.length || hangUp) yield { text: "", audio: null, media, hangUp };
+    return;
+  }
 
   if (!speakable) {
     // 整句只有标记（比如单独一个 [transfer:…] 或 [结束通话]），不用合成，
@@ -629,7 +651,14 @@ async function* sayOne(raw, { config, voiceId, sep, seq }) {
 
   let audio = null;
   try {
-    const out = await synthesizeVoice(config.ttsApi, voiceId, speakable, SCOPE);
+    /*
+     * 语言和口音跟发语音条用的是**同一份**配置（角色栏「发送语音」里那两项）：
+     * 不同步的话同一个角色在短信里是英音、电话里却是美音，很怪。
+     */
+    const out = await synthesizeVoice(config.ttsApi, voiceId, speakable, SCOPE, {
+      language: voice?.language ?? "",
+      accent: voice?.accent ?? "",
+    });
     audio = out?.buffer ?? null;
   } catch (e) {
     /*
@@ -669,15 +698,38 @@ async function* sayOne(raw, { config, voiceId, sep, seq }) {
  */
 export async function synthesizeSay({ config, role, text }) {
   const sep = config?.chat?.separator ?? "$";
-  const voiceId = role?.voiceSend?.voiceId ?? "";
+  const voice = callVoice(config, role);
   const out = [];
   let seq = 0;
   for (const piece of splitSentences(String(text ?? ""), { minChars: 24 })) {
-    for await (const part of sayOne(piece, { config, voiceId, sep, seq: seq++ })) {
+    for await (const part of sayOne(piece, { config, voiceId: voice.voiceId, sep, seq: seq++, voice })) {
       out.push(part);
     }
   }
   return out;
+}
+
+/**
+ * 通话里念字用哪个音色、什么语言口音、语气标签留不留。
+ *
+ * 四样全是**借发语音条那套**（`role.voiceSend`）：音色一直是借的（见
+ * `config.js:2280`），语言和口音以前漏了 —— 于是角色栏里填了 `en-GB` +
+ * `strong British accent`，短信里的语音条是英音、电话里却是美音。
+ *
+ * `keepTone` 跟着挑中的那一家 TTS 走（`media.js:pickTtsSource` 的 `keepTags`）：
+ * 认方括号标签的（ElevenLabs v3 起、Fish Audio S2 系）就把 `[sighs]` 留给它念，
+ * 不认的照旧剥掉 —— 不然语音里会真的说一句 "sighs"。
+ *
+ * **不看 `voiceSend.enabled`**：那个开关管的是线上要不要把回复转成语音条，
+ * 打电话本来就是说话，和它无关（和 `index.js:3968` 线下念台词同一个理由）。
+ */
+export function callVoice(config, role) {
+  return {
+    voiceId: role?.voiceSend?.voiceId ?? "",
+    language: role?.voiceSend?.language ?? "",
+    accent: role?.voiceSend?.accent ?? "",
+    keepTone: Boolean(pickTtsSource(config?.ttsApi)?.keepTags),
+  };
 }
 
 /**

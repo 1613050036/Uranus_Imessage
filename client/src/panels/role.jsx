@@ -5521,14 +5521,32 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
           <p className="text-meta leading-relaxed text-ink-faint">
             装好节点（
             <code className="mx-1 font-mono text-ink-soft">facetime-node</code>
-            那个程序）之后，在它的目录里跑一次：
+            那个程序）之后，在它的目录里跑：
+          </p>
+          <p className="text-meta leading-relaxed text-ink-faint">
+            <strong className="text-ink-soft">Windows</strong>（在那个文件夹里开一个命令行窗口）：
+          </p>
+          <code className="block overflow-x-auto whitespace-nowrap border border-line bg-paper px-3.5 py-3 font-mono text-meta text-ink-soft">
+            node src/index.mjs
+          </code>
+          <p className="text-meta leading-relaxed text-ink-faint">
+            这个窗口<strong className="text-ink-soft">别关</strong>，节点就一直在。
+            要开机自启的话，把这行做成一个快捷方式放进「启动」文件夹（
+            <kbd className="mx-1 border border-line bg-paper px-1 font-mono">Win+R</kbd>
+            输入 <code className="mx-1 font-mono text-ink-soft">shell:startup</code>）。
+          </p>
+          <p className="mt-1 text-meta leading-relaxed text-ink-faint">
+            <strong className="text-ink-soft">Linux</strong>（装成后台服务，开机自启、崩了自己重启）：
           </p>
           <code className="block overflow-x-auto whitespace-nowrap border border-line bg-paper px-3.5 py-3 font-mono text-meta text-ink-soft">
             sudo bash install-service.sh
           </code>
           <p className="text-meta leading-relaxed text-ink-faint">
-            装成后台服务，开机自启、崩了自己重启。
-            <strong className="text-ink-soft">不用配对码、不用密钥</strong>
+            <code className="mr-1 font-mono text-ink-soft">sudo</code>
+            和这个脚本都是 Linux 的东西，Windows 上跑会报「不是内部或外部命令」——
+            那边用上面那行。
+            <br />
+            两种都<strong className="text-ink-soft">不用配对码、不用密钥</strong>
             —— 节点默认就连本机的 Uranus。连没连上去「控制台 → 通话」那一栏看。
             <br />
             用 frp、ssh 隧道把别处的节点转到这台机器上的，别选这个，选「节点不在本机」。
@@ -5581,8 +5599,10 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
                 <strong className="text-ink-soft">配对码</strong>
                 （不是上面那串密钥，是下面这一长串）。到节点那台机器的
                 <code className="mx-1 font-mono text-ink-soft">facetime-node</code>
-                目录里跑
+                目录里，Linux 上跑
                 <code className="mx-1 font-mono text-ink-soft">sudo bash pair.sh</code>
+                、Windows 上跑
+                <code className="mx-1 font-mono text-ink-soft">node src/index.mjs --pair 配对码</code>
                 ，把它整个粘进去 —— 地址和密钥都在里面了：
               </p>
               {/* 边框和底色跟 CodeBlock 一致（ui.jsx）—— 这一串也是要复制的东西 */}
@@ -5615,10 +5635,14 @@ function CallNodeSetup({ node, updateCallNode, ready }) {
                 </Button>
               </div>
               <p className="text-meta leading-relaxed text-ink-faint">
-                配完再跑一次
+                配完，Linux 上再跑一次
                 <code className="mx-1 font-mono text-ink-soft">sudo bash install-service.sh</code>
                 装成后台服务，之后开机自启、崩了自己重启，
                 <strong className="text-ink-soft">再也不用碰命令行</strong>。
+                <br />
+                Windows 上没有这个脚本能装的东西，跑
+                <code className="mx-1 font-mono text-ink-soft">node src/index.mjs</code>
+                把窗口留着就行。
               </p>
               <p className="text-meta leading-relaxed text-ink-faint">
                 配对码里的地址是
@@ -5783,13 +5807,22 @@ export function RoleCallFields({ role, onGoto }) {
         <div className="grid grid-cols-1 gap-6">
           <CallNodeSetup node={node} updateCallNode={updateCallNode} ready={nodeReady} />
 
-          {!vs.voiceId && (
-            <p className="text-meta leading-relaxed text-ink-faint">
-              这个角色还没填音色 ID（在上面「发语音」那一栏），通话里会用当前这家
-              TTS 的默认声音。<strong className="text-ink-soft">不用打开「发语音」</strong>
-              —— 那个管的是发语音条，和接电话是两件事，但两边用同一个音色。
-            </p>
-          )}
+          <p className="text-meta leading-relaxed text-ink-faint">
+            {vs.voiceId ? (
+              <>
+                通话里的声音
+                <strong className="text-ink-soft">跟着上面「发语音」那一栏</strong>
+                走：音色 ID、语言、口音三项共用一份。
+              </>
+            ) : (
+              <>
+                这个角色还没填音色 ID（在上面「发语音」那一栏），通话里会用当前这家
+                TTS 的默认声音。音色、语言、口音三项两边共用一份。
+              </>
+            )}
+            <strong className="text-ink-soft">不用打开「发语音」</strong>
+            —— 那个开关管的是发语音条，和接电话是两件事。
+          </p>
 
           <Field
             label="通话预设"

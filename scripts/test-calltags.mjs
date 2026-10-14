@@ -196,6 +196,25 @@ group("功能保留，但不念出来");
   check("一个字都不剩时返回空串", speakableFrom(splitMedia("[结束通话]")), "");
 }
 
+group("语气标签：keepTone 决定留不留");
+{
+  const say = (t, opts) => speakableFrom(splitMedia(t), "$", opts);
+
+  // 默认（TTS 不认标签）：照旧剥掉，不然语音里真的会说一句 "sighs"
+  check("默认剥掉", say("[sighs] 算了"), "算了");
+  check("keepTone：留给 TTS", say("[sighs] 算了", { keepTone: true }), "[sighs] 算了");
+  check("夹在中间的也留", say("嗯[chuckles]好啊", { keepTone: true }), "嗯[chuckles]好啊");
+
+  // 指令标记在哪种情况下都不能留
+  check("中文指令标记", say("我看看[查岗实时电脑屏幕]", { keepTone: true }), "我看看");
+  check("带下划线的", say("好啊[leave_on_read]", { keepTone: true }), "好啊");
+  check("带冒号的", say("[search:天气]查到了", { keepTone: true }), "查到了");
+  check("通话指令", say("拜拜[结束通话]", { keepTone: true }), "拜拜");
+
+  // 方括号里有空格的本来就当正文，keepTone 不该改这条
+  check("有空格的照旧当正文", say("他说[he said]什么", { keepTone: true }), "他说[he said]什么");
+}
+
 // ───────────────────────────────── 切句
 
 group("按句切开，一句一句合成");

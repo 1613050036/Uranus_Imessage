@@ -1180,7 +1180,37 @@ const CALL_HOWTO_CAMERA = [
   "如果没有识别到 {{user}} 的摄像头画面，不要瞎编 {{user}} 在干什么，直接当作语音通话即可。",
 ].join("\n");
 
-export const DEFAULT_CALL_HOWTO = `${CALL_HOWTO_V1202}\n${CALL_HOWTO_CAMERA}`;
+/**
+ * 「语气」那一节。
+ *
+ * 为什么要专门写：上面「绝对不要写这些」把括号动作禁掉了，而**方括号的语气
+ * 标签是另一回事** —— ElevenLabs v3 起（和 Fish Audio 的 S2 系）认它，念出来
+ * 是真的叹气、真的笑（`media.js:elevenTagsOk` 判这件事）。不说的话模型只会
+ * 平铺直叙，一分情绪都没有。
+ *
+ * **刻意只举英文的例子、也刻意说「可以不写」**：认标签的只有两家，别家会把
+ * 它当正文念出来（代码那头会替它剥掉，见 `calltags.js:stripSpoken` 的 keepTone）。
+ * 写成「可选」而不是「要写」，是免得每句话都挂一个标签 —— 那比没有更假。
+ */
+const CALL_HOWTO_TONE = [
+  "",
+  "### 语气",
+  "",
+  "想让某句话带上情绪，可以在那句前面加一个方括号的语气标签：",
+  "`[sighs] 算了，不说这个了。`、`[laughs] 你认真的吗？`、`[whispers] 别出声。`",
+  "",
+  "- 标签**不会被念出来**，它只影响这句话的声音。写英文小写单词。",
+  "- 常用的：sighs、laughs、chuckles、whispers、warmly、softly、excited、sarcastic。",
+  "- 别每句都加。一段话里有一两处就够了，到处都是反而假。",
+].join("\n");
+
+/**
+ * v1.21.9 那版的默认正文（v1202 + 摄像头，还没有「语气」那一节）。
+ * 存着这一段 = 用户没改过，换成现在的（见 normalizeEntries）。
+ */
+const CALL_HOWTO_V1219 = `${CALL_HOWTO_V1202}\n${CALL_HOWTO_CAMERA}`;
+
+export const DEFAULT_CALL_HOWTO = `${CALL_HOWTO_V1219}\n${CALL_HOWTO_TONE}`;
 
 /**
  * v1.20.1 那版「怎么打电话」的默认正文（还带着「那些功能照样能用」那一节）。
@@ -1646,11 +1676,12 @@ function normalizeEntries(list, mode = "online") {
       // 漏了这一支的后果很隐蔽 —— 条目还在、开关也开着，但正文是空的，
       // 于是整段「电话里怎么说话」压根没进提示词，角色照着发短信的路子念括号
       // 存着以前哪一版的默认正文 = 没改过，换成新的（v1.20.1 还带「那些功能照样能用」，
-      // v1.20.2 还没有「摄像头」那一节）
+      // v1.20.2 还没有「摄像头」那一节，v1.21.9 还没有「语气」那一节）
       entry.content =
         raw?.content === undefined ||
         raw.content === LEGACY_CALL_HOWTO ||
-        raw.content === CALL_HOWTO_V1202
+        raw.content === CALL_HOWTO_V1202 ||
+        raw.content === CALL_HOWTO_V1219
           ? DEFAULT_CALL_HOWTO
           : str(raw.content);
     } else if (kind === "custom") {
