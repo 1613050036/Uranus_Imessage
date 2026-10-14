@@ -352,7 +352,10 @@ console.log("\n=== 8c. 完整备份：打包 → 解包一整圈 ===");
     w("images/emojis/开心/a.jpg", "恢复前改过的图");
 
     const out = await cb.unpackSnapshot(snap.file);
-    check("三块都恢复了", out.applied, ["配置", "聊天与记忆", "表情包与参考图"]);
+    // 标签从 SCOPES 读，不照抄一份字面量 —— 第三块改过一次名
+    // （「表情包与参考图」→「表情包、参考图与 IG 图片」），而这里当初是手写的，
+    // 于是这一条从改名那天起就是红的，没人注意到
+    check("三块都恢复了", out.applied, Object.values(cb.SCOPES).map((s) => s.label));
     check("配置换回去了", r("config.json"), '{"a":"备份时的配置"}');
     check("角色换回去了", r("characters/01-小明.json"), '{"name":"备份时的小明"}');
     // 这条是完整备份和只导配置最要紧的区别：图必须也回来
@@ -367,35 +370,118 @@ console.log("\n=== 8d. 完整备份的密钥规矩和另外两套一致 ===");
 {
   // ?keys=1 才带。不带的时候本机凭据必须原样留着（换机器恢复最要紧的一条）
   w("data.config.json", '{"secret":"本机真KEY"}');
+  // auth.json 跟密钥走同一个勾（控制台的登录账号，见 SECRET_RELS）
+  w("auth.json", '{"username":"本机账号"}');
   const plain = await cb.packSnapshot(cb.ALL_SCOPES, { includeSecrets: false });
   try {
     check("不勾 → 清单说没带", plain.manifest.includesSecrets, false);
-    checkThat(
-      "不勾 → 包里挑的文件不含密钥文件",
-      !cb.collectEntries(cb.ALL_SCOPES, { includeSecrets: false }).entries.some((e) =>
-        e.endsWith("data.config.json")
-      )
-    );
+    const picked = cb.collectEntries(cb.ALL_SCOPES, { includeSecrets: false }).entries;
+    checkThat("不勾 → 包里挑的文件不含密钥文件", !picked.some((e) => e.endsWith("data.config.json")));
+    /*
+     * 这一条是「别把登录凭据漏进一份能分享出去的包」。不勾密钥的包是用户
+     * 会发给别人、传网盘的那种 —— auth.json 里是用户名和密码哈希。
+     */
+    checkThat("不勾 → 也不含登录账号", !picked.some((e) => e.endsWith("auth.json")));
     w("data.config.json", '{"secret":"恢复前又改过"}');
+    w("auth.json", '{"username":"恢复前又改过"}');
     const out = await cb.unpackSnapshot(plain.file);
     checkThat("恢复时不碰密钥", !out.applied.includes("密钥"));
     check("本机密钥一个字节没动", r("data.config.json"), '{"secret":"恢复前又改过"}');
+    // 少了这条就等于「拿一份不含密钥的包恢复，把自己锁在门外」
+    check("本机登录账号一个字节没动", r("auth.json"), '{"username":"恢复前又改过"}');
   } finally {
     await plain.cleanup();
   }
 
+  w("data.config.json", '{"secret":"打包这一刻的KEY"}');
+  w("auth.json", '{"username":"打包这一刻的账号"}');
   const withKeys = await cb.packSnapshot(cb.ALL_SCOPES, { includeSecrets: true });
   try {
     check("勾了 → 清单说带了", withKeys.manifest.includesSecrets, true);
-    checkThat(
-      "勾了 → 密钥文件在挑中的文件里",
-      cb
-        .collectEntries(cb.ALL_SCOPES, { includeSecrets: true })
-        .entries.some((e) => e.endsWith("data.config.json"))
-    );
+    const picked = cb.collectEntries(cb.ALL_SCOPES, { includeSecrets: true }).entries;
+    checkThat("勾了 → 密钥文件在挑中的文件里", picked.some((e) => e.endsWith("data.config.json")));
+    checkThat("勾了 → 登录账号也在里面", picked.some((e) => e.endsWith("auth.json")));
+
+    // 搬家那一下：换机器之后用原来的账号密码直接登录
+    w("data.config.json", '{"secret":"新机器上的"}');
+    w("auth.json", '{"username":"新机器上的"}');
+    const out = await cb.unpackSnapshot(withKeys.file);
+    checkThat("恢复时带上了密钥", out.applied.includes("密钥"));
+    check("密钥换回去了", r("data.config.json"), '{"secret":"打包这一刻的KEY"}');
+    check("登录账号换回去了", r("auth.json"), '{"username":"打包这一刻的账号"}');
   } finally {
     await withKeys.cleanup();
   }
+}
+
+console.log("\n=== 8e. 后来加的那些功能也进包（提醒、线下、小剧场……）===");
+{
+  /*
+   * 这一节是为一个真实的 bug 写的：SCOPES 是手写白名单，提醒、查手机、线下剧情、
+   * 小剧场、转账、投票、点单、通话记录、主题 CSS 这一批功能各自在 data/ 下开了
+   * 目录，但没人回头补那张表 —— 于是「导出完整备份」导出的包里压根没有它们，
+   * 用户把包搬到另一台 VPS 恢复之后，几百轮线下剧情和全部提醒都没了。
+   *
+   * 所以这里**逐个点名**，而不是只看「文件数变多了」：下一次漏掉某一个，
+   * 挂的是对应那一行，一眼看得出漏的是谁。
+   */
+  const sample = {
+    "reminders.json": '{"items":["课表"]}',
+    "phone/r-1.json": '{"apps":["微信"]}',
+    "theater/state.json": '{"templates":["同人"]}',
+    "theater/html/0123456789abcdef.html": "<html>番外</html>",
+    "offline/index/小明.json": '{"stories":["第一幕"]}',
+    "offline/stories/s-1.json": '{"turns":["演了三百轮"]}',
+    "transfers/小明.json": '{"guid":"待收款那张卡"}',
+    "luckin/小明.json": '{"order":"生椰拿铁"}',
+    "polls/小明.json": '{"B":"选项id"}',
+    "calls.json": '{"calls":["上周三那通"]}',
+    "custom-css.json": '{"console":"body{}"}',
+    "proactive.json": '{"next":"三小时后开口"}',
+    "promptmode.json": '{"on":false}',
+    "maintenance.json": '{"lastBackup":123}',
+    "transfer-logos/某行.png": "logo字节",
+  };
+  for (const [rel, text] of Object.entries(sample)) w(rel, text);
+  // 线下剧情的头像归「图片」那一块，不是「聊天与记忆」—— 见 CARVED_OUT
+  w("offline/media/头像.jpg", "线下头像");
+
+  const snap = await cb.packSnapshot(cb.ALL_SCOPES, { includeSecrets: false });
+  try {
+    // 全部改掉再恢复：换回来才说明它真的进了包，而不是「本来就在盘上」
+    for (const rel of Object.keys(sample)) w(rel, "恢复前改过");
+    w("offline/media/头像.jpg", "恢复前改过");
+    await cb.unpackSnapshot(snap.file);
+    for (const [rel, text] of Object.entries(sample)) check(`${rel} 恢复回来了`, r(rel), text);
+    check("offline/media 恢复回来了", r("offline/media/头像.jpg"), "线下头像");
+  } finally {
+    await snap.cleanup();
+  }
+
+  /*
+   * 挖走的那条：勾「聊天与记忆」时 offline/media 不能跟着进来。
+   * 不挡的话两块都勾会把它打两遍，而且只勾文字那块时包会突然大一截。
+   */
+  const chatsOnly = cb.collectEntries({ config: false, chats: true, images: false }).entries;
+  checkThat("只勾聊天与记忆 → 带上了线下剧情正文", chatsOnly.some((e) => e.startsWith("offline/stories")));
+  checkThat("只勾聊天与记忆 → 不带线下头像", !chatsOnly.some((e) => e.startsWith("offline/media")));
+  const imagesOnly = cb.collectEntries({ config: false, chats: false, images: true }).entries;
+  checkThat("只勾图片 → 带上了线下头像", imagesOnly.some((e) => e.startsWith("offline/media")));
+  checkThat("只勾图片 → 不带线下剧情正文", !imagesOnly.some((e) => e.startsWith("offline/stories")));
+  // 两块都勾也只打一遍（CARVED_OUT 的本意）
+  const both = cb.collectEntries({ config: false, chats: true, images: true }).entries;
+  check(
+    "两块都勾，线下头像只进一次",
+    both.filter((e) => e === "offline/media/头像.jpg").length,
+    1
+  );
+
+  // 天气缓存和「通话预设补发过了」的标记一律不进包，理由在 cloudbackup.js 文件头
+  w("weather-cache.json", '{"t":20}');
+  w(".seeded-call-preset", "补发过了");
+  const all = cb.collectEntries(cb.ALL_SCOPES, { includeSecrets: true }).entries;
+  checkThat("天气缓存不进包", !all.some((e) => e.endsWith("weather-cache.json")));
+  checkThat("通话预设的补发标记不进包", !all.some((e) => e.includes(".seeded-call-preset")));
 }
 
 console.log("\n=== 9. SigV4 签名（AWS 官方示例）===");

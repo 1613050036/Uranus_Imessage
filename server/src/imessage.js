@@ -2205,9 +2205,13 @@ async function handleCommand(getConfig, runner, space, spaceId, userText, peer =
          * 「注入提示词 + 小剧场提示词 + 正文」当成对方发来的一轮交给 handleTurn ——
          * 角色照常回复、照常发出去，这一轮和回复一起进会话历史，之后聊天都带着它。
          * 和插件一样只在指令这条路上做；面板里生成的不注入。
+         *
+         * 要不要注入看成品上那个 `inject` —— 生成那一刻就定死了（三档开关 +
+         * 模板上的勾，见 theater.js:shouldInject）。不在这儿重读配置：重试和
+         * 续写出来的成品跟着原来那次的决定走。
          */
         const config = getConfig();
-        if (!config.theater?.injectAfterGeneration) return;
+        if (!play.inject) return;
         await sleep(5);
         logInfo(scope, `小剧场《${play.title}》注入当前会话，让角色回应`);
         await handleTurn(getConfig, runner, space, spaceId, reactionPrompt(config, play), [], peer, {});

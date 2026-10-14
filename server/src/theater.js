@@ -22,7 +22,10 @@
  *    （Cloudflare 是 100 秒），所以 POST 只返回一个任务 id，前端轮询。
  *  - 超时用户自己定，默认 180 秒（config.theater.timeout）。
  *  - QQ 白名单、指令、备份 ZIP、面板配色这些插件里跟 AstrBot 绑着的东西不搬：
- *    Uranus 有自己的登录、备份和界面。「生成后注入当前会话」也先不搬。
+ *    Uranus 有自己的登录、备份和界面。
+ *  - **「生成后注入当前会话」比插件多一档**：插件只有开和关，这里是
+ *    关 / 全部 / 只有在模板上勾了的那些（见 shouldInject）。一整批模板里
+ *    往往只有几个适合让角色当真事回应。
  *
  * 数据：data/theater/state.json + data/theater/html/<id>.html（见 datadir.js）。
  */
@@ -96,7 +99,11 @@ function loadState() {
     return s;
   }
   return {
-    templates: Array.isArray(raw.templates) ? raw.templates.filter((t) => t?.id && t.title) : [],
+    // inject：「生成后注入当前会话」设成「只有勾了的模板」时，这一个勾没勾。
+    // 缺字段算没勾 —— 老 state.json 升上来等于一个都没勾，和那一档的默认一致
+    templates: Array.isArray(raw.templates)
+      ? raw.templates.filter((t) => t?.id && t.title).map((t) => ({ ...t, inject: Boolean(t.inject) }))
+      : [],
     plays: Array.isArray(raw.plays) ? raw.plays.filter((p) => p?.id) : [],
     roleBooks: raw.roleBooks && typeof raw.roleBooks === "object" ? raw.roleBooks : {},
   };
@@ -172,7 +179,7 @@ function latestSessionOf(roleId) {
  * 把一次生成要用的东西全部定下来，存成快照 —— 重试、续写都照这份来，
  * 中途改了角色人设或世界书也不影响「重试」拿到的是同一个请求。
  */
-function buildSnapshot(config, role, { title, prompt, bookIds }) {
+function buildSnapshot(config, role, { title, prompt, bookIds, templateId }) {
   const settings = config.theater ?? {};
   const user = resolveUser(config, role);
   const vars = { char: role?.name ?? "", user: user?.name ?? "" };
@@ -209,6 +216,8 @@ function buildSnapshot(config, role, { title, prompt, bookIds }) {
   return {
     title: String(title || "临时小剧场"),
     templatePrompt,
+    // 这次生成完要不要注入当前会话。在这儿定死，重试 / 续写跟着走（见 shouldInject）
+    inject: shouldInject(config, templateId),
     systemPrompt: String(settings.systemPrompt ?? "").trim() || DEFAULT_SYSTEM_PROMPT,
     stylePrompt: String(settings.stylePrompt ?? "").trim(),
     roleId: role.id,
@@ -365,6 +374,12 @@ function addPlay(config, snap, html, extra = {}) {
     sourcePlayId: extra.sourcePlayId ?? "",
     basePlayId: extra.basePlayId ?? id,
     chapter: extra.chapter ?? null,
+    /*
+     * 生成完要不要注入当前会话 —— 在**生成那一刻**定死（见 shouldInject）。
+     * 快照里带着它，所以重试和续写跟着原来那次的决定走，哪怕中途模板被改了
+     * 或者删了。imessage.js 拿到成品后读的就是这个字段。
+     */
+    inject: Boolean(snap.inject),
     // 快照里聊天记录不存：那是隐私数据，而且重试 / 续写时会按当下重新取
     snapshot: { ...snap, context: undefined },
   };
@@ -446,6 +461,30 @@ export function findTemplate(arg) {
   const list = listTemplates();
   if (/^\d+$/.test(s)) return list[Number(s) - 1] ?? null;
   return list.find((t) => t.title === s) ?? list.find((t) => t.title.toLowerCase() === s.toLowerCase()) ?? null;
+}
+
+/**
+ * 这一次生成完要不要注入当前会话。
+ *
+ * 三档的语义在 config.js:normalizeTheater 那段注释里。这里只落两条规矩：
+ *
+ *  - `"picked"` 档看的是**这次用的那个模板**勾没勾。临时提示词那条路
+ *    （`/临时小剧场`）没有模板，所以这一档下一律不注入 —— 没有可勾的东西，
+ *    「只有勾了的才注入」的答案只能是否。要让临时的也注入就选「全部」。
+ *  - 判断结果由 addPlay 钉在成品上（`play.inject`），**不是**每次读配置重算：
+ *    重试和续写走的是存下来的快照，那会儿模板可能已经被改过或者删了，
+ *    重算出来的答案和当初那次不一样。钉下来之后「这个成品会不会注入」
+ *    从生成那一刻就定死了。
+ *
+ * @param {object} config 整份配置
+ * @param {string} templateId 这次用的模板 id；临时提示词那条路传空
+ */
+export function shouldInject(config, templateId) {
+  const mode = config.theater?.injectAfterGeneration;
+  if (mode === "all") return true;
+  if (mode !== "picked") return false;
+  if (!templateId) return false;
+  return Boolean(loadState().templates.find((t) => t.id === templateId)?.inject);
 }
 
 /** 插件原版的注入提示词。config.theater.injectionPrompt 留空时用它。 */
@@ -540,7 +579,7 @@ export function generate(config, { roleId, templateId, prompt, bookIds }) {
   }
   const books = Array.isArray(bookIds) ? bookIds : state.roleBooks[role.id] ?? [];
 
-  const snap = buildSnapshot(config, role, { title, prompt: text, bookIds: books });
+  const snap = buildSnapshot(config, role, { title, prompt: text, bookIds: books, templateId });
   logInfo(
     SCOPE,
     `开始生成「${title}」（${role.name}${snap.bookNames.length ? `，世界书：${snap.bookNames.join("、")}` : ""}` +
@@ -589,7 +628,7 @@ export function continuePlay(config, playId, request) {
   );
 }
 
-export function saveTemplate({ id, title, prompt }) {
+export function saveTemplate({ id, title, prompt, inject }) {
   const t = String(title ?? "").trim();
   const p = String(prompt ?? "").trim();
   if (!t || !p) throw new Error("标题和提示词都要填");
@@ -599,8 +638,10 @@ export function saveTemplate({ id, title, prompt }) {
   if (existing) {
     existing.title = uniqueTitle(t, others);
     existing.prompt = p;
+    // 没传这个字段 = 这次不改它（面板上的注入开关是单独一个请求）
+    if (inject !== undefined) existing.inject = Boolean(inject);
   } else {
-    state.templates.push({ id: newId(), title: uniqueTitle(t, others), prompt: p });
+    state.templates.push({ id: newId(), title: uniqueTitle(t, others), prompt: p, inject: Boolean(inject) });
   }
   saveState(state);
 }

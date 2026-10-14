@@ -85,6 +85,10 @@ export const SECRET_PATH = path.join(DATA_DIR, "data.config.json");
  *  - 最要紧的是**用户要能自己打开它**：密码忘了的唯一出路是把 password 那行
  *    清成空串（见 auth.js）。那件事必须简单到能在记事本里做完，不能让人在
  *    一份几百行的配置里翻。
+ *
+ * 进云备份时跟**密钥**走（cloudbackup.js:SECRET_RELS）：勾了「含密钥」才带。
+ * 勾了就能在新机器上用原来的账号密码直接进去；不勾的话一份能分享出去的包里
+ * 不会带着登录凭据。
  */
 export const AUTH_PATH = path.join(DATA_DIR, "auth.json");
 
@@ -98,6 +102,9 @@ export const AUTH_PATH = path.join(DATA_DIR, "auth.json");
  * 时间戳等于让「改设置」和「记进度」互相踩。
  *
  * 也不进 data.config.json：那是密钥文件，和这个语义毫无关系。
+ *
+ * 进云备份的「配置」那一块（cloudbackup.js:SCOPES）：带着它搬，「每 3 天备份
+ * 一次」在新机器上接着数而不是从零开始。
  */
 export const MAINTENANCE_PATH = path.join(DATA_DIR, "maintenance.json");
 /**
@@ -106,6 +113,8 @@ export const MAINTENANCE_PATH = path.join(DATA_DIR, "maintenance.json");
  * 落盘的理由只有一个：查不到的时候拿上一次查到的顶上。纯内存的话，
  * 网络不通的时候重启一次进程，连「上一次」都没有了。丢了也不要紧 ——
  * 删掉这个文件最多让下一轮多打一次网络。
+ *
+ * 也正因为「丢了不要紧」，它**不进云备份**（cloudbackup.js 文件头列着原因）。
  */
 export const WEATHER_CACHE_PATH = path.join(DATA_DIR, "weather-cache.json");
 /**
@@ -117,6 +126,8 @@ export const WEATHER_CACHE_PATH = path.join(DATA_DIR, "weather-cache.json");
  *
  * 等于手机上那个「最近通话」列表：翻得到什么时候通过话、聊了多久，
  * 想看说了什么就去聊天记录里翻那一段。
+ *
+ * 进云备份的「聊天与记忆」那一块（cloudbackup.js:SCOPES）。
  */
 export const CALL_LOG_PATH = path.join(DATA_DIR, "calls.json");
 export const CHARACTERS_DIR = path.join(DATA_DIR, "characters");
@@ -195,6 +206,10 @@ export const XHS_MEDIA_DIR = path.join(XHS_DIR, "media");
  * 分两层的原因：索引里只有「开没开、有哪几条剧情」这种一行字的东西，
  * 每轮都要读；正文按剧情分文件，演一轮只重写当前这一条，归档的老剧情
  * 不跟着抖 —— 一条演久了的剧情能有几百轮，全塞一个文件里每轮都得整份重写。
+ *
+ * 进云备份的「聊天与记忆」那一块，`media/` 抠去「图片」那一块
+ * （cloudbackup.js:SCOPES / CARVED_OUT）。一条演久了的剧情是几百轮聊出来的，
+ * 重建不了 —— 这是这整块里最该备份的东西之一。
  */
 export const OFFLINE_DIR = path.join(DATA_DIR, "offline");
 export const OFFLINE_INDEX_DIR = path.join(OFFLINE_DIR, "index");
@@ -206,6 +221,9 @@ export const OFFLINE_STORIES_DIR = path.join(OFFLINE_DIR, "stories");
  * 和 IG 的 media/ 分开：那边是帖子和快拍的图，删帖会去扫「哪些文件还在用」
  * （igstore.js:pruneOrphanMedia）。混在一起的话，那把扫帚会把线下头像
  * 当成孤儿图删掉 —— 它不认识剧情文件里的引用。
+ *
+ * 进云备份的「图片」那一块（cloudbackup.js:SCOPES），和 instagram/media 同一个
+ * 待遇：从 offline/ 里抠出来，不跟着「聊天与记忆」上网。
  */
 export const OFFLINE_MEDIA_DIR = path.join(OFFLINE_DIR, "media");
 
@@ -217,12 +235,15 @@ export const OFFLINE_MEDIA_DIR = path.join(OFFLINE_DIR, "media");
  *
  * **不进 config.json**，和 IG、线下剧情同一条理由：`PUT /api/config` 会顺带
  * 重启所有 iMessage 桥接，而这边是每笔转账都写。
+ *
+ * 进云备份的「聊天与记忆」那一块（cloudbackup.js:SCOPES）：少了它，恢复之后
+ * 那些还挂着「待收款」的卡片再也改不成「已收款」。
  */
 export const TRANSFERS_DIR = path.join(DATA_DIR, "transfers");
 
 /**
  * 瑞幸订单卡片：一个角色一份，卡片句柄 + 订单内容 + 状态（见 luckinstore.js）。
- * 不进 config.json，理由同 TRANSFERS_DIR。
+ * 不进 config.json，理由同 TRANSFERS_DIR；进云备份的「聊天与记忆」，同上。
  */
 export const LUCKIN_DIR = path.join(DATA_DIR, "luckin");
 
@@ -235,6 +256,9 @@ export const LUCKIN_DIR = path.join(DATA_DIR, "luckin");
  *
  * 用哪个 logo 是**角色配置**（role.transfer.logo），因为那决定这个角色的卡片
  * 长什么样；文件本身在这儿，两边靠文件名对上（见 transferlogo.js）。
+ *
+ * 也因为这条，它进云备份的「配置」那一块而不是「图片」（cloudbackup.js:SCOPES）：
+ * 少了这个文件，恢复出来的角色卡片指着一张不存在的图。
  */
 export const TRANSFER_LOGO_DIR = path.join(DATA_DIR, "transfer-logos");
 
@@ -245,7 +269,7 @@ export const TRANSFER_LOGO_DIR = path.join(DATA_DIR, "transfer-logos");
  * 没有它，模型写 `[vote:B]` 就没法翻成真正要投的那个选项 id。
  *
  * **不进 config.json**，和转账同一条理由：`PUT /api/config` 会重启所有桥接，
- * 而这边是每个投票事件都写。
+ * 而这边是每个投票事件都写。进云备份的「聊天与记忆」，同转账。
  */
 export const POLLS_DIR = path.join(DATA_DIR, "polls");
 
@@ -254,12 +278,17 @@ export const POLLS_DIR = path.join(DATA_DIR, "polls");
  *
  * **不进 config.json**，理由同上：生成一次就要写一次，`PUT /api/config` 会顺带
  * 对齐所有桥接。只有设置（用哪个模型、提示词、超时）进 config.theater。
+ *
+ * 进云备份的「聊天与记忆」那一块（cloudbackup.js:SCOPES）—— 成品是生成出来的
+ * 番外，和聊天记录一样重建不了。
  */
 export const THEATER_DIR = path.join(DATA_DIR, "theater");
 
 /**
  * 定时提醒（reminder.js）：角色设的和用户自己的日程都在这一个文件里，外加默认提前量。
  * **不进 config.json**，理由同上：每触发一次就要写一次。
+ *
+ * 进云备份的「聊天与记忆」那一块（cloudbackup.js:SCOPES）。
  */
 export const REMINDERS_PATH = path.join(DATA_DIR, "reminders.json");
 export const THEATER_HTML_DIR = path.join(THEATER_DIR, "html");
@@ -473,6 +502,9 @@ export function ensureLayout() {
  *
  * 放在 DATA_DIR 根上、不叫 .json —— 放进 presets/ 的话会被 writeCollection 的
  * 清扫当成过期预设删掉。
+ *
+ * **不进云备份**（cloudbackup.js 文件头列着原因）：跟着包搬过去会让新机器
+ * 以为补过了，于是那份预设永远不来。这一个的正确行为是不带。
  */
 const CALL_SEED_MARK = path.join(DATA_DIR, ".seeded-call-preset");
 

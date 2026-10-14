@@ -1106,7 +1106,8 @@ export function BackupPanel() {
         <span>
           包含 API 密钥和 Photon 凭据
           <span className="mt-0.5 block text-meta text-ink-faint">
-            不勾的话包里这些字段是空的，换机器恢复后自己补上就行
+            不勾的话包里这些字段是空的，换机器恢复后自己补上就行。
+            完整备份勾上还会带这个控制台的登录账号密码，换机器后用原来那对直接登录。
           </span>
         </span>
       </label>
@@ -1134,13 +1135,14 @@ export function BackupPanel() {
           <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
             {WORKER ? (
               <>
-                配置、聊天记录、记忆库<span className="text-ink-soft">都在里面</span>
+                配置、聊天记录、记忆库、提醒与日程、线下剧情、小剧场
+                <span className="text-ink-soft">都在里面</span>
                 。Instagram、表情包这些图没存在小手机上，不在包里；桌面版打出来的包
                 带这些图的话，恢复时会先超过内存上限报错，不会半途落一半。
               </>
             ) : (
               <>
-                配置、聊天记录、记忆库、Instagram、表情包和参考图
+                配置、聊天记录、记忆库、提醒与日程、线下剧情、小剧场、Instagram、表情包和参考图
                 <span className="text-ink-soft">全都在里面</span>
                 ，就是整个数据文件夹的一份快照。
               </>
@@ -1291,8 +1293,9 @@ export function BackupPanel() {
             <div className="grid grid-cols-1 gap-6">
               <p className="text-ui leading-relaxed text-ink-soft">
                 包里有的那几块会<span className="text-ink">整体替换</span>
-                现在{WORKER ? "Cloudflare 上" : "磁盘上"}的东西 —— 配置、聊天记录、记忆库
-                {!WORKER && "、Instagram、表情包"}都算。包里没有的那几块保持不变。
+                现在{WORKER ? "Cloudflare 上" : "磁盘上"}的东西 —— 配置、聊天记录、记忆库、
+                提醒与日程、线下剧情、小剧场{!WORKER && "、Instagram、表情包"}都算。
+                包里没有的那几块保持不变。
               </p>
               <p className="text-meta leading-relaxed text-ink-faint">
                 具体换掉哪几块由包里那份清单说了算，解包时会在日志里列出来。
@@ -1348,17 +1351,17 @@ const CLOUD_SCOPES = [
   {
     id: "config",
     name: "配置",
-    hint: "角色、用户人设、预设、世界书、壁纸设置。几十 KB，几乎不占地方",
+    hint: "角色、用户人设、预设、世界书、壁纸设置、主题 CSS、卡片 logo。几十 KB，几乎不占地方",
   },
   {
     id: "chats",
     name: "聊天与记忆",
-    hint: "对话存档、记忆库、Instagram 的文字。这是聊出来的东西，丢了重建不了 —— 最该备份的就是它",
+    hint: "对话存档、记忆库、提醒与日程、线下剧情、小剧场、查手机、通话记录、Instagram 的文字。这是聊出来的东西，丢了重建不了 —— 最该备份的就是它",
   },
   {
     id: "images",
     name: "表情包、参考图与 IG 图片",
-    hint: "images/ 整个文件夹，外加 Instagram 的贴文、快拍、头像原图。通常是最大的一块，慢网上传要很久，默认不带",
+    hint: "images/ 整个文件夹，外加 Instagram 的贴文、快拍、头像和线下剧情的头像原图。通常是最大的一块，慢网上传要很久，默认不带",
   },
 ];
 
@@ -1681,11 +1684,11 @@ export function CloudBackupPanel() {
 
           <label className="flex items-start justify-between gap-4 border-t border-line pt-4">
             <span className="min-w-0">
-              <span className="block text-ui text-ink">含 API 密钥和 Photon 凭据</span>
+              <span className="block text-ui text-ink">含 API 密钥、Photon 凭据和登录账号</span>
               <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
                 {WORKER
                   ? "不勾的话包里没有这些，拿去恢复之后得自己补一遍"
-                  : "不勾的话恢复时本地这些凭据保持不变，换机器恢复后自己补一遍就行"}
+                  : "不勾的话恢复时本地这些凭据和登录账号保持不变，换机器恢复后自己补一遍就行"}
               </span>
             </span>
             <Switch

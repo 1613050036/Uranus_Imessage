@@ -96,7 +96,9 @@ export function mountReminders(app, loadConfig) {
     "/api/reminders/settings",
     wrap(async (req) => {
       const b = req.body ?? {};
-      setSettings(Object.fromEntries(["leadMinutes"].filter((k) => k in b).map((k) => [k, b[k]])));
+      setSettings(
+        Object.fromEntries(["leadMinutes", "scheduleInTime"].filter((k) => k in b).map((k) => [k, b[k]]))
+      );
     })
   );
 

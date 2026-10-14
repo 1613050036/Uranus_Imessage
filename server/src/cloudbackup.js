@@ -29,22 +29,32 @@
  * ── 三块范围 ──
  *
  * 按 data/ 下的实际目录切成三块，界面上分别勾（见 SCOPES）：
- *   config  配置（角色、人设、预设、世界书、壁纸设置）  ~50KB
- *   chats   聊天与记忆（存档、记忆库、Instagram 文字）    ~31MB
- *   images  表情包、参考图与 IG 图片                     ~91MB
+ *   config  配置（角色、人设、预设、世界书、壁纸设置、主题 CSS）  ~50KB
+ *   chats   聊天与记忆（存档、记忆库、提醒、线下剧情、小剧场……）   ~31MB
+ *   images  表情包、参考图、IG 与线下剧情的图片                   ~91MB
  *
  * images 默认**不勾**：它比另外两块加起来大两倍，而且是用户自己往里放的图
  * （丢了能再放一遍），不像记忆库那样是聊出来的、独一无二的东西。
  *
+ * ⚠️ **SCOPES 是一张手写的白名单，新开一个 data/ 下的目录就得回来加一行。**
+ * 这件事栽过一次：提醒、查手机、线下剧情、小剧场、转账、投票、点单、通话记录、
+ * 主题 CSS 这一批功能各自在 data/ 下开了目录，但没人回头补这张表 —— 于是
+ * 「导出完整备份」导出的包里压根没有它们（`ALL_SCOPES` 只是把这张表的键全勾上，
+ * 表里没有的东西「全勾」也勾不到），用户把包搬到另一台 VPS 恢复之后，几百轮
+ * 线下剧情和全部提醒都没了。加目录的时候请一并加到这里，`datadir.js` 里每个
+ * 目录的注释末尾也记着它进哪一块。
+ *
  * ── 密钥 ──
  *
  * `data.config.json` 里是明文的 API key、Photon 凭据、天气/搜索/TTS 凭据，
- * 外加云备份自己的凭据。默认**整个文件不进包**，由用户显式勾选才带 ——
- * 和 backup.js 一样的规矩。
+ * 外加云备份自己的凭据；`auth.json` 是控制台的登录用户名和密码哈希。这两个
+ * 默认**整个文件不进包**，由用户显式勾选才带 —— 和 backup.js 一样的规矩。
+ * 见 SECRET_RELS。
  *
- * 不勾的时候恢复端读不到这个文件，`config.js:mergeSecrets` 就会保留本地
- * 现有的凭据，正好是想要的行为：拿一份不含密钥的快照恢复，不会把本机的
- * key 冲掉。
+ * 不勾的时候恢复端读不到这两个文件：凭据那份让 `config.js:mergeSecrets` 保留
+ * 本地现有的 key，登录那份让本机的账号密码原样留着。正好是想要的行为 ——
+ * 拿一份不含密钥的快照恢复，不会把本机的 key 冲掉、也不会把你锁在门外。
+ * 勾了的话搬到新机器上用原来的账号密码直接登录。
  *
  * ── 不进包的东西 ──
  *
@@ -52,6 +62,11 @@
  *    它们是「上一次生成用的输入」，恢复时没意义，白占体积。
  *  - `*.tmp`：原子写的中间文件（`writeAtomic`），撞上正在写的那一刻会进包。
  *  - `assets/`：随代码发的内置素材，压根不在 data/ 里。
+ *  - `weather-cache.json`：查到的天气，丢了下一轮重查（见 datadir.js 那条注释）。
+ *  - `.seeded-call-preset`：「通话默认预设补发过了」的标记。跟着包搬过去会让
+ *    新机器以为补过了，于是那份预设永远不来 —— 这一个的正确行为是**不带**。
+ *  - `xiaohongshu/secrets.json`：小红书的访问令牌，和 data.config.json 一个
+ *    道理，但它连「勾了密钥」都不带 —— 见 xhsstore.js。
  */
 
 import fs from "node:fs";
@@ -85,20 +100,56 @@ export const SCOPES = {
       "presets",
       "worlds",
       "wallpapers/settings.json",
+      // 控制台和「查手机」那台手机的主题 CSS（customcss.js）
+      "custom-css.json",
+      // 用户自己放的转账卡片 logo。角色配置里按文件名指向它，所以归「配置」——
+      // 少了这个文件，恢复出来的角色卡片指着一张不存在的图
+      "transfer-logos",
+      // 定时维护的进度（上次重启 / 清缓存 / 云备份各是什么时候）。带着它搬，
+      // 「每 3 天备份一次」在新机器上接着数，不会从零开始
+      "maintenance.json",
     ],
   },
   chats: {
     label: "聊天与记忆",
     // 小红书只带 state.json（水位 + 流水）：secrets.json 是令牌，不能跟着
     // 「聊天与记忆」上网；media/ 是发完就删的暂存图
-    paths: ["sessions", "memories", "instagram", "xiaohongshu/state.json"],
+    paths: [
+      "sessions",
+      "memories",
+      "instagram",
+      "xiaohongshu/state.json",
+      // 定时提醒：角色设的、课表、生日纪念日全在这一个文件里（reminder.js）
+      "reminders.json",
+      // 查手机翻出来的内容，一个角色一份（phonecheck.js）
+      "phone",
+      // 小剧场的模板和成品 HTML（theater.js）。成品是生成出来的番外，
+      // 和聊天记录一样重建不了
+      "theater",
+      // 线下剧情（索引 + 正文）。和 instagram 一个写法：整个目录进这一块，
+      // 里面的 media/ 抠去「图片」那一块，见 CARVED_OUT
+      "offline",
+      // 转账卡片的会话句柄 —— 没有它，已经发出去的卡片改不成「已收款」
+      "transfers",
+      // 瑞幸 / 麦当劳的订单卡片句柄，同上
+      "luckin",
+      // 投票的「字母 → 选项 id」映射，没有它模型写 [vote:B] 翻不出来
+      "polls",
+      // 通话记录（谁、什么时候、多久）。说了什么在 sessions/ 里
+      "calls.json",
+      // 主动消息的表：下次几点开口。不带着走的话等待窗口归零
+      "proactive.json",
+      // 提示词协助模式开着没有。影响小，但它和上面几个一样是「重启要还在」的状态
+      "promptmode.json",
+    ],
   },
   images: {
     label: "表情包、参考图与 IG 图片",
     // instagram/media 是贴文、快拍、头像的图片原件，二十几 MB 起步，和
     // images/ 一个量级 —— 跟着「聊天与记忆」上网，那一块就不再是「几十 MB
     // 的文字」了。所以从 instagram/ 里抠出来挪到这边，见 CARVED_OUT。
-    paths: ["images", "instagram/media"],
+    // offline/media（线下剧情的两张头像）同一个待遇。
+    paths: ["images", "instagram/media", "offline/media"],
   },
 };
 
@@ -108,10 +159,19 @@ export const SCOPES = {
  * 走目录的时候遇到这些名字一律不进去 —— 不然勾了「聊天与记忆」会从
  * `instagram/` 顺手把 media 带上（本该归 images），两块都勾还会打两遍。
  */
-const CARVED_OUT = new Set(["instagram/media"]);
+const CARVED_OUT = new Set(["instagram/media", "offline/media"]);
 
-/** 勾了密钥才带的那一个文件。 */
-const SECRET_REL = "data.config.json";
+/**
+ * 勾了密钥才带的那几个文件。
+ *
+ *  - `data.config.json` 明文的 API key、Photon 凭据、天气/搜索/TTS/云备份凭据
+ *  - `auth.json` 控制台的登录用户名和密码哈希、会话签名密钥
+ *
+ * 登录那份跟着密钥走而不是跟着「配置」：勾了就能在新机器上用原来的账号密码
+ * 直接进去，不勾的话一份能分享出去的备份包里不会带着你的登录凭据 ——
+ * 和密钥完全同一个判断，所以共用那个勾选框。
+ */
+const SECRET_RELS = ["data.config.json", "auth.json"];
 
 /**
  * 三块全勾。
@@ -225,7 +285,7 @@ export function collectEntries(scopes, { includeSecrets = false } = {}) {
   for (const [key, scope] of Object.entries(packable(scopes))) {
     if (scope) picked.push(...SCOPES[key].paths);
   }
-  if (includeSecrets) picked.push(SECRET_REL);
+  if (includeSecrets) picked.push(...SECRET_RELS);
 
   const entries = [];
   const missing = [];
@@ -463,7 +523,9 @@ export async function unpackSnapshot(tarPath) {
     }
 
     if (manifest.includesSecrets) {
-      files += restorePath(staged, SECRET_REL);
+      // 老包里只有 data.config.json，没有 auth.json —— restorePath 碰到包里
+      // 没有的路径返回 0、什么都不动，所以不用按版本分支
+      for (const rel of SECRET_RELS) files += restorePath(staged, rel);
       applied.push("密钥");
     }
 

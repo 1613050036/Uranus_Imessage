@@ -3,6 +3,8 @@
  *
  * 存在 data/custom-css.json，不进 config.json —— 那边是「草稿 + 点保存」，保存还会对齐
  * 所有 iMessage 桥接；这里要的是贴进去点一下立刻生效。
+ *
+ * 进云备份的「配置」那一块（cloudbackup.js:SCOPES）。
  */
 
 import path from "node:path";

@@ -1254,6 +1254,15 @@ function normalizeModelRef(input, fallbackRef) {
  * 不从那边 import：theater.js 反过来要 import 这个文件，模块顶层互相读常量会撞上
  * 「还没初始化」。
  */
+/** 小剧场「生成后注入」的三档。老配置里的布尔也认，见 normalizeTheater 那段注释。 */
+const INJECT_MODES = ["off", "all", "picked"];
+
+function normalizeInjectMode(input) {
+  if (INJECT_MODES.includes(input)) return input;
+  // 老配置：true / "true" / 1 / "1" 都当「全部注入」，其余（含 undefined）当关
+  return [true, "true", 1, "1"].includes(input) ? "all" : "off";
+}
+
 function normalizeTheater(input) {
   return {
     // 用哪个模型生成。空 = 还没选，生成时报错让用户去选
@@ -1272,9 +1281,18 @@ function normalizeTheater(input) {
     /*
      * 生成后注入当前会话（照插件 inject_after_generation）：只在 iMessage 里用指令生成时，
      * 等 5 秒把「注入提示词 + 小剧场提示词 + 正文」当一轮交给角色回复，这一轮进会话历史。
-     * 默认关，和插件一致。
+     *
+     * 三档：
+     *   "off"    不注入（默认，和插件一致）
+     *   "all"    每次生成完都注入
+     *   "picked" 只有在模板上勾了「生成后注入」的那些才注入。临时提示词
+     *            （/临时小剧场）这条路没有模板可勾，这一档下一律不注入。
+     *
+     * 老配置里这是个布尔：`true` → "all"，`false` / 缺字段 → "off"。也认它的
+     * 字符串形态（手机上改过、或从 JSON 捞回来的），和 chat.forceSeparator 一个路子。
+     * 判断「这一次要不要注入」在 theater.js:shouldInject。
      */
-    injectAfterGeneration: Boolean(input?.injectAfterGeneration),
+    injectAfterGeneration: normalizeInjectMode(input?.injectAfterGeneration),
     // 注入时带不带小剧场提示词。缺字段算开，和插件默认一致
     injectTheaterPrompt: input?.injectTheaterPrompt !== false,
     // 注入提示词。没这个字段 = 插件原版那句；用户清空 = 不加（插件「留空时不注入此提示词」）

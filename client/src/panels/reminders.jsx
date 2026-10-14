@@ -90,6 +90,21 @@ function SettingsCard({ data, onChange }) {
             保存
           </Button>
         </div>
+        <label className="flex items-start justify-between gap-4">
+          <span className="min-w-0">
+            <span className="block text-ui text-ink">课表也进时间感知</span>
+            <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
+              开了之后，「日程 / 课表」那一类当天会写进星期后面（「周一 · 高数 08:00」），
+              角色一整天都知道你几点有课、这会儿是在上课还是下课了。只报当天，不提前报
+              —— 一周十几节全提前缀上就太吵了。生日和纪念日本来就在里面，不受这个开关影响。
+            </span>
+          </span>
+          <Switch
+            checked={Boolean(data.settings.scheduleInTime)}
+            label="课表也进时间感知"
+            onChange={(v) => save({ scheduleInTime: v })}
+          />
+        </label>
         <ResultNote state={note.state} message={note.message} />
         <p className="max-w-[62ch] text-meta leading-relaxed text-ink-faint">
           {on.length ? (
@@ -210,7 +225,7 @@ function UserItemsCard({ data, onEdit, onAdd, onChange }) {
   return (
     <Card
       title="我的日程"
-      desc="自己定的：课表、生日、纪念日、某天要办的事。到点由选中的角色来提醒你；生日和纪念日当天还会写进时间感知的星期后面（「周六 · 在一起第一年纪念日」）。课表只提醒，不进时间感知。"
+      desc="自己定的：课表、生日、纪念日、某天要办的事。到点由选中的角色来提醒你；生日和纪念日当天还会写进时间感知的星期后面（「周六 · 在一起第一年纪念日」）。课表默认只提醒，要让角色一整天都知道你几点有课，去上面「设置」里打开「课表也进时间感知」。"
       actions={
         <Button variant="outline" onClick={onAdd}>
           <Plus size={13} /> 新增

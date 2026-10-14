@@ -14,7 +14,8 @@
  *  - 关机期间错过的：过点 30 分钟以内补发，更早的标「已错过」；
  *  - 一次性的触发完留 7 天再清；
  *  - 用户自己的：一次 / 每天 / 每周（单双周 + 学期起止）/ 每月 / 每年（生日可农历）；
- *    生日和纪念日当天进时间感知的星期后面，纪念日还能开「满整百天」。
+ *    生日和纪念日当天进时间感知的星期后面，纪念日还能开「满整百天」；
+ *    课表那一类默认只提醒，设置里开了 scheduleInTime 才也进时间感知（带钟点、只当天）。
  *
  * 落盘在 data/reminders.json，不进 config.json（每触发一次就写一次）。
  */
@@ -575,6 +576,17 @@ function normalizeSettings(input) {
   const lead = Number(input?.leadMinutes);
   return {
     leadMinutes: Number.isFinite(lead) ? Math.max(0, Math.min(MAX_LEAD, Math.round(lead))) : DEFAULT_LEAD,
+    /*
+     * 课表那一类（kind === "schedule"）当天要不要也写进时间感知。
+     *
+     * 默认**关**，和原来的行为一致（那时候是写死的「课表只提醒，不进时间感知」）。
+     * 一张课表一周能有十几节，全缀在星期后面每轮都要花 token，所以这是用户
+     * 自己要开的东西，不是默认值。
+     *
+     * 一个总开关而不是每条一个：课表是整张表一起用的，一节一节地勾太碎。
+     * 生日纪念日和自定义类型各有自己的路（见 itemNamesOn）。
+     */
+    scheduleInTime: Boolean(input?.scheduleInTime),
   };
 }
 
@@ -722,15 +734,34 @@ export function specialName(item, ymd) {
 }
 
 /**
- * 某一天（用户那边的日期）有哪些要进时间感知的日子：「宝宝的生日」「在一起第一年纪念日」
- * 「在一起满300天」。只看生日、纪念日和开了「进时间感知」的自定义类型 —— 课表不进（用户定的，只提醒）。
+ * 某一天（用户那边的日期）有哪些要进时间感知的日子：「宝宝的生日」
+ * 「在一起第一年纪念日」「在一起满300天」。
+ *
+ * 四类进得来：
+ *  - 生日、纪念日   —— 一直都进
+ *  - 自定义类型     —— 那一条开了「当天进时间感知」（showInTime）
+ *  - 课表           —— 设置里开了 scheduleInTime（总开关，见 normalizeSettings）
+ *
+ * 课表那一类**带上钟点**（「高数 08:00」）而别的不带：生日是一整天的事，
+ * 而「今天有课」不说几点就没用 —— 角色得知道这会儿你是在上课还是已经下课了。
+ *
+ * @param {boolean} [ahead] 这一天是「提前感知」的那几天之一（明天、后天……）。
+ *   课表**只报当天**：一张课表一周十几节，提前报会让每条消息的时间戳后面拖上
+ *   「明天高数 08:00、明天线代 10:00、明天体育 14:00」—— 那是噪音，不是感知。
+ *   生日纪念日反过来，提前知道才有用（能准备）。
  */
-function itemNamesOn(items, ymd, roleId) {
+function itemNamesOn(items, ymd, roleId, settings = {}, ahead = false) {
   const out = [];
   for (const it of items) {
     if (it.status !== "pending" || !belongsTo(it, roleId)) continue;
     if (it.kind === "custom") {
       if (it.showInTime && matchesDate(it, ymd)) out.push(it.title);
+      continue;
+    }
+    if (it.kind === "schedule") {
+      if (!ahead && settings.scheduleInTime && matchesDate(it, ymd)) {
+        out.push(`${it.title} ${clockOf(it)}`.trim());
+      }
       continue;
     }
     if (it.kind !== "birthday" && it.kind !== "anniversary") continue;
@@ -811,28 +842,40 @@ const AHEAD_WORD = ["", "明天", "后天"];
  *  - 当天的：「宝宝的生日」「在一起第一年纪念日」「万圣节」—— 当天每条消息的时间戳上都带，一整天都在；
  *  - 提前感知：「明天万圣节」「后天宝宝的生日」「3天后在一起第一年纪念日」（默认提前一天，设置里改）。
  *
- * 只看生日、纪念日和开了「进时间感知」的自定义类型，再加节日 —— 课表不进（用户定的，只提醒）。
+ * 哪几类进得来见 itemNamesOn（生日、纪念日、开了开关的自定义类型和课表），再加节日。
  * 提前几天、报不报节日是角色时间感知里的设置（role.env.time.aheadDays / festivals），由 env.js 传进来。
+ *
+ * 课表那一类进不进是**提醒自己的**设置（settings.scheduleInTime），不是角色的 ——
+ * 所以从这里读出来传下去，调用方不用管。
  *
  * @param {string[]} [skip] 当天已经由别处报过的名字（法定假日 env.js 已经写了「国庆节」），别重复
  */
 export function specialDayNames(ymd, roleId, skip = [], { aheadDays = 1, festivals = true } = {}) {
   if (!isYmd(ymd)) return [];
   const state = loadReminders();
-  const namesOn = (day) => [...itemNamesOn(state.items, day, roleId), ...(festivals ? festivalsOn(day) : [])];
+  const namesOn = (day, ahead = false) => [
+    ...itemNamesOn(state.items, day, roleId, state.settings, ahead),
+    ...(festivals ? festivalsOn(day) : []),
+  ];
   const out = namesOn(ymd).filter((n) => !skip.includes(n));
   for (let k = 1; k <= aheadDays; k += 1) {
     const word = AHEAD_WORD[k] ?? `${k}天后`;
     // 「满300天」这种提前报没意思（明天满300天还行，但「后天在一起满300天」读着别扭也照报，规则简单）
-    for (const n of namesOn(ymdAdd(ymd, k))) out.push(`${word}${k > 2 ? "是" : ""}${n}`);
+    for (const n of namesOn(ymdAdd(ymd, k), true)) out.push(`${word}${k > 2 ? "是" : ""}${n}`);
   }
   return [...new Set(out)];
+}
+
+/** 「08:00:00」→「08:00」，有秒的保留秒。describeRule 和时间感知那截共用。 */
+function clockOf(item) {
+  const t = String(item?.time ?? "");
+  return t.endsWith(":00") ? t.slice(0, 5) : t;
 }
 
 /** 规则的一句人话：「每周一三 08:00（单周，9/1–1/15）」 */
 export function describeRule(item) {
   const r = item.repeat;
-  const t = item.time.endsWith(":00") ? item.time.slice(0, 5) : item.time;
+  const t = clockOf(item);
   const term = r.termStart || r.termEnd ? `，${r.termStart || "…"} ~ ${r.termEnd || "…"}` : "";
   switch (r.type) {
     case "once":

@@ -340,7 +340,7 @@ function PlaysCard({ data, refresh }) {
   );
 }
 
-function TemplatesCard({ data, refresh }) {
+function TemplatesCard({ data, refresh, injectMode }) {
   const [editing, setEditing] = useState(null); // null | {id?, title, prompt}
   const [error, setError] = useState("");
   const [confirmId, setConfirmId] = useState("");
@@ -356,10 +356,29 @@ function TemplatesCard({ data, refresh }) {
     }
   }
 
+  /*
+   * 模板上那个注入开关走的是模板自己的接口（立刻落盘），不是「草稿 + 点保存」
+   * 的配置 —— 和这一节别的动作（新建、编辑、删除）一致。所以要把标题和提示词
+   * 一起发回去：saveTemplate 收的是一份完整的模板。
+   */
+  async function toggleInject(t, inject) {
+    setError("");
+    try {
+      await api("/api/theater/templates", { method: "POST", body: { ...t, inject } });
+      refresh();
+    } catch (e) {
+      setError(String(e?.message ?? e));
+    }
+  }
+
   return (
     <Card
       title="模板"
-      desc="小剧场的题目。{{char}} / {{user}} 生成时换成名字；同名的会自动加编号，不会覆盖。"
+      desc={
+        injectMode === "picked"
+          ? "小剧场的题目。{{char}} / {{user}} 生成时换成名字；同名的会自动加编号，不会覆盖。打开「生成后注入」的那些，在 iMessage 里生成完会让角色当真事回你一条。"
+          : "小剧场的题目。{{char}} / {{user}} 生成时换成名字；同名的会自动加编号，不会覆盖。"
+      }
       actions={
         <Button variant="outline" onClick={() => setEditing({ title: "", prompt: "" })}>
           <Plus size={13} /> 新模板
@@ -395,7 +414,15 @@ function TemplatesCard({ data, refresh }) {
             </p>
             <p className="mt-0.5 line-clamp-2 text-meta leading-relaxed text-ink-faint">{t.prompt}</p>
           </div>
-          <div className="flex shrink-0 gap-1">
+          <div className="flex shrink-0 items-center gap-1">
+            {/* 只在「只有勾了的模板」那一档显示：另外两档下勾了也不起作用，摆出来是误导 */}
+            {injectMode === "picked" && (
+              <Switch
+                checked={Boolean(t.inject)}
+                label="生成后注入"
+                onChange={(v) => toggleInject(t, v)}
+              />
+            )}
             <Button variant="ghost" onClick={() => setEditing({ ...t })}>
               <Pencil size={13} /> 编辑
             </Button>
@@ -418,10 +445,17 @@ function TemplatesCard({ data, refresh }) {
   );
 }
 
+/** 老配置里「生成后注入」是个布尔，认它的两种形态（后端 normalizeInjectMode 同一套规则）。 */
+function injectModeOf(v) {
+  if (v === "off" || v === "all" || v === "picked") return v;
+  return v === true ? "all" : "off";
+}
+
 function SettingsCard({ defaultSystemPrompt }) {
   const { config, updateConfig } = useConfig();
   const t = config.theater ?? {};
   const patch = (p) => updateConfig((c) => ({ ...c, theater: { ...(c.theater ?? {}), ...p } }));
+  const injectMode = injectModeOf(t.injectAfterGeneration);
   return (
     <Card title="设置" desc="这一节改完要点底下的「保存」。">
       <div className="grid grid-cols-1 gap-6">
@@ -481,17 +515,28 @@ function SettingsCard({ defaultSystemPrompt }) {
             />
           </div>
         )}
-        <label className="flex items-start justify-between gap-4">
-          <span className="min-w-0">
-            <span className="block text-ui text-ink">生成后注入当前会话</span>
-            <span className="mt-0.5 block text-meta leading-relaxed text-ink-faint">
-              在 iMessage 里用 /小剧场 这类指令生成时，生成完等 5 秒，把小剧场的正文（纯文字，不带 CSS 和代码）当成一轮交给角色，
-              角色会照着人设回你一条；这一轮和回复都会存进会话历史，之后聊天都记得。网页面板里生成的不注入（和插件一样）。
-            </span>
-          </span>
-          <Switch checked={Boolean(t.injectAfterGeneration)} onChange={(v) => patch({ injectAfterGeneration: v })} label="生成后注入当前会话" />
-        </label>
-        {t.injectAfterGeneration && (
+        <Field
+          label="生成后注入当前会话"
+          hint="在 iMessage 里用 /小剧场 这类指令生成时，生成完等 5 秒，把小剧场的正文（纯文字，不带 CSS 和代码）当成一轮交给角色，角色会照着人设回你一条；这一轮和回复都会存进会话历史，之后聊天都记得。网页面板里生成的不注入（和插件一样）。"
+        >
+          <select
+            className={inputCls}
+            value={injectMode}
+            onChange={(e) => patch({ injectAfterGeneration: e.target.value })}
+          >
+            <option value="off">不注入</option>
+            <option value="all">全部注入</option>
+            <option value="picked">只有勾了的模板</option>
+          </select>
+        </Field>
+        {injectMode === "picked" && (
+          <p className="-mt-3 border-l-2 border-line py-1.5 pl-3 text-meta leading-relaxed text-ink-faint">
+            去下面「模板」那一节，给要注入的模板打开「生成后注入」。
+            <span className="text-ink-soft">/临时小剧场</span> 没有模板可勾，这一档下不会注入 ——
+            要让临时的也注入就选「全部注入」。
+          </p>
+        )}
+        {injectMode !== "off" && (
           <div className="grid grid-cols-1 gap-5 border-l-2 border-line pl-4">
             <label className="flex items-start justify-between gap-4">
               <span className="min-w-0">
@@ -541,6 +586,8 @@ function SettingsCard({ defaultSystemPrompt }) {
 export function TheaterPanel() {
   const { config } = useConfig();
   const roles = useMemo(() => config.roles ?? [], [config.roles]);
+  // 模板那一节要知道当前是哪一档（决定显不显示每个模板的注入开关）
+  const injectMode = injectModeOf(config.theater?.injectAfterGeneration);
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
 
@@ -572,7 +619,7 @@ export function TheaterPanel() {
     <>
       <GenerateCard data={data} refresh={refresh} roles={roles} />
       <PlaysCard data={data} refresh={refresh} />
-      <TemplatesCard data={data} refresh={refresh} />
+      <TemplatesCard data={data} refresh={refresh} injectMode={injectMode} />
       <SettingsCard defaultSystemPrompt={data.defaultSystemPrompt} />
     </>
   );
