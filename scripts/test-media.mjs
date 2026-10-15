@@ -1869,17 +1869,29 @@ console.log("\n[生图：上游抖动会重试]");
     assert.equal(hits, 2);
     ok("中转站拿 404 转述的上游故障（openai_error）会重试");
 
-    // 干净的 404 是真·模型名写错，重试一百次也一样
+    /*
+     * 干净的 404「没这个模型」：**不在这条路上重试**（重试一百次也一样），
+     * 但会改走聊天接口兜一次 —— 「这条路上没有这个模型」和「压根没有这个
+     * 模型」长得一模一样，而前者是实打实发生过的（见 media.js 里
+     * chatOnlyImageModel 上面那段）。两条都不通才报错。
+     */
     hits = 0;
-    globalThis.fetch = async () => {
+    const urls = [];
+    globalThis.fetch = async (url) => {
       hits += 1;
+      urls.push(String(url));
       return new Response(JSON.stringify({ error: { message: "model not found" } }), {
         status: 404,
       });
     };
-    await assert.rejects(() => generateImage(ep, { prompt: "毛血旺" }, "测试"), /404/);
-    assert.equal(hits, 1);
-    ok("干净的 404（模型名写错）不重试");
+    await assert.rejects(
+      () => generateImage(ep, { prompt: "毛血旺" }, "测试"),
+      /两条路都不通.*404/s
+    );
+    assert.equal(hits, 2);
+    assert.ok(urls[0].endsWith("/images/generations"), urls[0]);
+    assert.ok(urls[1].endsWith("/chat/completions"), urls[1]);
+    ok("干净的 404 不在原路重试，改走聊天接口兜一次；两条都不通才报错");
 
     // 401 / 余额不足这类：重试只是多烧一次额度
     hits = 0;
@@ -1947,6 +1959,279 @@ console.log("\n[生图：上游抖动会重试]");
     assert.equal(hits, 3);
     assert.equal("n" in seen[2], false);
     ok("剥字段不占重试预算（剥完又撞 504 照样能重试成功）");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+/*
+ * 聊天接口画图。
+ *
+ * 对应用户报的「这个站子的 gemini-3.1-flash-image / gpt-image-2.5 在别的小手机
+ * 能用，这儿不行，站子那边没报错还正常扣钱」。根因不是站子抖动也不是模型名
+ * 写错 —— 是这些模型压根不在 /images/generations 上，只能当聊天模型调。
+ * 用户日志里「测试连接通过（13041ms）」就是铁证：/chat/completions 通着呢。
+ */
+console.log("\n[生图：走聊天接口画图]");
+{
+  const realFetch = globalThis.fetch;
+  const B64 = PNG_MAGIC.toString("base64");
+  const chatReply = (content, extra = {}) =>
+    new Response(
+      JSON.stringify({
+        choices: [{ message: { role: "assistant", content, ...extra }, finish_reason: "stop" }],
+      }),
+      { status: 200 }
+    );
+  try {
+    // Gemini 系画图模型：第一发就打聊天接口，不去 /images/generations 白撞
+    let urls = [];
+    globalThis.fetch = async (url, init) => {
+      urls.push(String(url));
+      return chatReply(`给你画好了\n\n![image](data:image/png;base64,${B64})`);
+    };
+    let out = await generateImage(
+      {
+        url: "https://a.example.com/v1",
+        key: "K1",
+        model: "gemini-3.1-flash-image",
+        label: "逆 · gemini-3.1-flash-image",
+      },
+      { prompt: "一只坐在窗台上的橘猫" },
+      "测试"
+    );
+    assert.deepEqual([...out.buffer], [...PNG_MAGIC]);
+    assert.equal(urls.length, 1);
+    assert.ok(urls[0].endsWith("/chat/completions"), urls[0]);
+    ok("gemini-*-image 第一发就走聊天接口（不先去 /images/generations 白撞一次）");
+
+    // nano-banana 和别的 *flash-image 同理
+    for (const model of ["nano-banana", "gemini-2.5-flash-image", "google/nano banana"]) {
+      urls = [];
+      await generateImage({ url: "https://a.example.com/v1", key: "K", model }, { prompt: "猫" }, "测试");
+      assert.ok(urls[0].endsWith("/chat/completions"), `${model} → ${urls[0]}`);
+    }
+    ok("nano-banana / gemini-2.5-flash-image 这些也认");
+
+    // imagen 和 gpt-image 刻意不抢先 —— 它们在 /images/generations 上是通的
+    for (const model of ["imagen-4.0-generate-001", "gpt-image-2.5", "dall-e-3", "sd-xl"]) {
+      urls = [];
+      globalThis.fetch = async (url) => {
+        urls.push(String(url));
+        return new Response(JSON.stringify({ data: [{ b64_json: B64 }] }), { status: 200 });
+      };
+      await generateImage({ url: "https://a.example.com/v1", key: "K", model }, { prompt: "猫" }, "测试");
+      assert.ok(urls[0].endsWith("/images/generations"), `${model} → ${urls[0]}`);
+    }
+    ok("imagen / gpt-image / dall-e / sd 照旧先走 /images/generations");
+
+    // 请求形状
+    let body = null;
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(init.body);
+      return chatReply(`![image](data:image/png;base64,${B64})`);
+    };
+    await generateImage(
+      {
+        url: "https://a.example.com/v1",
+        key: "K1",
+        model: "gemini-3.1-flash-image",
+        positivePrompt: "masterpiece",
+        negativePrompt: "lowres",
+        ratio: { key: "9:16", size: "768x1344" },
+      },
+      { prompt: "一只橘猫" },
+      "测试"
+    );
+    assert.equal(body.model, "gemini-3.1-flash-image");
+    assert.equal(body.messages[0].role, "user");
+    assert.match(body.messages[0].content, /^masterpiece, 一只橘猫/);
+    assert.match(body.messages[0].content, /画面里不要出现：lowres/);
+    assert.deepEqual(body.modalities, ["text", "image"]);
+    assert.deepEqual(body.image_config, { aspect_ratio: "9:16" });
+    assert.equal(body.stream, undefined);
+    ok("正面提示词拼前面、负面写进正文、带 modalities 和 image_config、不走流式");
+
+    // 没选比例就一个字都不传（和 /images/generations 那条路同一个规矩）
+    await generateImage(
+      { url: "https://a.example.com/v1", key: "K", model: "nano-banana" },
+      { prompt: "猫" },
+      "测试"
+    );
+    assert.equal(body.image_config, undefined);
+    ok("没选比例 → 不发 image_config");
+
+    // 响应里图的三种形状
+    for (const [name, make] of [
+      ["new-api 的 markdown data URL", () => chatReply(`好了\n\n![image](data:image/png;base64,${B64})`)],
+      ["[media](…) 标记", () => chatReply(`[media](data:image/png;base64,${B64})`)],
+      ["没包 markdown 的裸 data URL", () => chatReply(`data:image/png;base64,${B64.repeat(9)}`)],
+      ["images 数组", () => chatReply("好了", { images: [{ type: "image_url", image_url: { url: `data:image/png;base64,${B64}` } }] })],
+      ["content 是 parts 数组", () => chatReply([{ type: "image_url", image_url: { url: `data:image/png;base64,${B64}` } }])],
+    ]) {
+      globalThis.fetch = async () => make();
+      const r = await generateImage(
+        { url: "https://a.example.com/v1", key: "K", model: "nano-banana" },
+        { prompt: "猫" },
+        "测试"
+      );
+      assert.deepEqual([...r.buffer].slice(0, 8), [...PNG_MAGIC], name);
+    }
+    ok("markdown data URL / [media] / 裸 data URL / images 数组 / parts 数组都认");
+
+    // 回的是链接：再取一次字节（走的是和另一条路同一个 readImageFrom）
+    let hops = 0;
+    globalThis.fetch = async (url) => {
+      hops += 1;
+      return String(url).startsWith("https://cdn.")
+        ? new Response(Buffer.from([0xff, 0xd8, 0xff, 0xe0]), { status: 200 })
+        : chatReply("![image](https://cdn.example.com/a.jpg)");
+    };
+    out = await generateImage(
+      { url: "https://a.example.com/v1", key: "K", model: "nano-banana" },
+      { prompt: "猫" },
+      "测试"
+    );
+    assert.equal(hops, 2);
+    assert.equal(out.mimeType, "image/jpeg");
+    ok("回的是图片链接 → 再取一次字节，按魔数认出 jpeg");
+
+    // 参考图：当一条 image_url 消息发过去，不走 multipart
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(init.body);
+      return chatReply(`![image](data:image/png;base64,${B64})`);
+    };
+    await generateImage(
+      { url: "https://a.example.com/v1", key: "K", model: "nano-banana" },
+      { prompt: "让它躺下", refFile: resolveRefFile("小猫") },
+      "测试"
+    );
+    const parts = body.messages[0].content;
+    assert.equal(parts[0].type, "image_url");
+    assert.match(parts[0].image_url.url, /^data:image\/png;base64,/);
+    assert.equal(parts[1].text, "让它躺下");
+    ok("有参考图 → 当 image_url 消息发过去（不是 multipart）");
+
+    // 模型回了话但没画图：把它说的那句带出来，别报「返回里没有图片」
+    globalThis.fetch = async () => chatReply("抱歉，我不能画这个。");
+    await assert.rejects(
+      () => generateImage({ url: "https://a.example.com/v1", key: "K", model: "nano-banana" }, { prompt: "猫" }, "测试"),
+      /没出图.*不能画这个/
+    );
+    ok("模型回话但没画图 → 报错里带上它说的那句");
+
+    /* ── 兜底：先打 /images/generations，被拒了改走聊天接口 ── */
+
+    // 用户日志里那条：new-api 的 500 + only imagen models are supported
+    urls = [];
+    globalThis.fetch = async (url) => {
+      urls.push(String(url));
+      return String(url).includes("/chat/completions")
+        ? chatReply(`![image](data:image/png;base64,${B64})`)
+        : new Response(
+            JSON.stringify({
+              error: {
+                message: "not supported model for image generation, only imagen models are supported",
+                type: "new_api_error",
+                code: "convert_request_failed",
+              },
+            }),
+            { status: 500 }
+          );
+    };
+    out = await generateImage(
+      { url: "https://a.example.com/v1", key: "K", model: "逆向-画图-v3" },
+      { prompt: "猫" },
+      "测试"
+    );
+    assert.deepEqual([...out.buffer], [...PNG_MAGIC]);
+    // 名字认不出来 → 先打 /images/generations，被拒了才改路，而且不在原路重试
+    assert.equal(urls.length, 2);
+    assert.ok(urls[0].endsWith("/images/generations"), urls[0]);
+    assert.ok(urls[1].endsWith("/chat/completions"), urls[1]);
+    ok("500 + only imagen models are supported → 改走聊天接口，这一发出图成功");
+
+    // gpt-image-2.5 在个别站子上那条：400 + image_generation_user_error
+    urls = [];
+    globalThis.fetch = async (url) => {
+      urls.push(String(url));
+      return String(url).includes("/chat/completions")
+        ? chatReply(`![image](data:image/png;base64,${B64})`)
+        : new Response(
+            JSON.stringify({
+              error: {
+                message: "The model 'gpt-image-2.5' does not exist",
+                type: "image_generation_user_error",
+                param: "model",
+                code: "invalid_value",
+              },
+            }),
+            { status: 400 }
+          );
+    };
+    out = await generateImage(
+      { url: "https://a.example.com/v1", key: "K", model: "gpt-image-2.5" },
+      { prompt: "猫" },
+      "测试"
+    );
+    assert.deepEqual([...out.buffer], [...PNG_MAGIC]);
+    assert.equal(urls.length, 2);
+    ok("400 + 「这个模型不存在」→ 也改走聊天接口（模型名没错，是接口不对）");
+
+    // 200 装着这种报错的也要兜
+    urls = [];
+    globalThis.fetch = async (url) => {
+      urls.push(String(url));
+      return String(url).includes("/chat/completions")
+        ? chatReply(`![image](data:image/png;base64,${B64})`)
+        : new Response(
+            JSON.stringify({ error: { message: "only imagen models are supported" } }),
+            { status: 200 }
+          );
+    };
+    await generateImage({ url: "https://a.example.com/v1", key: "K", model: "x-draw" }, { prompt: "猫" }, "测试");
+    assert.equal(urls.length, 2);
+    ok("HTTP 200 装着同一个报错 → 一样兜到聊天接口");
+
+    // 鉴权 / 余额 / 审核：换条路也是一样的结果，别白扣一次钱
+    for (const [name, status, payload] of [
+      ["鉴权失败", 401, { error: { message: "invalid_api_key" } }],
+      ["余额不足", 400, { error: { message: "insufficient balance for this model" } }],
+      ["内容审核", 400, { error: { message: "rejected by safety system" } }],
+    ]) {
+      urls = [];
+      globalThis.fetch = async (url) => {
+        urls.push(String(url));
+        return new Response(JSON.stringify(payload), { status });
+      };
+      await assert.rejects(
+        () => generateImage({ url: "https://a.example.com/v1", key: "K", model: "x-draw" }, { prompt: "猫" }, "测试"),
+        new RegExp(String(status)),
+        name
+      );
+      assert.ok(
+        urls.every((u) => u.endsWith("/images/generations")),
+        `${name} 不该兜到聊天接口：${urls.join(" ")}`
+      );
+    }
+    ok("鉴权 / 余额 / 审核失败不兜到聊天接口（换条路也是一样的结果）");
+
+    // 只兜一次，而且报错要带上两边的原因
+    let hits = 0;
+    globalThis.fetch = async (url) => {
+      hits += 1;
+      return String(url).includes("/chat/completions")
+        ? new Response(JSON.stringify({ error: { message: "channel not configured" } }), { status: 503 })
+        : new Response(JSON.stringify({ error: { message: "only imagen models are supported" } }), {
+            status: 500,
+          });
+    };
+    await assert.rejects(
+      () => generateImage({ url: "https://a.example.com/v1", key: "K", model: "x-draw" }, { prompt: "猫" }, "测试"),
+      /两条路都不通.*only imagen.*聊天接口.*503/s
+    );
+    assert.equal(hits, 2);
+    ok("两条都不通 → 只兜一次，报错里两边的原因都带上");
   } finally {
     globalThis.fetch = realFetch;
   }

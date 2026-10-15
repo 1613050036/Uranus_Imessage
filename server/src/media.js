@@ -2375,6 +2375,232 @@ async function geminiImage({ base, key, model, prompt, negative, refFile, ratio 
   return { buffer, ratioSent: Boolean(ratio) && ratioIn() };
 }
 
+/*
+ * ================= 聊天接口画图 =================
+ *
+ * 有一类画图模型**压根不在 `/images/generations` 上**，只能当聊天模型调：
+ * 请求是 `/chat/completions`，图片装在回复里。
+ *
+ * 为什么会这样：中转站（绝大多数是 new-api 那套）对这些模型的实现是转发到
+ * 上游的原生多模态接口 —— Gemini 系是 `:generateContent` 带
+ * `responseModalities: [TEXT, IMAGE]`，gpt-image-2.5 那边是 Responses API 的
+ * image_generation 工具。老的 `/images/generations` 这条路它们根本没接，
+ * 打过去的报错长得五花八门，但意思都是「这条路上没有这个模型」：
+ *
+ *   gemini-3.1-flash-image → HTTP 500
+ *     {"error":{"message":"not supported model for image generation,
+ *                only imagen models are supported","type":"new_api_error",
+ *                "code":"convert_request_failed"}}
+ *     （new-api 源码 relay/channel/gemini/adaptor.go：模型名不是 imagen
+ *       前缀就直接拒，而 gemini-*-image 挂在它另一张 SupportedImagineModels
+ *       表里，那张表只在 /chat/completions 那条路上生效）
+ *
+ *   gpt-image-2.5 → HTTP 400
+ *     {"error":{"message":"The model 'gpt-image-2.5' does not exist",
+ *                "type":"image_generation_user_error","param":"model"}}
+ *     （这个 type 是 Responses API 的 image_generation 工具报的 —— 也就是说
+ *       站子确实有这个模型，只是只活在聊天那条路上。同一把配置「测试连接」
+ *       是通的，13 秒回了 ping，足以证明模型名没写错。）
+ *
+ * 所以别拿「模型名写错了」「站子抖动」结案 —— 这两条都是**我们打错了接口**。
+ * 用户那头的表现是「别的小手机能出图，这儿不行」，而站子那边正常扣钱。
+ */
+
+/**
+ * 这些模型**第一发就打聊天接口**，省掉一次注定失败的往返。
+ *
+ * 只是个快捷方式，不是白名单：不在这张表里的模型照旧先打
+ * `/images/generations`，被拒了再兜底过来（见 generateImage 里
+ * chatOnlyImageModel 那段）。所以漏了谁都不会少出一张图，只是多一次往返。
+ *
+ * **这张表只收「在 `/images/generations` 上注定不通」的那几个**，收得很窄：
+ *   - Gemini 系画图模型（`gemini-*-image`、`nano-banana`）—— new-api 的代码里
+ *     写死了那条路只认 imagen 前缀，不是运气问题，是必不通。
+ *   - `imagen` 刻意**不在**这里：它在 `/images/generations` 上恰恰是通的
+ *     （new-api 专门为它做了转换），走聊天接口反而没有。
+ *   - `gpt-image` 系也**不在**这里：官方和多数中转站在 `/images/generations`
+ *     上是通的（剥字段那套逻辑就是照它实测出来的）。只有个别站子把它实现成
+ *     Responses 工具，那种靠兜底兜过去，别为了一家站子改掉所有人的那条路。
+ */
+const CHAT_IMAGE_MODEL_RE = /(gemini[\w.-]*-image|nano[-\s]?banana|[\w.-]*flash-image)/i;
+
+/** 这个模型名要不要直接走聊天接口。 */
+function prefersChatImage(model) {
+  return CHAT_IMAGE_MODEL_RE.test(String(model ?? ""));
+}
+
+/**
+ * `/images/generations` 的失败，是不是「这条路上没有这个模型」。
+ *
+ * 命中就改走聊天接口重打一次（generateImage 里只兜一次，兜完还不行才报错）。
+ * 判据刻意收得很紧 —— 要同时命中「说的是模型/接口不支持」和「不是别的毛病」，
+ * 免得把鉴权失败、余额不足、提示词违规也拖去走第二条路白扣一次钱。
+ */
+function chatOnlyImageModel(status, raw) {
+  if (status !== 400 && status !== 404 && status !== 422 && status !== 500) return false;
+  const s = String(raw ?? "");
+  // 鉴权 / 余额 / 限流 / 内容审核 —— 换条路也是一样的结果，别白打
+  if (/invalid[_ ]api[_ ]key|unauthorized|insufficient|quota|balance|rate.?limit|safety|moderation|content[_ ]policy/i.test(s)) {
+    return false;
+  }
+  return (
+    // new-api 的 Gemini 适配器：只认 imagen
+    /only imagen models are supported/i.test(s) ||
+    // 「这个模型不存在 / 不支持 / 不能用于图像生成」的各种说法
+    (/\bmodel\b|模型/i.test(s) &&
+      /does not exist|not found|not exist|unsupported|not support|无此模型|不支持|不存在/i.test(s)) ||
+    // 站子转换请求时就炸了 —— 多半就是这条路没接这个模型
+    /convert_request_failed|image_generation_user_error/i.test(s)
+  );
+}
+
+/**
+ * 从聊天回复里把图抠出来。三种形状都见过：
+ *
+ *   1. `message.images[].image_url.url`  —— OpenRouter / 部分中转站，data URL
+ *   2. `content` 里的 `![image](data:image/png;base64,…)` —— new-api 就这么干的
+ *      （relaykit/relayconvert/internal/gemini_chat/to_oai_chat_resp.go）
+ *   3. `content` 里一条裸的 `https://…png` 链接 —— 站子把图存自己的 OSS 了
+ *
+ * 1 和 2 返回 `{b64_json}`，3 返回 `{url}`，都是 readImageFrom 认的形状
+ * （那边带下载重试，图已经画完扣过钱了，值得多试几次）。
+ *
+ * @returns {object|null} readImageFrom 能吃的那个形状；一张都没有就是 null
+ */
+function imageInChatReply(data) {
+  const msg = data?.choices?.[0]?.message;
+  if (!msg) return null;
+
+  // 1. images 数组
+  for (const item of msg.images ?? []) {
+    const url = item?.image_url?.url ?? item?.url ?? (typeof item === "string" ? item : "");
+    if (typeof url === "string" && url.trim()) {
+      return /^https?:\/\//i.test(url.trim()) ? { url: url.trim() } : { b64_json: url.trim() };
+    }
+  }
+
+  /*
+   * content 可能是字符串，也可能是 OpenAI 那种 parts 数组（带 image_url 的
+   * 那种形状回流过来）。两种都摊成一段文本再找，顺便把 parts 里的
+   * image_url 直接认掉。
+   */
+  const content = msg.content;
+  let text = "";
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    for (const p of content) {
+      if (typeof p === "string") text += `\n${p}`;
+      else if (typeof p?.text === "string") text += `\n${p.text}`;
+      const url = p?.image_url?.url ?? p?.image_url;
+      if (typeof url === "string" && url.trim()) {
+        return /^https?:\/\//i.test(url.trim()) ? { url: url.trim() } : { b64_json: url.trim() };
+      }
+    }
+  }
+
+  // 2. markdown 里的 data URL。`![image](…)` 和 `[media](…)` 两种标记都认
+  const dataUrl = /!?\[[^\]]*\]\((data:image\/[^;)]+;base64,[A-Za-z0-9+/=\s]+)\)/i.exec(text);
+  if (dataUrl) return { b64_json: dataUrl[1].replace(/\s+/g, "") };
+  // 没包在 markdown 里的裸 data URL
+  const bare = /data:image\/[^;\s)]+;base64,[A-Za-z0-9+/=]{64,}/i.exec(text);
+  if (bare) return { b64_json: bare[0] };
+
+  // 3. 图片链接。markdown 包着的优先，免得把正文里顺带提到的链接抠出来
+  const mdUrl = /!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/i.exec(text);
+  if (mdUrl) return { url: mdUrl[1] };
+  const rawUrl = /https?:\/\/[^\s)<>"']+\.(?:png|jpe?g|webp|gif)(?:\?[^\s)<>"']*)?/i.exec(text);
+  if (rawUrl) return { url: rawUrl[0] };
+
+  return null;
+}
+
+/**
+ * 走 `/chat/completions` 出一张图。
+ *
+ * 请求形状就是一轮普通对话：画面描述当用户消息发过去，图在回复里
+ * （imageInChatReply 负责抠）。额外带两个字段，都是「认就更好、不认也无妨」：
+ *
+ *   `modalities: ["text","image"]`  有的站子靠它开图像输出（OpenRouter 那套）；
+ *                                   new-api 不看这个字段，它按模型名自己决定
+ *   `image_config: {aspect_ratio}`  比例，只在用户明确选了一档时才发
+ *
+ * **不走流式。** 图是一大段 base64，流式拼回来没有任何好处，而且 data URL
+ * 被切成几十个 delta 之后，中间任何一块丢了都是一张坏图。
+ *
+ * 没有重试循环 —— 调用方（generateImage）已经在它自己那个循环里了，这条路
+ * 是它的兜底分支，重试的预算归它管。
+ *
+ * @returns {Promise<{buffer: Buffer, said: string}>} said 是模型顺带说的话，只进日志
+ */
+async function chatImage({ base, key, model, prompt, negative, refFile, ratio }, scope) {
+  const text = negative ? `${prompt}\n\n画面里不要出现：${negative}` : prompt;
+
+  /*
+   * 参考图当一条 image_url 发过去（OpenAI 的视觉消息形状）—— 这些模型本来
+   * 就是多模态的，「看着这张图改」和「照这段话画」走的是同一个接口。
+   */
+  let content = text;
+  if (refFile) {
+    const bytes = await fs.promises.readFile(refFile);
+    const mime = mimeForExt(path.extname(refFile).toLowerCase());
+    content = [
+      { type: "image_url", image_url: { url: `data:${mime};base64,${bytes.toString("base64")}` } },
+      { type: "text", text },
+    ];
+  }
+
+  const body = {
+    model,
+    messages: [{ role: "user", content }],
+    modalities: ["text", "image"],
+    ...(ratio ? { image_config: { aspect_ratio: ratio.key } } : {}),
+  };
+
+  const res = await fetch(`${base}/chat/completions`, {
+    method: "POST",
+    signal: AbortSignal.timeout(IMAGE_TIMEOUT),
+    headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+    body: JSON.stringify(body),
+  });
+
+  const raw = await res.text();
+  if (!res.ok) throw new Error(`生图接口返回 ${res.status}：${clipBody(raw)}`);
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(`生图接口返回的不是 JSON：${clipBody(raw)}`);
+  }
+  if (data?.error && !data?.choices?.length) {
+    throw new Error(`生图接口返回了报错：${clipBody(raw)}`);
+  }
+
+  const item = imageInChatReply(data);
+  if (!item) {
+    /*
+     * 模型回了话但没画图。最常见的两种：被审核拦了（它会解释一句），或者
+     * 这个模型压根不会画图（用户把聊天模型勾上了「生图」分类）。两种都把
+     * 它说的那句话原样带出去 —— 比「返回里没有图片」有用得多。
+     */
+    const msg = data?.choices?.[0]?.message;
+    const said = typeof msg?.content === "string" ? msg.content.trim() : "";
+    const why = data?.choices?.[0]?.finish_reason;
+    throw new Error(
+      `这个模型没出图${why && why !== "stop" ? `（${why}）` : ""}：` +
+        `${said ? clipBody(said) : clipBody(raw)}`
+    );
+  }
+
+  const buffer = await readImageFrom(item, scope);
+  if (!buffer?.length) throw new Error(`返回的图片是空的：${clipBody(raw)}`);
+
+  const msg = data?.choices?.[0]?.message;
+  const said = typeof msg?.content === "string" ? msg.content.replace(/!?\[[^\]]*\]\([^)]*\)/g, "").trim() : "";
+  return { buffer, said };
+}
+
 /**
  * 把中文画面描述翻成 NovelAI 认的英文 tag。
  *
@@ -2590,6 +2816,35 @@ export async function generateImage(endpoint, req, scope = "生图") {
     return { buffer, mimeType, ext, ms };
   }
 
+  /** 走聊天接口画图，成功就直接返回（下面两处用：抢先走、和兜底走）。 */
+  const viaChat = async (why) => {
+    if (why) logInfo(scope, why);
+    const { buffer, said } = await chatImage(
+      { base, key, model, prompt, negative, refFile, ratio },
+      scope
+    );
+    const ms = Date.now() - startedAt;
+    const { mimeType, ext } = sniffImage(buffer);
+    logInfo(
+      scope,
+      `${endpoint?.label ?? model} 出图成功（走的聊天接口），${Math.round(buffer.length / 1024)}KB ${ext}，` +
+        `耗时 ${ms}ms${ratio ? `（要的是 ${ratio.key}）` : ""}` +
+        `${refFile ? `（参考图 ${path.basename(refFile)}）` : ""}`,
+      // 模型顺带说的话只进 detail —— 它不影响发图，但排查「图对不对」时有用
+      said || undefined
+    );
+    return { buffer, mimeType, ext, ms };
+  };
+
+  /*
+   * 这个模型只活在聊天接口上（见 CHAT_IMAGE_MODEL_RE 上面那段）—— 直接走，
+   * 不先去 /images/generations 白撞一次。认错了也不要紧：聊天接口那边报错
+   * 照样抛出来，不会悄悄发一张坏图。
+   */
+  if (prefersChatImage(model)) {
+    return viaChat(`${model} 这类模型只能走聊天接口画图，直接走那条路`);
+  }
+
   /*
    * 两条路发的是同一份字段，只是载体不一样，所以**先把字段摊在一个对象里**，
    * 再各自装进 JSON / multipart。这样上游嫌弃某个字段时，剥掉它只要改这一处
@@ -2653,6 +2908,8 @@ export async function generateImage(endpoint, req, scope = "生图") {
   // 一次运气」，混在一个计数里会让「剥完一个字段又赶上一次抖动」提前用光额度
   let drops = 0;
   let retries = 0;
+  /** 聊天接口那条兜底路走过没有。只兜一次 —— 两条路都不通就该报错了。 */
+  let chatTried = false;
   for (;;) {
     try {
       /*
@@ -2691,6 +2948,32 @@ export async function generateImage(endpoint, req, scope = "生图") {
         drops += 1;
         logInfo(scope, `上游不认 ${dropped} 这个字段，去掉它重发一次`);
         continue;
+      }
+    }
+
+    /*
+     * 「这条路上没有这个模型」—— 改走聊天接口再试一次（只试一次：chatTried）。
+     *
+     * 放在剥字段后面、重试前面：剥字段是「请求能改对」，这条是「路走错了」，
+     * 都比「再碰一次运气」更可能是真正的原因。重试那条路对这种失败毫无用处
+     * （下一发还是同一个接口、同一个模型），原来就是在那儿白等 6 秒然后报错。
+     */
+    // okButError 是「HTTP 200、体里装着报错」（见 errorInOkBody）—— 按 400 判
+    if (!chatTried && chatOnlyImageModel(okButError ? 400 : res.status, raw)) {
+      chatTried = true;
+      try {
+        return await viaChat(
+          `这个模型在 /images/generations 上不通（HTTP ${res.status}），改走聊天接口再试一次`
+        );
+      } catch (e) {
+        /*
+         * 两条路都不行。报错要带上**两边**的原因 —— 只报聊天接口那句的话，
+         * 用户会以为问题出在聊天接口上，而真正该看的多半是第一条路那句。
+         */
+        throw new Error(
+          `生图两条路都不通。/images/generations 返回 ${res.status}：${clipBody(raw)}；` +
+            `聊天接口：${String(e?.message ?? e)}`
+        );
       }
     }
 
